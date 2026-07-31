@@ -1,0 +1,9 @@
+{
+  "name": "CS3",
+  "iconUrl": "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/cnc.png",
+  "description": "For Me",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/builds/plugins.json"
+  ]
+}
