@@ -16,15 +16,15 @@
       ]
     },
     {
-      "name": "Pakistani",
-      "channels": []
-    },
-    {
       "name": "Indian",
       "channels": []
     },
     {
       "name": "Cartoon",
+      "channels": []
+    },
+    {
+      "name": "Pakistani",
       "channels": []
     }
   ]
