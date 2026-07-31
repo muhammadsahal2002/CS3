@@ -4,6 +4,7 @@
   "description": "For Me",
   "manifestVersion": 1,
   "pluginLists": [
-    "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/builds/plugins.json"
+    "CS3 : 
+ https://raw.githubusercontent.com/muhammadsahal2002/CS3/refs/heads/builds/repo.json"
   ]
 }
