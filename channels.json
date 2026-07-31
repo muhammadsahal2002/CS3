@@ -5,45 +5,27 @@
       "channels": [
         {
           "name": "Somoy News",
-          "logo": "https://example.com/logos/somoy.png",
-          "url": "https://owrcovcrpy.gpcdn.net/bpk-tv/1702/output/index.m3u8"
+          "logo": "https://your-logo-link.png",
+          "url": "https://your-stream-link.m3u8"
         },
         {
           "name": "Jamuna TV",
-          "logo": "https://example.com/logos/jamuna.png",
-          "url": "https://bozztv.com/rongo/rongo-JamunaTelevision/index.m3u8"
+          "logo": "https://your-logo-link.png",
+          "url": "https://your-stream-link.m3u8"
         }
       ]
     },
     {
       "name": "Pakistani",
-      "channels": [
-        {
-          "name": "Geo News",
-          "logo": "https://example.com/logos/geo.png",
-          "url": "https://your-stream-link.m3u8"
-        }
-      ]
+      "channels": []
     },
     {
       "name": "Indian",
-      "channels": [
-        {
-          "name": "Aaj Tak",
-          "logo": "https://example.com/logos/aajtak.png",
-          "url": "https://your-stream-link.m3u8"
-        }
-      ]
+      "channels": []
     },
     {
       "name": "Cartoon",
-      "channels": [
-        {
-          "name": "Cartoon Network",
-          "logo": "https://example.com/logos/cn.png",
-          "url": "https://your-stream-link.m3u8"
-        }
-      ]
+      "channels": []
     }
   ]
 }
