@@ -179,7 +179,53 @@
     },
     {
       "name": "Indian",
-      "channels": []
+      "channels": [
+  {
+    "name": "B4U Music",
+    "logo": "https://dtil.tmsimg.com/assets/s158141_ld_h15_aa.png?lock=720x540",
+    "url": "https://cdn-2.pishow.tv/live/415/master.m3u8"
+  },
+{
+    "name": "Peace TV Bangla",
+    "logo": "https://i.imgur.com/1ztVXUi.png",
+    "url": "https://dzkyvlfyge.erbvr.com/PeaceTvBangla/index.m3u8"
+  },
+  {
+    "name": "Sangeet Bangla",
+    "logo": "https://ltsk-cdn.s3.eu-west-1.amazonaws.com/jumpstart/Temp_Live/cdn/HLS/Channel/transparentImages/Sangeet%20Bangla.png",
+    "url": "https://cdn-4.pishow.tv/live/1143/master.m3u8"
+  },
+  {
+    "name": "Star Sports 1",
+    "logo": "https://i.imgur.com/E5jjKHI.png",
+    "url": "https://tvsen7.aynaott.com/sspts1/index.m3u8"
+  },
+  {
+    "name": "Sony Max 1",
+    "logo": "https://brand-websites-prod.s3.ap-south-1.amazonaws.com/sonypicturesnetworksindia/general_content/PGT_1822_2.png",
+    "url": "http://103.159.180.34:5001/live/3418.m3u8"
+  },
+  {
+    "name": "Star Sports 2",
+    "logo": "https://xstreamcp-assets-msp.streamready.in/assets/LIVETV/LIVECHANNEL/LIVETV_LIVETVCHANNEL_STAR_SPORTS_2/images/LOGO_HD/image.png",
+    "url": "https://tvsen7.aynaott.com/ssport2hd/index.m3u8"
+  },
+  {
+    "name": "Star Sports Select 1",
+    "logo": "https://i.imgur.com/Mh9tKPx.png",
+    "url": "http://tvsen7.aynascope.net/sspts1/index.m3u8"
+  },
+  {
+    "name": "Star Sports Select 2",
+    "logo": "https://i.imgur.com/FtRT73R.png",
+    "url": "http://tvsen7.aynascope.net/ssport2hd/index.m3u8"
+  },
+  {
+    "name": "Zee Bangla Sonar",
+    "logo": "https://dtil.tmsimg.com/assets/GNLZZGG00287G7K.png?lock=720x540",
+    "url": "https://d1g8wgjurz8via.cloudfront.net/bpk-tv/ColorsHD/default/ColorsHD.m3u8"
+  }
+]
     },
     {
       "name": "Cartoon",
@@ -193,6 +239,11 @@
           "name": "Discovery Kids",
           "logo": "",
           "url": "https://stream.ottplus.bd/live/discovery_kids_abr/live/discovery_kids/chunks.m3u8"
+        },
+{
+          "name": "CN HD",
+          "logo": "",
+          "url": "https://stream.ottplus.bd/live/cn_hd_abr/live/cn_hd/chunks.m3u8"
         }
       ]
     },
@@ -207,12 +258,8 @@
           "name": "Al-Jazeera",
           "logo": "",
           "url": "https://owrcovcrpy.gpcdn.net/bpk-tv/1721/output/index.m3u8"
-        },
-        {
-          "name": "CN HD",
-          "logo": "",
-          "url": "https://stream.ottplus.bd/live/cn_hd_abr/live/cn_hd/chunks.m3u8"
         }
+      
       ]
     }
   ]
