@@ -5,6 +5,41 @@
       "channels": 
       
         [
+   {
+      "name": "Sony Sports 1",
+      "logo": "",
+      "url": "https://stream.ottplus.live/live/ten_1_hd_abr/live/ten_1_hd_720/chunks.m3u8"
+    },
+    {
+      "name": "Sony Sports 2",
+      "logo": "",
+      "url": "https://stream.ottplus.live/live/ten_2_hd_abr/live/ten_2_hd_720/chunks.m3u8"
+    },
+    {
+      "name": "Sony Sports 5",
+      "logo": "",
+      "url": "https://stream.ottplus.live/live/ten_5_hd_abr/live/ten_5_hd_720/chunks.m3u8"
+    },
+    {
+      "name": "T Sports",
+      "logo": "",
+      "url": "https://s1.itcnbd.live/T-Sports-HD/tracks-v1a1/mono.m3u8?nocacheT-Sports-HD/tracks-v1a1/mono.m3u8"
+    },
+    {
+      "name": "Zee Bangla",
+      "logo": "",
+      "url": "https://stream.ottplus.bd/live/zee_bangla_abr/index.m3u8"
+    },
+    {
+      "name": "Sony Max",
+      "logo": "",
+      "url": "https://stream.ottplus.bd/live/max_hd_abr/live/max_hd_720/chunks.m3u8"
+    },
+    {
+      "name": "Tom & Jerry",
+      "logo": "",
+      "url": "https://live20.bozztv.com/giatvplayout7/giatv-208314/tracks-v1a1/mono.ts.m3u8"
+    },
   {
     "name": "Deepto TV",
     "logo": "https://i.imgur.com/F62GUqS.png",
