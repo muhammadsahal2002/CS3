@@ -75,7 +75,7 @@
         "version": 1,
         "apiVersion": 1,
         "status": 1,
-        "language": "en",
+        "language": "",
         "authors": ["muhammadsahal2002"],
         "tvTypes": ["Live"],
         "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/LiveTv.cs3",
