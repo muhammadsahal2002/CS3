@@ -6,39 +6,16 @@
         "apiVersion": 1,
         "status": 1,
         "language": "en",
-        "authors": ["muhammadsahal2002"],
-        "tvTypes": ["Anime", "AnimeMovie", "OVA"],
+        "authors": [
+            "muhammadsahal2002"
+        ],
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
         "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/AniKoto.cs3",
-        "fileHash": "sha256-d9fa10e592642ca49769a7e3bba906564f2a23e1af63c69424680a940497ef05",
         "fileSize": 52465,
-        "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
-    },
-    {
-        "name": "CNC Verse Mobile",
-        "internalName": "CNC Verse Mobile",
-        "version": 1,
-        "apiVersion": 1,
-        "status": 1,
-        "language": "bn",
-        "authors": ["muhammadsahal2002"],
-        "tvTypes": ["Movie", "TvSeries"],
-        "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/CNC%20Verse%20Mobile.cs3",
-        "fileHash": "sha256-5f65f044d2396bbbe0b1242a49d1ce0910398c3bd3452837a0488ef6051518ec",
-        "fileSize": 89307,
-        "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
-    },
-    {
-        "name": "CNC Verse",
-        "internalName": "CNC Verse",
-        "version": 1,
-        "apiVersion": 1,
-        "status": 1,
-        "language": "bn",
-        "authors": ["muhammadsahal2002"],
-        "tvTypes": ["Movie", "TvSeries"],
-        "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/CNC%20Verse.cs3",
-        "fileHash": "sha256-ec406d48416ffdc4fc24c299dd945746fcea58497cfb126df5e62436c3cb897d",
-        "fileSize": 95731,
         "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
     },
     {
@@ -48,11 +25,51 @@
         "apiVersion": 1,
         "status": 1,
         "language": "bn",
-        "authors": ["muhammadsahal2002"],
-        "tvTypes": ["Movie", "TvSeries"],
+        "authors": [
+            "muhammadsahal2002"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
         "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/CastleTvProvider.cs3",
-        "fileHash": "sha256-a8db9041afb14a60d7bd2516351ba1351ba486f6504f6d9c1adaa1d85c7cee14",
         "fileSize": 71495,
+        "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
+    },
+    {
+        "name": "CNC Verse",
+        "internalName": "CNC Verse",
+        "version": 1,
+        "apiVersion": 1,
+        "status": 1,
+        "language": "bn",
+        "authors": [
+            "muhammadsahal2002"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/CNC%20Verse.cs3",
+        "fileSize": 95731,
+        "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
+    },
+    {
+        "name": "CNC Verse Mobile",
+        "internalName": "CNC Verse Mobile",
+        "version": 1,
+        "apiVersion": 1,
+        "status": 1,
+        "language": "bn",
+        "authors": [
+            "muhammadsahal2002"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/CNC%20Verse%20Mobile.cs3",
+        "fileSize": 89307,
         "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
     },
     {
@@ -62,10 +79,13 @@
         "apiVersion": 1,
         "status": 1,
         "language": "bn",
-        "authors": ["muhammadsahal2002"],
-        "tvTypes": ["Live"],
+        "authors": [
+            "muhammadsahal2002"
+        ],
+        "tvTypes": [
+            "Live"
+        ],
         "url": "https://raw.githubusercontent.com/muhammadsahal2002/CS3/builds/LiveTv.cs3",
-        "fileHash": "sha256-801685e1ed7f80332914643d82f83c10b01d5221a0205c5f510fe8e25fc92422",
         "fileSize": 13912,
         "repositoryUrl": "https://github.com/muhammadsahal2002/CS3"
     }
