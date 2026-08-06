@@ -1,0 +1,95 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="a005",CH A005
+http://202.70.146.135:8000/play/a005/index.m3u8
+#EXTINF:-1 tvg-id="a009",CH A009
+http://202.70.146.135:8000/play/a009/index.m3u8
+#EXTINF:-1 tvg-id="a00a",CH A00A
+http://202.70.146.135:8000/play/a00a/index.m3u8
+#EXTINF:-1 tvg-id="a00b",CH A00B
+http://202.70.146.135:8000/play/a00b/index.m3u8
+#EXTINF:-1 tvg-id="a01e",CH A01E
+http://202.70.146.135:8000/play/a01e/index.m3u8
+#EXTINF:-1 tvg-id="a01g",CH A01G
+http://202.70.146.135:8000/play/a01g/index.m3u8
+#EXTINF:-1 tvg-id="a01q",CH A01Q
+http://202.70.146.135:8000/play/a01q/index.m3u8
+#EXTINF:-1 tvg-id="a024",CH A024
+http://202.70.146.135:8000/play/a024/index.m3u8
+#EXTINF:-1 tvg-id="a025",CH A025
+http://202.70.146.135:8000/play/a025/index.m3u8
+#EXTINF:-1 tvg-id="a026",CH A026
+http://202.70.146.135:8000/play/a026/index.m3u8
+#EXTINF:-1 tvg-id="a02a",CH A02A
+http://202.70.146.135:8000/play/a02a/index.m3u8
+#EXTINF:-1 tvg-id="a02d",CH A02D
+http://202.70.146.135:8000/play/a02d/index.m3u8
+#EXTINF:-1 tvg-id="a02n",CH A02N
+http://202.70.146.135:8000/play/a02n/index.m3u8
+#EXTINF:-1 tvg-id="a02t",CH A02T
+http://202.70.146.135:8000/play/a02t/index.m3u8
+#EXTINF:-1 tvg-id="a03c",CH A03C
+http://202.70.146.135:8000/play/a03c/index.m3u8
+#EXTINF:-1 tvg-id="a03e",CH A03E
+http://202.70.146.135:8000/play/a03e/index.m3u8
+#EXTINF:-1 tvg-id="a03f",CH A03F
+http://202.70.146.135:8000/play/a03f/index.m3u8
+#EXTINF:-1 tvg-id="a044",CH A044
+http://202.70.146.135:8000/play/a044/index.m3u8
+#EXTINF:-1 tvg-id="a04b",CH A04B
+http://202.70.146.135:8000/play/a04b/index.m3u8
+#EXTINF:-1 tvg-id="a04c",CH A04C
+http://202.70.146.135:8000/play/a04c/index.m3u8
+#EXTINF:-1 tvg-id="a04g",CH A04G
+http://202.70.146.135:8000/play/a04g/index.m3u8
+#EXTINF:-1 tvg-id="a04n",CH A04N
+http://202.70.146.135:8000/play/a04n/index.m3u8
+#EXTINF:-1 tvg-id="a04o",CH A04O
+http://202.70.146.135:8000/play/a04o/index.m3u8
+#EXTINF:-1 tvg-id="a04p",CH A04P
+http://202.70.146.135:8000/play/a04p/index.m3u8
+#EXTINF:-1 tvg-id="a04q",CH A04Q
+http://202.70.146.135:8000/play/a04q/index.m3u8
+#EXTINF:-1 tvg-id="a050",CH A050
+http://202.70.146.135:8000/play/a050/index.m3u8
+#EXTINF:-1 tvg-id="a052",CH A052
+http://202.70.146.135:8000/play/a052/index.m3u8
+#EXTINF:-1 tvg-id="a057",CH A057
+http://202.70.146.135:8000/play/a057/index.m3u8
+#EXTINF:-1 tvg-id="a058",CH A058
+http://202.70.146.135:8000/play/a058/index.m3u8
+#EXTINF:-1 tvg-id="a05i",CH A05I
+http://202.70.146.135:8000/play/a05i/index.m3u8
+#EXTINF:-1 tvg-id="a05j",CH A05J
+http://202.70.146.135:8000/play/a05j/index.m3u8
+#EXTINF:-1 tvg-id="a05o",CH A05O
+http://202.70.146.135:8000/play/a05o/index.m3u8
+#EXTINF:-1 tvg-id="a05s",CH A05S
+http://202.70.146.135:8000/play/a05s/index.m3u8
+#EXTINF:-1 tvg-id="a05x",CH A05X
+http://202.70.146.135:8000/play/a05x/index.m3u8
+#EXTINF:-1 tvg-id="a05z",CH A05Z
+http://202.70.146.135:8000/play/a05z/index.m3u8
+#EXTINF:-1 tvg-id="a060",CH A060
+http://202.70.146.135:8000/play/a060/index.m3u8
+#EXTINF:-1 tvg-id="a065",CH A065
+http://202.70.146.135:8000/play/a065/index.m3u8
+#EXTINF:-1 tvg-id="a067",CH A067
+http://202.70.146.135:8000/play/a067/index.m3u8
+#EXTINF:-1 tvg-id="a068",CH A068
+http://202.70.146.135:8000/play/a068/index.m3u8
+#EXTINF:-1 tvg-id="a06b",CH A06B
+http://202.70.146.135:8000/play/a06b/index.m3u8
+#EXTINF:-1 tvg-id="a06c",CH A06C
+http://202.70.146.135:8000/play/a06c/index.m3u8
+#EXTINF:-1 tvg-id="a06p",CH A06P
+http://202.70.146.135:8000/play/a06p/index.m3u8
+#EXTINF:-1 tvg-id="a06q",CH A06Q
+http://202.70.146.135:8000/play/a06q/index.m3u8
+#EXTINF:-1 tvg-id="a06r",CH A06R
+http://202.70.146.135:8000/play/a06r/index.m3u8
+#EXTINF:-1 tvg-id="a09r",CH A09R
+http://202.70.146.135:8000/play/a09r/index.m3u8
+#EXTINF:-1 tvg-id="a125",CH A125
+http://202.70.146.135:8000/play/a125/index.m3u8
+#EXTINF:-1 tvg-id="a126",CH A126
+http://202.70.146.135:8000/play/a126/index.m3u8
