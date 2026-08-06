@@ -4,11 +4,7 @@
       "name": "LiveTv",
       "channels": [
   
-  {
-    "name": "& Tv",
-    "logo": "https://i.postimg.cc/JhR9HDw4/20240823_023056.png",
-    "url": "https://stream.ottplus.live/live/and_tv_hd_abr/index.m3u8"
-  },
+  
   {
     "name": "&PICTURES HD",
     "logo": "https://i.postimg.cc/XJ1SbVzN/20240823_022738.png",
