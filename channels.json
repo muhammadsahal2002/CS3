@@ -3,11 +3,7 @@
     {
       "name": "LiveTv",
       "channels": [
-  {
-    "name": "& Picture",
-    "logo": "https://i.postimg.cc/XJ1SbVzN/20240823_022738.png",
-    "url": "https://stream.ottplus.bd/live/and_picture_hd_abr/index.m3u8"
-  },
+  
   {
     "name": "& Tv",
     "logo": "https://i.postimg.cc/JhR9HDw4/20240823_023056.png",
@@ -15,12 +11,12 @@
   },
   {
     "name": "&PICTURES HD",
-    "logo": "",
+    "logo": "https://i.postimg.cc/XJ1SbVzN/20240823_022738.png",
     "url": "http://202.70.146.135:8000/play/a06b/index.m3u8"
   },
   {
     "name": "&TV HD",
-    "logo": "",
+    "logo": "https://i.postimg.cc/JhR9HDw4/20240823_023056.png",
     "url": "http://202.70.146.135:8000/play/a06c/index.m3u8"
   },
   {
@@ -60,7 +56,7 @@
   },
   {
     "name": "Aamar Bangla",
-    "logo": "",
+    "logo": "https://i.ibb.co/CPmLfGs/Amar-Bangla.png",
     "url": "http://115.187.41.216:8080/hls/amarbangla/index.m3u8"
   },
   {
@@ -88,11 +84,7 @@
     "logo": "https://imglink.cc/cdn/IYDn_LwwiV.png",
     "url": "https://albportal.net/albkanalemusic.m3u8"
   },
-  {
-    "name": "Amar Bangla",
-    "logo": "https://i.ibb.co/CPmLfGs/Amar-Bangla.png",
-    "url": "https://app.ncare.live/c3VydmVyX8RpbEU9Mi8xNy8yMDE0GIDU6RgzQ6NTAgdEoaeFzbF92YWxIZTO0U0ezN1IzMyfvcGVMZEJCTEFWeVN3PTOmdFsaWRtaW51aiPhnPTI/amarbanglatv.stream/playlist.m3u8"
-  },
+
   {
     "name": "Amar Bangla Digital",
     "logo": "https://www.jagobd.com/wp-content/uploads/2024/09/amardigital-1-150x150.jpg?x71442",
@@ -413,11 +405,7 @@
     "logo": "https://images.toffeelive.com/images/program/18097/logo/240x240/mobile_logo_297723001673195119.png",
     "url": "http://202.70.146.135:8000/play/a05z/index.m3u8"
   },
-  {
-    "name": "Discovery HD",
-    "logo": "",
-    "url": "http://202.70.146.135:8000/play/a05z/index.m3u8"
-  },
+
   {
     "name": "Discovery Kids",
     "logo": "https://i.postimg.cc/wTvMLMp2/20240823_021706.png",
@@ -648,11 +636,7 @@
     "logo": "https://www.jagobd.com/wp-content/uploads/2024/08/jagonews.jpg",
     "url": "https://app.ncare.live/live-orgin/jagonews24.stream/playlist.m3u8"
   },
-  {
-    "name": "JagoNews24 TV",
-    "logo": "https://cdn.jagonews24.com/media/imgAllNew/BG/2019October/jagonews24-md-20191101153408.jpg",
-    "url": "https://app24.jagobd.com.bd/c3VydmVyX8RpbEU9Mi8xNy8yMFDEEHGcfRgzQ6NTAgdEoaeFzbF92YWxIZTO0U0ezN1IzMyfvcEdsEfeDeKiNkVN3PTOmdFseWRtaW51aiPhnPTI2/jagonews24.stream/tracks-v1a1/mono.m3u8"
-  },
+
   {
     "name": "Jalsha Movies",
     "logo": "https://tstatic.akash-go.com/cms-ui/images/custom-content/1739965013824.png",
@@ -1228,11 +1212,7 @@
     "logo": "https://www.indiantvinfo.com/media/2022/10/Sony-MAX-HD-New-Logo.png",
     "url": "https://yowaimo.in/Sflex-ArtlPVT0719/SONY_MAX_HD.m3u8"
   },
-  {
-    "name": "Sony Max HD",
-    "logo": "",
-    "url": "http://202.70.146.135:8000/play/a01g/index.m3u8"
-  },
+
   {
     "name": "Sony Pal",
     "logo": "https://sonypicturesnetworks.com/images/logos/SONY%20PAL.png",
@@ -1253,14 +1233,10 @@
     "logo": "https://sonypicturesnetworks.com/images/logos/PIX%20HD_WHITE.png",
     "url": "https://yowaimo.in/Sflex-ArtlPVT0719/SONY_PIX_HD.m3u8"
   },
-  {
-    "name": "Sony Sab HD",
-    "logo": "https://i.postimg.cc/Gpz6FLrP/20240823_023114.png",
-    "url": "https://stream.ottplus.bd/live/sub_hd_abr/index.m3u8"
-  },
+  
   {
     "name": "Sony SAB HD",
-    "logo": "",
+    "logo": "https://i.postimg.cc/Gpz6FLrP/20240823_023114.png",
     "url": "http://202.70.146.135:8000/play/a025/index.m3u8"
   },
   {
