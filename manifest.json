@@ -3,74 +3,14 @@
   "version": "1.0.0",
   "scrapers": [
     {
-      "id": "anikoto",
-      "name": "AniKoto",
-      "description": "Anime streaming provider",
+      "id": "iccfptserver",
+      "name": "ICC FTP Server",
+      "description": "Local FTP server streaming",
       "version": "1.0.0",
       "author": "muhammadsahal2002",
       "supportedTypes": ["movie", "tv"],
-      "filename": "AniKoto.cs3",
-      "enabled": true
-    },
-    {
-      "id": "cncverse",
-      "name": "CNC Verse",
-      "description": "Movies and TV series",
-      "version": "1.0.0",
-      "author": "muhammadsahal2002",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "CNC Verse.cs3",
-      "enabled": true
-    },
-    {
-      "id": "cncversemobile",
-      "name": "CNC Verse Mobile",
-      "description": "Movies and TV series (Mobile)",
-      "version": "1.0.0",
-      "author": "muhammadsahal2002",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "CNC Verse Mobile.cs3",
-      "enabled": true
-    },
-    {
-      "id": "castletv",
-      "name": "CastleTvProvider",
-      "description": "Movies and TV series provider",
-      "version": "1.0.0",
-      "author": "muhammadsahal2002",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "CastleTvProvider.cs3",
-      "enabled": true
-    },
-    {
-      "id": "desiserials",
-      "name": "DesiSerialsProvider",
-      "description": "Desi serials and shows",
-      "version": "1.0.0",
-      "author": "muhammadsahal2002",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "DesiSerialsProvider.cs3",
-      "enabled": true
-    },
-    {
-      "id": "livetv",
-      "name": "LiveTv",
-      "description": "Live TV channels",
-      "version": "1.0.0",
-      "author": "muhammadsahal2002",
-      "supportedTypes": ["tv"],
-      "filename": "LiveTv.cs3",
-      "enabled": true
-    },
-    {
-      "id": "xonprovider",
-      "name": "XonProvider",
-      "description": "Xon streaming provider",
-      "version": "1.0.0",
-      "author": "muhammadsahal2002",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "XonProvider.cs3",
+      "filename": "ICC FTPServer.js",
       "enabled": true
     }
   ]
-    }
+}
