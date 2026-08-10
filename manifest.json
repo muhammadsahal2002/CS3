@@ -1,0 +1,27 @@
+here{
+  "name": "CS3 Repo",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "anikoto",
+      "name": "AniKoto",
+      "description": "Your description for AniKoto",
+      "version": "1.0.0",
+      "author": "muhammadsahal2002",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "AniKoto.cs3",
+      "enabled": true
+    },
+    {
+      "id": "cncverse",
+      "name": "CNC Verse",
+      "description": "Your description for CNC Verse",
+      "version": "1.0.0",
+      "author": "muhammadsahal2002",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "CNC%20Verse.cs3",
+      "enabled": true
+    }
+    // Add your other plugins here
+  ]
+}
