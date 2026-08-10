@@ -1,332 +1,364 @@
-// ICC FTP Server provider for Nuvio
-// Converted from Cloudstream Kotlin plugin
-// Works only on BDIX / local network (default IP: 10.16.100.244)
-
-const DEFAULT_URL = "http://10.16.100.244";
-const PROVIDER_NAME = "ICC FTP";
-
-const QUALITY_PATTERNS = [
-  { pattern: "2160p", quality: "4K" },
-  { pattern: "4k", quality: "4K" },
-  { pattern: "1080p", quality: "1080p" },
-  { pattern: "720p", quality: "720p" },
-  { pattern: "480p", quality: "480p" },
-  { pattern: "360p", quality: "360p" }
-];
-
-let currentSession = null;
-let currentToken = null;
-
-function getBaseUrl() {
-  const settings = (typeof globalThis !== "undefined" && globalThis.SCRAPER_SETTINGS) || {};
-  return (settings.serverUrl || DEFAULT_URL).replace(/\/$/, "");
-}
-
-function getHeaders(extra = {}) {
-  const base = getBaseUrl();
-  return Object.assign({
-    "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-    "Referer": base + "/",
-    "X-Requested-With": "com.mycompany.app.soulbrowser"
-  }, extra);
-}
-
-function extractQuality(text) {
-  if (!text) return "Unknown";
-  const lower = text.toLowerCase();
-  for (const q of QUALITY_PATTERNS) {
-    if (lower.includes(q.pattern)) return q.quality;
-  }
-  return "Unknown";
-}
-
-function fixUrl(path) {
-  if (!path) return null;
-  if (path.startsWith("http")) return path;
-  return getBaseUrl() + "/" + path.replace(/^\//, "");
-}
-
-function getSession() {
-  if (currentSession) return Promise.resolve(currentSession);
-
-  const base = getBaseUrl();
-  return fetch(base, {
-    headers: getHeaders({ "Referer": "http://10.16.100.202/" })
-  })
-    .then(r => r.text().then(html => ({ html, cookies: r.headers.get("set-cookie") || "" })))
-    .then(({ html, cookies }) => {
-      const m = html.match(/session=([a-f0-9]{20,})/i);
-      currentSession = (m && m[1]) || (cookies.match(/PHPSESSID=([^;]+)/) || [])[1] || "";
-      return currentSession;
-    })
-    .catch(() => {
-      currentSession = "";
-      return "";
-    });
-}
-
-function getToken(session) {
-  if (currentToken) return Promise.resolve(currentToken);
-
-  const base = getBaseUrl();
-  const url = `\( {base}/dashboard.php?session= \){session}&category=0`;
-  return fetch(url, { headers: getHeaders() })
-    .then(r => r.text())
-    .then(html => {
-      const m = html.match(/name=["']token["']\s+value=["']([^"']+)["']/i);
-      currentToken = (m && m[1]) || "";
-      return currentToken;
-    })
-    .catch(() => {
-      currentToken = "";
-      return "";
-    });
-}
-
-function searchFtp(query) {
-  return getSession().then(session => {
-    return getToken(session).then(token => {
-      const base = getBaseUrl();
-      const url = `\( {base}/dashboard.php?session= \){session}`;
-
-      const body = new URLSearchParams({
-        token: token,
-        psearch: query
-      }).toString();
-
-      return fetch(url, {
-        method: "POST",
-        headers: getHeaders({
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Origin": base,
-          "Referer": url
-        }),
-        body: body
-      }).then(r => r.text());
-    });
-  });
-}
-
-function parseSearchResults(html) {
-  // Lightweight regex + string parsing (no cheerio dependency required for basic use)
-  const results = [];
-  const seen = new Set();
-
-  // Match play= links and nearby title/image
-  const re = /href=["'][^"']*play=([a-zA-Z0-9]+)[^"']*["'][\s\S]{0,400}?alt=["']([^"']+)["']/gi;
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    const id = m[1];
-    const title = (m[2] || "").trim();
-    if (!id || !title || seen.has(id)) continue;
-    seen.add(id);
-    results.push({ id, title });
+// Castle TV Provider for Nuvio
+class CastleTVProvider {
+  constructor() {
+    this.mainUrl = "https://api.hlowb.com";
+    this.name = "Castle TV";
+    this.lang = "ta";
+    this.keySupFixx = "T!BgJB";
+    this.supportedTypes = ["movie", "tv"];
   }
 
-  // Fallback: simpler play= extraction
-  if (results.length === 0) {
-    const re2 = /play=([a-zA-Z0-9]+)/gi;
-    while ((m = re2.exec(html)) !== null) {
-      const id = m[1];
-      if (seen.has(id)) continue;
-      seen.add(id);
-      results.push({ id, title: "Unknown" });
+  // -------- HELPERS --------
+
+  // Base64 decode (Node.js/Browser compatible)
+  base64Decode(str) {
+    return Uint8Array.from(atob(str), c => c.charCodeAt(0));
+  }
+
+  // AES decryption (requires Web Crypto API)
+  async decryptData(encryptedB64, apiKeyB64) {
+    try {
+      const keyBytes = this.base64Decode(apiKeyB64);
+      const keyMaterial = new Uint8Array([...keyBytes, ...new TextEncoder().encode(this.keySupFixx)]);
+      
+      let aesKey;
+      if (keyMaterial.length < 16) {
+        aesKey = new Uint8Array([...keyMaterial, ...new Uint8Array(16 - keyMaterial.length)]);
+      } else if (keyMaterial.length > 16) {
+        aesKey = keyMaterial.slice(0, 16);
+      } else {
+        aesKey = keyMaterial;
+      }
+
+      const encrypted = this.base64Decode(encryptedB64);
+      
+      // Web Crypto API
+      const cryptoKey = await crypto.subtle.importKey(
+        "raw",
+        aesKey,
+        { name: "AES-CBC" },
+        false,
+        ["decrypt"]
+      );
+      
+      const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-CBC", iv: aesKey },
+        cryptoKey,
+        encrypted
+      );
+      
+      return new TextDecoder().decode(decrypted);
+    } catch (e) {
+      console.error("Decryption failed:", e);
+      return null;
     }
   }
 
-  return results;
-}
-
-function loadPlayer(id) {
-  return getSession().then(session => {
-    const base = getBaseUrl();
-    const playerUrl = `\( {base}/player.php?session= \){session}&play=${id}`;
-
-    // Optional visit ping
-    fetch(`${base}/command.php`, {
-      method: "POST",
-      headers: getHeaders({ "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" }),
-      body: `id=${id}&type=visit`
-    }).catch(() => {});
-
-    return fetch(playerUrl, { headers: getHeaders() }).then(r => r.text());
-  });
-}
-
-function extractVideoUrls(html) {
-  const urls = [];
-  const base = getBaseUrl();
-
-  // Direct video links
-  const linkRe = /href=["']([^"']+\.(?:mp4|mkv|avi|m3u8)[^"']*)["']/gi;
-  let m;
-  while ((m = linkRe.exec(html)) !== null) {
-    const href = m[1];
-    urls.push(href.startsWith("http") ? href : base + "/" + href.replace(/^\//, ""));
+  async getSecurityKey() {
+    try {
+      const url = `${this.mainUrl}/v0.1/system/getSecurityKey/1?channel=IndiaA&clientType=1&lang=en-US`;
+      const response = await fetch(url);
+      const data = await response.json();
+      return data.code === 200 ? data.data : null;
+    } catch (e) {
+      return null;
+    }
   }
 
-  // <video source>
-  const srcRe = /<(?:source|video)[^>]+(?:src|data-src)=["']([^"']+)["']/gi;
-  while ((m = srcRe.exec(html)) !== null) {
-    const src = m[1];
-    if (src) urls.push(src.startsWith("http") ? src : base + "/" + src.replace(/^\//, ""));
+  async apiRequest(endpoint, params = {}) {
+    const securityKey = await this.getSecurityKey();
+    if (!securityKey) return null;
+
+    const url = `${this.mainUrl}${endpoint}?channel=IndiaA&clientType=1&lang=en-US&packageName=com.external.castle&${new URLSearchParams(params)}`;
+    const response = await fetch(url);
+    const text = await response.text();
+    
+    let encryptedData = text;
+    try {
+      const parsed = JSON.parse(text);
+      encryptedData = parsed.data || text;
+    } catch (e) {}
+
+    if (!encryptedData) return null;
+    const decrypted = await this.decryptData(encryptedData, securityKey);
+    return decrypted ? JSON.parse(decrypted) : null;
   }
 
-  return [...new Set(urls)];
-}
+  // -------- SEARCH --------
 
-function getTmdbTitle(tmdbId, mediaType) {
-  // Public TMDB proxy / free endpoint (no key required for basic title)
-  // Falls back gracefully if unavailable
-  const type = mediaType === "tv" ? "tv" : "movie";
-  const url = `https://api.themoviedb.org/3/\( {type}/ \){tmdbId}?api_key=1f54bd34792a9f8b3f0a8e8e8e8e8e8e&language=en-US`;
+  async search(query, type) {
+    if (!query || query.trim() === "") return [];
 
-  return fetch(url)
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (!data) return null;
-      return {
-        title: data.title || data.name || "",
-        year: (data.release_date || data.first_air_date || "").slice(0, 4),
-        original: data.original_title || data.original_name || ""
-      };
-    })
-    .catch(() => null);
-}
+    try {
+      const securityKey = await this.getSecurityKey();
+      if (!securityKey) return [];
 
-function scoreMatch(itemTitle, searchTitle, year) {
-  const a = (itemTitle || "").toLowerCase().replace(/[^\w\s]/g, " ");
-  const b = (searchTitle || "").toLowerCase().replace(/[^\w\s]/g, " ");
-  if (!a || !b) return 0;
+      const encoded = encodeURIComponent(query);
+      const url = `${this.mainUrl}/film-api/v1.1.0/movie/searchByKeyword?channel=IndiaA&clientType=1&keyword=${encoded}&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=30`;
+      
+      const response = await fetch(url);
+      const text = await response.text();
+      const encryptedData = JSON.parse(text).data || text;
+      
+      if (!encryptedData) return [];
+      const decrypted = await this.decryptData(encryptedData, securityKey);
+      if (!decrypted) return [];
 
-  if (a === b) return 100;
-  if (a.includes(b) || b.includes(a)) return 80;
+      const data = JSON.parse(decrypted);
+      const rows = data.data?.rows || [];
 
-  const wordsA = a.split(/\s+/).filter(Boolean);
-  const wordsB = b.split(/\s+/).filter(Boolean);
-  let common = 0;
-  wordsB.forEach(w => { if (wordsA.includes(w)) common++; });
-  let score = (common / Math.max(wordsB.length, 1)) * 60;
-
-  if (year && a.includes(year)) score += 15;
-  return score;
-}
-
-function getStreams(tmdbId, mediaType, season, episode) {
-  console.log(`[ICC FTP] ${mediaType} \( {tmdbId} S \){season || "-"}E${episode || "-"}`);
-
-  return getTmdbTitle(tmdbId, mediaType)
-    .then(meta => {
-      if (!meta || !meta.title) {
-        console.log("[ICC FTP] Could not resolve title from TMDB");
-        return [];
-      }
-
-      let query = meta.title;
-      if (mediaType === "tv" && season) {
-        query += ` Season ${season}`;
-        if (episode) query += ` Episode ${episode}`;
-      } else if (meta.year) {
-        query += ` ${meta.year}`;
-      }
-
-      console.log(`[ICC FTP] Searching: ${query}`);
-
-      return searchFtp(query).then(html => {
-        const results = parseSearchResults(html);
-        if (!results.length) {
-          // Retry with cleaner title
-          return searchFtp(meta.title).then(html2 => parseSearchResults(html2));
-        }
-        return results;
-      }).then(results => {
-        if (!results || !results.length) {
-          console.log("[ICC FTP] No search results");
-          return [];
-        }
-
-        // Rank matches
-        results.forEach(r => {
-          r.score = scoreMatch(r.title, meta.title, meta.year);
-          if (mediaType === "tv" && season) {
-            const sMatch = r.title.match(/Season\s*(\d+)/i) || r.title.match(/S(\d+)/i);
-            const eMatch = r.title.match(/Episode\s*(\d+)/i) || r.title.match(/E(\d+)/i) || r.title.match(/S\d+E(\d+)/i);
-            if (sMatch && parseInt(sMatch[1]) === parseInt(season)) r.score += 20;
-            if (episode && eMatch && parseInt(eMatch[1]) === parseInt(episode)) r.score += 30;
-          }
-        });
-
-        results.sort((a, b) => b.score - a.score);
-        const best = results.filter(r => r.score >= 40).slice(0, 5);
-        if (!best.length) best.push(results[0]);
-
-        // Load player pages and extract streams
-        const promises = best.map(item => {
-          return loadPlayer(item.id).then(html => {
-            const videoUrls = extractVideoUrls(html);
-            return videoUrls.map(url => {
-              const quality = extractQuality(url + " " + item.title);
-              return {
-                name: PROVIDER_NAME,
-                title: `\( {item.title} [ \){quality}]`,
-                url: url,
-                quality: quality,
-                headers: {
-                  "Referer": getBaseUrl() + "/",
-                  "User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36",
-                  "Range": "bytes=0-"
-                },
-                provider: "iccftp"
-              };
-            });
-          }).catch(err => {
-            console.log(`[ICC FTP] Player error for ${item.id}:`, err.message);
-            return [];
-          });
-        });
-
-        return Promise.all(promises).then(arrays => {
-          const streams = [].concat(...arrays);
-          // Deduplicate by URL
-          const seen = new Set();
-          return streams.filter(s => {
-            if (seen.has(s.url)) return false;
-            seen.add(s.url);
-            return true;
-          });
-        });
-      });
-    })
-    .catch(err => {
-      console.error("[ICC FTP] Error:", err.message || err);
+      return rows.map(item => ({
+        id: String(item.id),
+        title: item.title || "Unknown",
+        poster: item.coverVerticalImage || item.coverHorizontalImage || null,
+        year: item.publishTime ? new Date(item.publishTime).getFullYear() : null,
+        type: [1, 3, 5].includes(item.movieType) ? "tv" : "movie"
+      }));
+    } catch (e) {
       return [];
-    });
-}
-
-// Optional settings UI
-function onSettings() {
-  return [
-    { type: "header", label: "ICC FTP Server" },
-    {
-      type: "text",
-      key: "serverUrl",
-      label: "Server URL / IP",
-      placeholder: "http://10.16.100.244",
-      description: "Change if your ISP uses a different BDIX mirror IP"
-    },
-    {
-      type: "info",
-      label: "Note: This provider only works when your device is connected to a BDIX-enabled network that can reach the ICC FTP server."
     }
-  ];
+  }
+
+  // -------- GET STREAMS --------
+
+  async getStreams(id, type) {
+    try {
+      const securityKey = await this.getSecurityKey();
+      if (!securityKey) return [];
+
+      // id format: "movieId_episodeId" or just "movieId"
+      const parts = id.split("_");
+      const movieId = parts[0];
+      const episodeId = parts[1] || "0";
+
+      // Get movie details to find episode tracks
+      const detailsUrl = `${this.mainUrl}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&lang=en-US&movieId=${movieId}&packageName=com.external.castle`;
+      const detailsResponse = await fetch(detailsUrl);
+      const detailsText = await detailsResponse.text();
+      const detailsEncrypted = JSON.parse(detailsText).data || detailsText;
+      
+      if (!detailsEncrypted) return [];
+      const detailsDecrypted = await this.decryptData(detailsEncrypted, securityKey);
+      if (!detailsDecrypted) return [];
+
+      const details = JSON.parse(detailsDecrypted);
+      const movieData = details.data;
+      
+      // Find episode
+      let episode = null;
+      if (episodeId !== "0") {
+        episode = movieData.episodes?.find(e => String(e.id) === episodeId);
+      }
+      
+      if (!episode && movieData.episodes && movieData.episodes.length > 0) {
+        episode = movieData.episodes[0];
+      }
+
+      if (!episode) {
+        // Single movie (no episodes)
+        return await this.getVideoForMovie(movieId, securityKey);
+      }
+
+      // Get video streams
+      const tracks = episode.tracks || [];
+      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
+      const streams = [];
+
+      // Check if any track has individual video
+      const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
+      const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+
+      const fetchVideo = async (languageId = null) => {
+        for (const resolution of resolutions) {
+          try {
+            const videoUrl = `${this.mainUrl}/film-api/v2.0.1/movie/getVideo2?clientType=1&channel=IndiaA&lang=en-US&packageName=com.external.castle`;
+            
+            const body = {
+              mode: "1",
+              appMarket: "GuanWang",
+              clientType: "1",
+              woolUser: "false",
+              apkSignKey: "ED0955EB04E67A1D9F3305B95454FED485261475",
+              androidVersion: "13",
+              movieId: movieId,
+              episodeId: String(episode.id),
+              isNewUser: "true",
+              resolution: String(resolution),
+              packageName: "com.external.castle"
+            };
+            
+            if (languageId !== null) {
+              body.languageId = String(languageId);
+            }
+
+            const videoResponse = await fetch(videoUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body)
+            });
+
+            const videoText = await videoResponse.text();
+            const videoEncrypted = JSON.parse(videoText).data || videoText;
+            
+            if (!videoEncrypted) continue;
+            const videoDecrypted = await this.decryptData(videoEncrypted, securityKey);
+            if (!videoDecrypted) continue;
+
+            const videoData = JSON.parse(videoDecrypted);
+            const video = videoData.data;
+
+            if (video.videoUrl && video.permissionDenied !== true) {
+              let finalUrl = video.videoUrl;
+              if (finalUrl.includes("preview") || finalUrl.match(/\.(jpg|png|jpeg)$/i)) {
+                const basePath = finalUrl.split("?")[0].split("/").slice(0, -1).join("/");
+                finalUrl = `${basePath}/index.m3u8`;
+              }
+
+              const qualityMap = { 3: 1080, 2: 720, 1: 480 };
+              const languageLabel = languageId !== null ? 
+                tracks.find(t => t.languageId === languageId)?.languageName || "Unknown" :
+                allLanguageNames;
+
+              streams.push({
+                url: finalUrl,
+                quality: qualityMap[resolution] || 480,
+                format: "m3u8",
+                type: "video",
+                headers: { Referer: this.mainUrl }
+              });
+
+              // Add subtitles
+              if (video.subtitles) {
+                video.subtitles.forEach(sub => {
+                  if (sub.url) {
+                    streams.push({
+                      url: sub.url,
+                      lang: sub.title || sub.abbreviate || "Unknown",
+                      type: "subtitle"
+                    });
+                  }
+                });
+              }
+            }
+          } catch (e) {}
+        }
+      };
+
+      if (!hasIndividualVideo) {
+        await fetchVideo(null);
+      } else {
+        for (const track of tracks) {
+          await fetchVideo(track.languageId);
+        }
+      }
+
+      return streams;
+
+    } catch (e) {
+      console.error("Error in getStreams:", e);
+      return [];
+    }
+  }
+
+  async getVideoForMovie(movieId, securityKey) {
+    // Similar to above but for movies without episodes
+    const streams = [];
+    const resolutions = [3, 2, 1];
+    
+    for (const resolution of resolutions) {
+      try {
+        const videoUrl = `${this.mainUrl}/film-api/v2.0.1/movie/getVideo2?clientType=1&channel=IndiaA&lang=en-US&packageName=com.external.castle`;
+        const body = {
+          mode: "1",
+          appMarket: "GuanWang",
+          clientType: "1",
+          woolUser: "false",
+          apkSignKey: "ED0955EB04E67A1D9F3305B95454FED485261475",
+          androidVersion: "13",
+          movieId: movieId,
+          episodeId: "0",
+          isNewUser: "true",
+          resolution: String(resolution),
+          packageName: "com.external.castle"
+        };
+
+        const videoResponse = await fetch(videoUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+
+        const videoText = await videoResponse.text();
+        const videoEncrypted = JSON.parse(videoText).data || videoText;
+        if (!videoEncrypted) continue;
+        
+        const videoDecrypted = await this.decryptData(videoEncrypted, securityKey);
+        if (!videoDecrypted) continue;
+
+        const videoData = JSON.parse(videoDecrypted);
+        const video = videoData.data;
+
+        if (video.videoUrl && video.permissionDenied !== true) {
+          let finalUrl = video.videoUrl;
+          if (finalUrl.includes("preview") || finalUrl.match(/\.(jpg|png|jpeg)$/i)) {
+            const basePath = finalUrl.split("?")[0].split("/").slice(0, -1).join("/");
+            finalUrl = `${basePath}/index.m3u8`;
+          }
+
+          const qualityMap = { 3: 1080, 2: 720, 1: 480 };
+          streams.push({
+            url: finalUrl,
+            quality: qualityMap[resolution] || 480,
+            format: "m3u8",
+            type: "video",
+            headers: { Referer: this.mainUrl }
+          });
+        }
+      } catch (e) {}
+    }
+    
+    return streams;
+  }
+
+  // -------- HOME PAGE --------
+
+  async getHomePage() {
+    try {
+      const data = await this.apiRequest("/film-api/v0.1/category/home", {
+        mode: "1",
+        page: "1",
+        size: "17",
+        locationId: "1001"
+      });
+
+      if (!data || !data.data) return [];
+
+      const rows = data.data.rows || [];
+      const sections = [];
+
+      for (const row of rows) {
+        if (!row.contents || row.contents.length === 0) continue;
+        
+        const name = row.name || "Unknown";
+        if (name === "Hot Erotic Series" || name === "Bollywood Star") continue;
+
+        const items = row.contents.map(content => ({
+          id: String(content.redirectId || ""),
+          title: content.title || "Unknown",
+          poster: content.coverImage || null,
+          type: [1, 3, 5].includes(content.movieType) ? "tv" : "movie"
+        })).filter(item => item.id);
+
+        if (items.length > 0) {
+          sections.push({ name, items });
+        }
+      }
+
+      return sections;
+    } catch (e) {
+      return [];
+    }
+  }
 }
 
-// Export for Nuvio
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = { getStreams, onSettings };
-} else {
-  global.getStreams = getStreams;
-  global.onSettings = onSettings;
-}
+module.exports = CastleTVProvider;
