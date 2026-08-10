@@ -4,12 +4,12 @@
   "scrapers": [
     {
       "id": "anikoto",
-      "name": "AniKoto",
-      "description": "Your description for AniKoto",
+      "name": "Anikoto",
+      "description": "Your description for Anikoto",
       "version": "1.0.0",
       "author": "muhammadsahal2002",
       "supportedTypes": ["movie", "tv"],
-      "filename": "AniKoto.cs3",
+      "filename": "Anikoto.cs3",
       "enabled": true
     },
     {
@@ -19,9 +19,8 @@
       "version": "1.0.0",
       "author": "muhammadsahal2002",
       "supportedTypes": ["movie", "tv"],
-      "filename": "CNC%20Verse.cs3",
+      "filename": "CNC Verse.cs3",
       "enabled": true
     }
-  
   ]
 }
