@@ -1,6 +1,6 @@
 /**
- * netmirror - Fixed port from Kotlin NetflixMirrorProvider
- * Generated / cleaned: 2026-08-11
+ * netmirror - Built from src/netmirror/
+ * Generated: 2026-07-13T13:46:15.289Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -42,15 +42,15 @@ var __async = (__this, __arguments, generator) => {
   });
 };
 
-// ── constants ──────────────────────────────────────────────────────────────
+// src/netmirror/constants.js
 var TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49";
-
 var PLATFORM_MAP = {
   netflix: {
     ott: "nf",
     search: "/mobile/search.php",
     post: "/mobile/post.php",
     episodes: "/mobile/episodes.php",
+    playlist: "/mobile/playlist.php",
     img: "poster/v",
     epImg: "epimg/150"
   },
@@ -59,6 +59,7 @@ var PLATFORM_MAP = {
     search: "/mobile/pv/search.php",
     post: "/mobile/pv/post.php",
     episodes: "/mobile/pv/episodes.php",
+    playlist: "/mobile/pv/playlist.php",
     img: "pv/v",
     epImg: "pvepimg"
   },
@@ -67,6 +68,7 @@ var PLATFORM_MAP = {
     search: "/mobile/hs/search.php",
     post: "/mobile/hs/post.php",
     episodes: "/mobile/hs/episodes.php",
+    playlist: "/mobile/hs/playlist.php",
     img: "hs/v",
     epImg: "hsepimg"
   },
@@ -75,11 +77,11 @@ var PLATFORM_MAP = {
     search: "/mobile/hs/search.php",
     post: "/mobile/hs/post.php",
     episodes: "/mobile/hs/episodes.php",
+    playlist: "/mobile/hs/playlist.php",
     img: "hs/v",
     epImg: "hsepimg"
   }
 };
-
 var NEW_TV_BASE_HEADERS = {
   "Cache-Control": "no-cache, no-store, must-revalidate",
   "Pragma": "no-cache",
@@ -88,7 +90,6 @@ var NEW_TV_BASE_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
   "Accept": "application/json, text/plain, */*"
 };
-
 var NEW_TV_DOMAINS = [
   "aHR0cHM6Ly9tb2JpbGVkZXRlY3RzLmNvbQ==",
   "aHR0cHM6Ly9tb2JpbGVkZXRlY3QuYXBw",
@@ -116,23 +117,23 @@ var NEW_TV_DOMAINS = [
   "aHR0cHM6Ly9tb2JpZGV0ZWN0cy54eXo="
 ];
 
-// ── utils ──────────────────────────────────────────────────────────────────
+// src/netmirror/utils.js
 var resolvedApiUrl = "";
 function safeAtob(encoded) {
-  if (typeof atob === "function") return atob(encoded);
+  if (typeof atob === "function") {
+    return atob(encoded);
+  }
   return Buffer.from(encoded, "base64").toString("binary");
 }
-
 function resolveApiUrl() {
   return __async(this, null, function* () {
-    if (resolvedApiUrl) return resolvedApiUrl;
+    if (resolvedApiUrl)
+      return resolvedApiUrl;
     for (const encoded of NEW_TV_DOMAINS) {
       const base = safeAtob(encoded).replace(/\/$/, "");
       try {
         const response = yield fetch(`${base}/checknewtv.php`, {
-          headers: __spreadProps(__spreadValues({}, NEW_TV_BASE_HEADERS), {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          })
+          headers: __spreadProps(__spreadValues({}, NEW_TV_BASE_HEADERS), { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" })
         });
         const data = yield response.json();
         const tokenHash = data.token_hash;
@@ -140,25 +141,21 @@ function resolveApiUrl() {
           resolvedApiUrl = safeAtob(tokenHash).replace(/\/$/, "");
           return resolvedApiUrl;
         }
-      } catch (e) {}
+      } catch (error) {
+      }
     }
     throw new Error("Failed to resolve NewTV API base URL");
   });
 }
-
 var cookieValue = "";
 var cookieTimestamp = 0;
-
 function bypass(ott) {
   return __async(this, null, function* () {
-    // reuse cookie for \~15 hours
     if (cookieValue && Date.now() - cookieTimestamp < 54e6) {
       return cookieValue;
     }
     const newUrl = "https://net52.cc";
-    const userAgent =
-      "Mozilla/5.0 (Linux; Android 12; RMX2117 Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/147.0.7727.55 Mobile Safari/537.36 /OS.Gatu v3.0";
-
+    const userAgent = "Mozilla/5.0 (Linux; Android 12; RMX2117 Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/147.0.7727.55 Mobile Safari/537.36 /OS.Gatu v3.0";
     try {
       console.log("[NetMirror] Running NetMirror Mobile bypass...");
       const homeResponse = yield fetch(`${newUrl}/mobile/home?app=1`, {
@@ -170,19 +167,21 @@ function bypass(ott) {
       const homeHtml = yield homeResponse.text();
       const match = homeHtml.match(/<body[^>]*data-addhash=["']([^"']+)["']/i);
       if (!match) {
-        console.error("[NetMirror] Failed to extract data-addhash");
+        console.error("[NetMirror] Failed to extract data-addhash from home page");
         return "";
       }
       const addhash = match[1];
       console.log("[NetMirror] Extracted addhash:", addhash);
-
-      const triggerUrl = `https://userver.net52.cc/?jjoii=\( {encodeURIComponent(addhash)}&a=y&t= \){Math.floor(Date.now() / 1e3)}`;
-      yield fetch(triggerUrl, { headers: { "User-Agent": userAgent } });
-
+      const triggerUrl = `https://userver.net52.cc/?jjoii=${encodeURIComponent(addhash)}&a=y&t=${Math.floor(Date.now() / 1e3)}`;
+      yield fetch(triggerUrl, {
+        headers: {
+          "User-Agent": userAgent
+        }
+      });
       const verifyUrl = `${newUrl}/mobile/verify2.php`;
       for (let count = 1; count <= 7; count++) {
-        yield new Promise((r) => setTimeout(r, 10000));
-        console.log(`[NetMirror] Polling verify2.php (${count}/7)...`);
+        yield new Promise((resolve) => setTimeout(resolve, 1e4));
+        console.log(`[NetMirror] Polling verify2.php (attempt ${count}/7)...`);
         const verifyResponse = yield fetch(verifyUrl, {
           method: "POST",
           headers: {
@@ -193,307 +192,204 @@ function bypass(ott) {
           body: `verify=${encodeURIComponent(addhash)}`
         });
         const verifyText = yield verifyResponse.text();
+        console.log("[NetMirror] Poll response:", verifyText);
         if (verifyText.includes('"statusup":"All Done"')) {
           let newCookie = "";
           const headers = verifyResponse.headers;
           if (headers) {
-            let setCookie =
-              headers.get("set-cookie") ||
-              headers.get("Set-Cookie") ||
-              headers.get("SET-COOKIE");
+            let setCookie = headers.get("set-cookie") || headers.get("Set-Cookie") || headers.get("SET-COOKIE");
             if (setCookie) {
-              const m = setCookie.match(/t_hash_t=([^;]+)/);
-              if (m) newCookie = m[1];
+              const match2 = setCookie.match(/t_hash_t=([^;]+)/);
+              if (match2)
+                newCookie = match2[1];
             }
-            // fallback iteration
             if (!newCookie && headers.entries) {
               try {
                 for (const [key, val] of headers.entries()) {
                   if (key.toLowerCase() === "set-cookie") {
-                    const m = val.match(/t_hash_t=([^;]+)/);
-                    if (m) {
-                      newCookie = m[1];
+                    const match2 = val.match(/t_hash_t=([^;]+)/);
+                    if (match2) {
+                      newCookie = match2[1];
                       break;
                     }
                   }
                 }
-              } catch (_) {}
+              } catch (e) {
+              }
+            }
+            if (!newCookie && headers.forEach) {
+              try {
+                headers.forEach((val, key) => {
+                  if (key.toLowerCase() === "set-cookie") {
+                    const match2 = val.match(/t_hash_t=([^;]+)/);
+                    if (match2)
+                      newCookie = match2[1];
+                  }
+                });
+              } catch (e) {
+              }
             }
           }
           cookieValue = newCookie;
           cookieTimestamp = Date.now();
-          console.log("[NetMirror] Cookie obtained:", cookieValue);
+          console.log("[NetMirror] Verification completed successfully. Cookie:", cookieValue);
           return cookieValue;
         }
       }
       console.error("[NetMirror] Verification timed out");
     } catch (e) {
       cookieValue = "";
-      console.error("[NetMirror] bypass failed:", e.message);
+      console.error("[NetMirror] Polling bypass failed:", e.message);
     }
     return "";
   });
 }
-
 function buildNewTvHeaders(ott, extra = {}) {
-  return __spreadValues(
-    __spreadProps(__spreadValues({}, NEW_TV_BASE_HEADERS), { Ott: ott }),
-    extra
-  );
+  return __spreadValues(__spreadProps(__spreadValues({}, NEW_TV_BASE_HEADERS), {
+    "Ott": ott
+  }), extra);
 }
 
-// ── main entry ─────────────────────────────────────────────────────────────
+// src/netmirror/index.js
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(this, null, function* () {
     try {
       const settings = globalThis.SCRAPER_SETTINGS || {};
       const preferred = settings.preferredPlatform || "all";
-
       const tmdbType = mediaType === "tv" ? "tv" : "movie";
-      const tmdbResp = yield fetch(
-        `https://api.themoviedb.org/3/\( {tmdbType}/ \){tmdbId}?api_key=${TMDB_API_KEY}`,
-        {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            Accept: "application/json"
-          }
+      const tmdbResp = yield fetch(`https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}`, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+          "Accept": "application/json"
         }
-      );
+      });
       const tmdbData = yield tmdbResp.json();
       const title = mediaType === "tv" ? tmdbData.name : tmdbData.title;
-      if (!title) throw new Error("Could not fetch title from TMDB");
-
+      if (!title)
+        throw new Error("Could not fetch title from TMDB");
       let platforms = ["netflix", "primevideo", "hotstar", "disney"];
       if (preferred !== "all") {
         platforms = [preferred, ...platforms.filter((p) => p !== preferred)];
       }
-
       for (const platformKey of platforms) {
         try {
-          const streams = yield fetchFromPlatform(
-            platformKey,
-            title,
-            mediaType,
-            season,
-            episode
-          );
-          if (streams && streams.length > 0) return streams;
+          const streams = yield fetchFromPlatform(platformKey, title, mediaType, season, episode);
+          if (streams && streams.length > 0)
+            return streams;
         } catch (e) {
-          console.warn(`[NetMirror] ${platformKey} failed:`, e.message);
         }
       }
       return [];
     } catch (error) {
-      console.error("[NetMirror] getStreams error:", error);
       return [];
     }
   });
 }
-
 function fetchFromPlatform(platformKey, title, mediaType, season, episode) {
   return __async(this, null, function* () {
     const platform = PLATFORM_MAP[platformKey];
     const apiBase = yield resolveApiUrl();
     const cookie = yield bypass(platform.ott);
-
     const reqCookies = [];
-    if (cookie) reqCookies.push(`t_hash_t=${cookie}`);
+    if (cookie) {
+      reqCookies.push(`t_hash_t=${cookie}`);
+    }
     const settings = globalThis.SCRAPER_SETTINGS || {};
-    if (settings.forceHd !== false) reqCookies.push("hd=on");
-    const cookieHeader =
-      reqCookies.length > 0 ? { Cookie: reqCookies.join("; ") } : {};
-
-    // 1. Search
-    const searchUrl = `\( {apiBase}/newtv/search.php?s= \){encodeURIComponent(title)}`;
+    if (settings.forceHd !== false) {
+      reqCookies.push("hd=on");
+    }
+    const cookieHeader = reqCookies.length > 0 ? { "Cookie": reqCookies.join("; ") } : {};
+    const searchUrl = `${apiBase}/newtv/search.php?s=${encodeURIComponent(title)}`;
     const searchResp = yield fetch(searchUrl, {
       headers: buildNewTvHeaders(platform.ott, cookieHeader)
     });
     const searchData = yield searchResp.json();
     if (!searchData.searchResult || searchData.searchResult.length === 0)
       return null;
-
     const result = searchData.searchResult[0];
     const contentId = result.id;
-
-    // 2. Post details
-    const postUrl = `\( {apiBase}/newtv/post.php?id= \){contentId}`;
+    const postUrl = `${apiBase}/newtv/post.php?id=${contentId}`;
     const postResp = yield fetch(postUrl, {
-      headers: buildNewTvHeaders(
-        platform.ott,
-        __spreadValues({ Lastep: "", Usertoken: "" }, cookieHeader)
-      )
+      headers: buildNewTvHeaders(platform.ott, __spreadValues({ Lastep: "", Usertoken: "" }, cookieHeader))
     });
     const postData = yield postResp.json();
-
     let targetId = contentId;
-
     if (mediaType === "tv") {
-      const episodes = yield getAllEpisodes(
-        contentId,
-        postData,
-        platform,
-        apiBase
-      );
-      const targetEp = episodes.find(
-        (ep) => ep && ep.s === Number(season) && ep.ep === Number(episode)
-      );
-      if (!targetEp) return null;
-      targetId = targetEp.id;
+      const episodes = yield getAllEpisodes(contentId, postData, platform, apiBase);
+      const targetEp = episodes.find((ep) => ep && ep.s === season && ep.ep === episode);
+      if (targetEp) {
+        targetId = targetEp.id;
+      } else {
+        return null;
+      }
     } else {
-      // movie – reject series
-      const isSeries =
-        postData.type === "t" ||
-        (postData.episodes &&
-          postData.episodes.filter((e) => e !== null).length > 0);
-      if (isSeries) return null;
+      const isSeries = postData.type === "t" || postData.episodes && postData.episodes.filter((e) => e !== null).length > 0;
+      if (isSeries)
+        return null;
       targetId = postData.main_id || contentId;
     }
-
-    // 3. Player (this is the path the Kotlin provider uses)
-    const playerUrl = `\( {apiBase}/newtv/player.php?id= \){targetId}`;
-    const playerHeaders = buildNewTvHeaders(
-      platform.ott,
-      __spreadValues({ Usertoken: "" }, cookieHeader)
-    );
-
-    const playerResp = yield fetch(playerUrl, { headers: playerHeaders });
-    const playerData = yield playerResp.json();
-
-    if (
-      !playerData ||
-      playerData.status !== "ok" ||
-      !playerData.video_link
-    ) {
-      // fallback to old playlist style if player.php fails
-      return yield tryPlaylistFallback(
-        platform,
-        targetId,
-        title,
-        cookie,
-        apiBase
-      );
-    }
-
-    const streamUrl = playerData.video_link.startsWith("http")
-      ? playerData.video_link
-      : `\( {apiBase} \){playerData.video_link}`;
-
-    return [
-      {
-        name: `NetMirror (${platformKey.charAt(0).toUpperCase() + platformKey.slice(1)})`,
-        title: `\( {title} \){mediaType === "tv" ? ` S\( {season}E \){episode}` : ""}`,
-        url: streamUrl,
-        quality: "Auto",
-        headers: {
-          Referer: playerData.referer || apiBase,
-          "User-Agent":
-            "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/149.0.7827.91 Safari/537.36 /OS.Gatu v3.0",
-          Cookie: cookie ? `t_hash_t=\( {cookie}; ott= \){platform.ott}; hd=on` : ""
-        }
-      }
-    ];
-  });
-}
-
-// optional fallback that mirrors the original JS playlist approach
-function tryPlaylistFallback(platform, targetId, title, cookie, apiBase) {
-  return __async(this, null, function* () {
-    const playlistUrl = `https://net52.cc\( {platform.playlist || "/mobile/playlist.php"}?id= \){targetId}&t=\( {encodeURIComponent(title)}&tm= \){Math.floor(Date.now() / 1e3)}`;
+    const playlistUrl = `https://net52.cc${platform.playlist}?id=${targetId}&t=${encodeURIComponent(title)}&tm=${Math.floor(Date.now() / 1e3)}`;
     const playlistHeaders = {
-      Accept: "*/*",
+      "Accept": "*/*",
       "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
-      Connection: "keep-alive",
-      Referer: "https://net52.cc/mobile/home?app=1",
-      "User-Agent":
-        "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/149.0.7827.91 Safari/537.36 /OS.Gatu v3.0",
+      "Connection": "keep-alive",
+      "Referer": `https://net52.cc/mobile/home?app=1`,
+      "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/149.0.7827.91 Safari/537.36 /OS.Gatu v3.0",
       "X-Requested-With": "app.netmirror.netmirrornew"
     };
     if (cookie) {
-      playlistHeaders.Cookie = `t_hash_t=\( {cookie}; ott= \){platform.ott}; hd=on`;
+      playlistHeaders["Cookie"] = `t_hash_t=${cookie}; ott=${platform.ott}; hd=on`;
     }
-
-    const playlistResp = yield fetch(playlistUrl, { headers: playlistHeaders });
-    const playlistData = yield playlistResp.json();
-    if (!playlistData || !playlistData.length) return null;
-
-    const item = playlistData[0];
-    if (!item.sources || !item.sources.length) return null;
-
-    return item.sources.map((source) => {
-      const streamUrl = source.file.startsWith("http")
-        ? source.file
-        : `\( {apiBase} \){source.file}`;
-      const qMatch = source.file.match(/[?&]q=([^&]+)/);
-      const quality = qMatch
-        ? qMatch[1]
-        : source.label === "Auto"
-        ? "Auto"
-        : source.label;
-      return {
-        name: `NetMirror (${platform.ott.toUpperCase()})`,
-        title: `${title} - ${source.label}`,
-        url: streamUrl,
-        quality,
-        headers: playlistHeaders
-      };
+    const playlistResp = yield fetch(playlistUrl, {
+      headers: playlistHeaders
     });
+    const playlistData = yield playlistResp.json();
+    if (playlistData && playlistData.length > 0) {
+      const item = playlistData[0];
+      if (item.sources && item.sources.length > 0) {
+        return item.sources.map((source) => {
+          const streamUrl = source.file.startsWith("http") ? source.file : `${apiBase}${source.file}`;
+          const qMatch = source.file.match(/[?&]q=([^&]+)/);
+          const quality = qMatch ? qMatch[1] : source.label === "Auto" ? "Auto" : source.label;
+          return {
+            name: `NetMirror (${platformKey.charAt(0).toUpperCase() + platformKey.slice(1)})`,
+            title: `${title} - ${source.label}`,
+            url: streamUrl,
+            quality,
+            headers: playlistHeaders
+          };
+        });
+      }
+    }
+    return null;
   });
 }
-
 function getAllEpisodes(contentId, postData, platform, apiBase) {
   return __async(this, null, function* () {
     const episodes = [];
-    const selectedSeasonIdx = postData.season
-      ? postData.season.findIndex((s) => s.selected === true)
-      : -1;
-    const selectedSeasonId =
-      selectedSeasonIdx >= 0
-        ? postData.season[selectedSeasonIdx].id
-        : postData.nextPageSeason;
-    const selectedSeasonNumber =
-      selectedSeasonIdx >= 0 ? selectedSeasonIdx + 1 : null;
-
+    const selectedSeasonIdx = postData.season ? postData.season.findIndex((s) => s.selected === true) : -1;
+    const selectedSeasonId = selectedSeasonIdx >= 0 ? postData.season[selectedSeasonIdx].id : postData.nextPageSeason;
+    const selectedSeasonNumber = selectedSeasonIdx >= 0 ? selectedSeasonIdx + 1 : null;
     if (postData.episodes) {
-      postData.episodes
-        .filter((e) => e !== null)
-        .forEach((ep) => {
-          const epNum = ep.ep
-            ? parseInt(ep.ep)
-            : ep.epNum
-            ? parseInt(String(ep.epNum).replace("E", ""))
-            : null;
-          const sNum =
-            selectedSeasonNumber ||
-            (ep.sNum ? parseInt(String(ep.sNum).replace("S", "")) : null);
-          episodes.push({ id: ep.id, s: sNum, ep: epNum });
+      postData.episodes.filter((e) => e !== null).forEach((ep) => {
+        const epNum = ep.ep ? parseInt(ep.ep) : ep.epNum ? parseInt(ep.epNum.replace("E", "")) : null;
+        const sNum = selectedSeasonNumber || (ep.sNum ? parseInt(ep.sNum.replace("S", "")) : null);
+        episodes.push({
+          id: ep.id,
+          s: sNum,
+          ep: epNum
         });
+      });
     }
-
     if (postData.nextPageShow === 1 && selectedSeasonId) {
-      const more = yield fetchEpisodesPage(
-        contentId,
-        selectedSeasonId,
-        2,
-        selectedSeasonNumber,
-        platform,
-        apiBase
-      );
+      const more = yield fetchEpisodesPage(contentId, selectedSeasonId, 2, selectedSeasonNumber, platform, apiBase);
       episodes.push(...more);
     }
-
     if (postData.season) {
       for (let index = 0; index < postData.season.length; index++) {
         const season = postData.season[index];
         if (season.id !== selectedSeasonId && season.id) {
-          const more = yield fetchEpisodesPage(
-            contentId,
-            season.id,
-            1,
-            index + 1,
-            platform,
-            apiBase
-          );
+          const more = yield fetchEpisodesPage(contentId, season.id, 1, index + 1, platform, apiBase);
           episodes.push(...more);
         }
       }
@@ -501,46 +397,34 @@ function getAllEpisodes(contentId, postData, platform, apiBase) {
     return episodes;
   });
 }
-
-function fetchEpisodesPage(
-  contentId,
-  seasonId,
-  page,
-  seasonNumber,
-  platform,
-  apiBase
-) {
+function fetchEpisodesPage(contentId, seasonId, page, seasonNumber, platform, apiBase) {
   return __async(this, null, function* () {
     const episodes = [];
     let pg = page;
     while (true) {
-      const url = `\( {apiBase}/newtv/episodes.php?id= \){seasonId}&page=${pg}`;
+      const url = `${apiBase}/newtv/episodes.php?id=${seasonId}&page=${pg}`;
       const resp = yield fetch(url, {
         headers: buildNewTvHeaders(platform.ott)
       });
       const data = yield resp.json();
       if (data.episodes) {
-        data.episodes
-          .filter((e) => e !== null)
-          .forEach((ep) => {
-            const epNum = ep.ep
-              ? parseInt(ep.ep)
-              : ep.epNum
-              ? parseInt(String(ep.epNum).replace("E", ""))
-              : null;
-            const sNum =
-              seasonNumber ||
-              (ep.sNum ? parseInt(String(ep.sNum).replace("S", "")) : null);
-            episodes.push({ id: ep.id, s: sNum, ep: epNum });
+        data.episodes.filter((e) => e !== null).forEach((ep) => {
+          const epNum = ep.ep ? parseInt(ep.ep) : ep.epNum ? parseInt(ep.epNum.replace("E", "")) : null;
+          const sNum = seasonNumber || (ep.sNum ? parseInt(ep.sNum.replace("S", "")) : null);
+          episodes.push({
+            id: ep.id,
+            s: sNum,
+            ep: epNum
           });
+        });
       }
-      if (data.nextPageShow !== 1) break;
+      if (data.nextPageShow !== 1)
+        break;
       pg++;
     }
     return episodes;
   });
 }
-
 function onSettings() {
   return __async(this, null, function* () {
     return [
@@ -549,8 +433,7 @@ function onSettings() {
         type: "select",
         key: "preferredPlatform",
         label: "Preferred Streaming Source",
-        description:
-          "Select which platform to try first. If content isn't found, others will be searched as fallback.",
+        description: "Select which platform to try first. If content isn't found, others will be searched as fallback.",
         options: [
           { label: "All Sources (Ordered)", value: "all" },
           { label: "Netflix", value: "netflix" },
@@ -570,5 +453,4 @@ function onSettings() {
     ];
   });
 }
-
 module.exports = { getStreams, onSettings };
