@@ -1,13 +1,13 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "Nuvio Media Sources",
-  "identifier": "com.nuvio.media.sources",
+  "name": "Media Sources",
+  "identifier": "com.nuvio.media",
   "version": "1.0.0",
-  "description": "Media source providers for Nuvio",
+  "description": "Media source providers",
   "author": "Nuvio Community",
   
   "provider": {
-    "name": "Media Sources Provider",
+    "name": "Media Provider",
     "type": "media",
     "version": "1.0.0"
   },
@@ -16,65 +16,42 @@
     {
       "id": "bdix-ctgmovies",
       "name": "BDIX CTG Movies",
-      "script": "Bdix(ctgmovies).js",
-      "type": "movie",
-      "enabled": true
+      "script": "Bdix(ctgmovies).js"
     },
     {
       "id": "anikototv",
       "name": "Anikoto TV",
-      "script": "anikototv.js",
-      "type": "tv",
-      "enabled": true
+      "script": "anikototv.js"
     },
     {
       "id": "fibwatch",
       "name": "FibWatch",
-      "script": "fibwatch.js",
-      "type": "movie",
-      "enabled": true
+      "script": "fibwatch.js"
     },
     {
       "id": "hdhub4u",
       "name": "HDHub4U",
-      "script": "hdhub4u.js",
-      "type": "movie",
-      "enabled": true
+      "script": "hdhub4u.js"
     },
     {
       "id": "moviebox",
       "name": "MovieBox",
-      "script": "moviebox.js",
-      "type": "movie",
-      "enabled": true
+      "script": "moviebox.js"
     },
     {
       "id": "plusstrem",
       "name": "PlusStrem",
-      "script": "plusstrem.js",
-      "type": "stream",
-      "enabled": true
+      "script": "plusstrem.js"
     },
     {
       "id": "vidsrc",
       "name": "VidSrc",
-      "script": "vidsrc.js",
-      "type": "video",
-      "enabled": true
+      "script": "vidsrc.js"
     },
     {
       "id": "vixsrc",
       "name": "VixSrc",
-      "script": "vixsrc.js",
-      "type": "video",
-      "enabled": true
+      "script": "vixsrc.js"
     }
-  ],
-  
-  "config": {
-    "defaultSource": "vidsrc",
-    "fallbackSource": "vixsrc",
-    "timeout": 30000,
-    "retryLimit": 3
-  }
+  ]
 }
