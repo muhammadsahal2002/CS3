@@ -1,101 +1,80 @@
 {
   "manifestVersion": "1.0.0",
-  "name": "Media Sources Collection",
-  "identifier": "com.media.sources.collection",
+  "name": "Nuvio Media Sources",
+  "identifier": "com.nuvio.media.sources",
   "version": "1.0.0",
-  "description": "Collection of media source providers",
-  "author": "Media Sources Team",
-  "type": "media-provider",
+  "description": "Media source providers for Nuvio",
+  "author": "Nuvio Community",
+  
+  "provider": {
+    "name": "Media Sources Provider",
+    "type": "media",
+    "version": "1.0.0"
+  },
   
   "sources": [
     {
       "id": "bdix-ctgmovies",
       "name": "BDIX CTG Movies",
-      "file": "Bdix(ctgmovies).js",
-      "type": "movie-provider",
-      "enabled": true,
-      "categories": ["movies", "bdix", "bangladesh"]
+      "script": "Bdix(ctgmovies).js",
+      "type": "movie",
+      "enabled": true
     },
     {
       "id": "anikototv",
       "name": "Anikoto TV",
-      "file": "anikototv.js",
-      "type": "tv-provider",
-      "enabled": true,
-      "categories": ["tv", "live-tv", "bangladesh"]
+      "script": "anikototv.js",
+      "type": "tv",
+      "enabled": true
     },
     {
       "id": "fibwatch",
       "name": "FibWatch",
-      "file": "fibwatch.js",
-      "type": "movie-provider",
-      "enabled": true,
-      "categories": ["movies", "streaming"]
+      "script": "fibwatch.js",
+      "type": "movie",
+      "enabled": true
     },
     {
       "id": "hdhub4u",
       "name": "HDHub4U",
-      "file": "hdhub4u.js",
-      "type": "movie-provider",
-      "enabled": true,
-      "categories": ["movies", "hd", "streaming"]
+      "script": "hdhub4u.js",
+      "type": "movie",
+      "enabled": true
     },
     {
       "id": "moviebox",
       "name": "MovieBox",
-      "file": "moviebox.js",
-      "type": "movie-provider",
-      "enabled": true,
-      "categories": ["movies", "streaming"]
+      "script": "moviebox.js",
+      "type": "movie",
+      "enabled": true
     },
     {
       "id": "plusstrem",
       "name": "PlusStrem",
-      "file": "plusstrem.js",
-      "type": "stream-provider",
-      "enabled": true,
-      "categories": ["streaming", "movies", "tv"]
+      "script": "plusstrem.js",
+      "type": "stream",
+      "enabled": true
     },
     {
       "id": "vidsrc",
       "name": "VidSrc",
-      "file": "vidsrc.js",
-      "type": "video-source",
-      "enabled": true,
-      "categories": ["video", "embed", "streaming"]
+      "script": "vidsrc.js",
+      "type": "video",
+      "enabled": true
     },
     {
       "id": "vixsrc",
       "name": "VixSrc",
-      "file": "vixsrc.js",
-      "type": "video-source",
-      "enabled": true,
-      "categories": ["video", "embed", "streaming"]
+      "script": "vixsrc.js",
+      "type": "video",
+      "enabled": true
     }
   ],
   
-  "configurations": {
-    "defaultPlayer": "vidsrc",
-    "fallbackPlayer": "vixsrc",
+  "config": {
+    "defaultSource": "vidsrc",
+    "fallbackSource": "vixsrc",
     "timeout": 30000,
-    "retryAttempts": 3,
-    "quality": {
-      "preferred": "auto",
-      "available": ["1080p", "720p", "480p", "360p"]
-    }
-  },
-  
-  "permissions": {
-    "network": ["https://*", "http://*"],
-    "storage": ["config", "cache"],
-    "media": ["video", "audio"]
-  },
-  
-  "ui": {
-    "icon": "play-circle",
-    "color": "#4F46E5",
-    "sortOrder": ["vidsrc", "vixsrc", "hdhub4u", "moviebox", "plusstrem", "fibwatch", "bdix-ctgmovies", "anikototv"]
-  },
-  
-  "lastUpdated": "2026-08-11T20:08:22Z"
+    "retryLimit": 3
+  }
 }
