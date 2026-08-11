@@ -1,6 +1,6 @@
 /**
- * netmirror - cookie only (mobile)
- * loadCookie / saveCookie / getCookie — no no-cookie path
+ * netmirror - cookie-only mobile (Nuvio)
+ * Confirmed: home → verify → search → playlist → hls on net52.cc
  */
 var __async = function (t, e, n) {
   return new Promise(function (r, o) {
@@ -55,7 +55,10 @@ function saveCookie(c) {
 function getCookie() {
   return __async(null, null, function* () {
     var existing = loadCookie();
-    if (existing) return existing;
+    if (existing) {
+      console.log("[NetMirror] cookie from cache");
+      return existing;
+    }
 
     console.log("[NetMirror] generating cookie...");
     try {
@@ -72,6 +75,7 @@ function getCookie() {
         return "";
       }
       var addhash = m[1];
+      console.log("[NetMirror] addhash ok");
 
       yield fetch(
         "https://userver.net52.cc/?jjoii=" +
@@ -86,6 +90,7 @@ function getCookie() {
           setTimeout(r, 8000);
         });
         console.log("[NetMirror] verify " + i + "/8");
+
         var vr = yield fetch(NET52 + "/mobile/verify2.php", {
           method: "POST",
           headers: {
@@ -95,19 +100,53 @@ function getCookie() {
           },
           body: "verify=" + encodeURIComponent(addhash)
         });
+
         var txt = yield vr.text();
-        if (txt.indexOf('"statusup":"All Done"') !== -1) {
-          var sc =
-            vr.headers.get("set-cookie") ||
-            vr.headers.get("Set-Cookie") ||
-            "";
-          var cm = sc.match(/t_hash_t=([^;]+)/);
-          if (cm) {
-            saveCookie(cm[1]);
-            console.log("[NetMirror] cookie saved");
-            return cm[1];
-          }
+        if (txt.indexOf('"statusup":"All Done"') === -1) continue;
+
+        var cookie = "";
+        var sc =
+          vr.headers.get("set-cookie") ||
+          vr.headers.get("Set-Cookie") ||
+          "";
+        var cm = sc.match(/t_hash_t=([^;]+)/);
+        if (cm) cookie = cm[1];
+
+        if (!cookie) {
+          try {
+            if (vr.headers.forEach) {
+              vr.headers.forEach(function (val, key) {
+                if (String(key).toLowerCase() === "set-cookie") {
+                  var m2 = String(val).match(/t_hash_t=([^;]+)/);
+                  if (m2) cookie = m2[1];
+                }
+              });
+            }
+          } catch (e) {}
         }
+
+        if (!cookie) {
+          try {
+            if (vr.headers.entries) {
+              var it = vr.headers.entries();
+              var step = it.next();
+              while (!step.done) {
+                if (String(step.value[0]).toLowerCase() === "set-cookie") {
+                  var m3 = String(step.value[1]).match(/t_hash_t=([^;]+)/);
+                  if (m3) cookie = m3[1];
+                }
+                step = it.next();
+              }
+            }
+          } catch (e) {}
+        }
+
+        if (cookie) {
+          saveCookie(cookie);
+          console.log("[NetMirror] cookie saved");
+          return cookie;
+        }
+        console.error("[NetMirror] All Done but no Set-Cookie");
       }
     } catch (e) {
       console.error("[NetMirror] cookie error", e.message || e);
@@ -116,7 +155,7 @@ function getCookie() {
   });
 }
 
-function headers(cookie, xrw) {
+function mobHeaders(cookie, xrw) {
   return {
     "User-Agent": UA,
     Accept: "*/*",
@@ -131,14 +170,12 @@ function headers(cookie, xrw) {
 function getStreams(tmdbId, mediaType, season, episode) {
   return __async(null, null, function* () {
     try {
-      // cookie required
       var cookie = yield getCookie();
       if (!cookie) {
-        console.error("[NetMirror] no cookie");
+        console.error("[NetMirror] no cookie — abort");
         return [];
       }
 
-      // TMDB title
       var kind = mediaType === "tv" ? "tv" : "movie";
       var tr = yield fetch(
         "https://api.themoviedb.org/3/" +
@@ -153,10 +190,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
       );
       var td = yield tr.json();
       var title = mediaType === "tv" ? td.name : td.title;
-      if (!title) return [];
+      if (!title) {
+        console.error("[NetMirror] no TMDB title");
+        return [];
+      }
 
       var t = Math.floor(Date.now() / 1000);
-      var h = headers(cookie, "XMLHttpRequest");
+      var h = mobHeaders(cookie, "XMLHttpRequest");
 
       // SEARCH
       var sr = yield fetch(
@@ -169,18 +209,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
         { headers: h }
       );
       var sj = yield sr.json();
-      if (!sj.searchResult || !sj.searchResult.length) {
-        console.warn("[NetMirror] search empty", sj.status);
+      if (!sj.searchResult || !sj.searchResult.length || sj.status === "n") {
+        console.warn("[NetMirror] search failed", sj.status);
         return [];
       }
 
       var hit = sj.searchResult[0];
       for (var i = 0; i < sj.searchResult.length; i++) {
-        if (
-          sj.searchResult[i].t &&
-          sj.searchResult[i].t.toLowerCase() === title.toLowerCase()
-        ) {
-          hit = sj.searchResult[i];
+        var r = sj.searchResult[i];
+        if (r.t && r.t.toLowerCase() === title.toLowerCase()) {
+          hit = r;
           break;
         }
       }
@@ -193,7 +231,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
         { headers: h }
       );
       var pj = yield pr.json();
-
       var targetId = contentId;
 
       if (mediaType === "tv") {
@@ -209,6 +246,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
               : fbS;
           eps.push({ id: ep.id, s: sN, ep: epN });
         }
+
         if (pj.episodes) {
           pj.episodes
             .filter(function (e) {
@@ -218,6 +256,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
               addEp(ep, null);
             });
         }
+
         if (pj.season) {
           for (var si = 0; si < pj.season.length; si++) {
             var so = pj.season[si];
@@ -256,6 +295,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
           }
         }
+
         var wantS = Number(season);
         var wantE = Number(episode);
         var found = null;
@@ -265,7 +305,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
             break;
           }
         }
-        if (!found) return [];
+        if (!found) {
+          console.warn("[NetMirror] episode not found S" + wantS + "E" + wantE);
+          return [];
+        }
         targetId = found.id;
       } else {
         if (
@@ -281,7 +324,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
       }
 
       // PLAYLIST
-      var plH = headers(cookie, "app.netmirror.nmv2");
+      var plH = mobHeaders(cookie, "app.netmirror.nmv2");
       var plr = yield fetch(
         NET52 +
           "/mobile/playlist.php?id=" +
@@ -293,7 +336,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
         { headers: plH }
       );
       var plj = yield plr.json();
-      if (!plj || !plj[0] || !plj[0].sources) return [];
+      if (!plj || !plj[0] || !plj[0].sources) {
+        console.warn("[NetMirror] empty playlist");
+        return [];
+      }
 
       return plj[0].sources.map(function (src) {
         var url = src.file;
