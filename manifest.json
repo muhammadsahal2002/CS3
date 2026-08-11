@@ -1,0 +1,101 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "Media Sources Collection",
+  "identifier": "com.media.sources.collection",
+  "version": "1.0.0",
+  "description": "Collection of media source providers",
+  "author": "Media Sources Team",
+  "type": "media-provider",
+  
+  "sources": [
+    {
+      "id": "bdix-ctgmovies",
+      "name": "BDIX CTG Movies",
+      "file": "Bdix(ctgmovies).js",
+      "type": "movie-provider",
+      "enabled": true,
+      "categories": ["movies", "bdix", "bangladesh"]
+    },
+    {
+      "id": "anikototv",
+      "name": "Anikoto TV",
+      "file": "anikototv.js",
+      "type": "tv-provider",
+      "enabled": true,
+      "categories": ["tv", "live-tv", "bangladesh"]
+    },
+    {
+      "id": "fibwatch",
+      "name": "FibWatch",
+      "file": "fibwatch.js",
+      "type": "movie-provider",
+      "enabled": true,
+      "categories": ["movies", "streaming"]
+    },
+    {
+      "id": "hdhub4u",
+      "name": "HDHub4U",
+      "file": "hdhub4u.js",
+      "type": "movie-provider",
+      "enabled": true,
+      "categories": ["movies", "hd", "streaming"]
+    },
+    {
+      "id": "moviebox",
+      "name": "MovieBox",
+      "file": "moviebox.js",
+      "type": "movie-provider",
+      "enabled": true,
+      "categories": ["movies", "streaming"]
+    },
+    {
+      "id": "plusstrem",
+      "name": "PlusStrem",
+      "file": "plusstrem.js",
+      "type": "stream-provider",
+      "enabled": true,
+      "categories": ["streaming", "movies", "tv"]
+    },
+    {
+      "id": "vidsrc",
+      "name": "VidSrc",
+      "file": "vidsrc.js",
+      "type": "video-source",
+      "enabled": true,
+      "categories": ["video", "embed", "streaming"]
+    },
+    {
+      "id": "vixsrc",
+      "name": "VixSrc",
+      "file": "vixsrc.js",
+      "type": "video-source",
+      "enabled": true,
+      "categories": ["video", "embed", "streaming"]
+    }
+  ],
+  
+  "configurations": {
+    "defaultPlayer": "vidsrc",
+    "fallbackPlayer": "vixsrc",
+    "timeout": 30000,
+    "retryAttempts": 3,
+    "quality": {
+      "preferred": "auto",
+      "available": ["1080p", "720p", "480p", "360p"]
+    }
+  },
+  
+  "permissions": {
+    "network": ["https://*", "http://*"],
+    "storage": ["config", "cache"],
+    "media": ["video", "audio"]
+  },
+  
+  "ui": {
+    "icon": "play-circle",
+    "color": "#4F46E5",
+    "sortOrder": ["vidsrc", "vixsrc", "hdhub4u", "moviebox", "plusstrem", "fibwatch", "bdix-ctgmovies", "anikototv"]
+  },
+  
+  "lastUpdated": "2026-08-11T20:08:22Z"
+}
