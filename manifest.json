@@ -1,57 +1,48 @@
 {
-  "manifestVersion": "1.0.0",
-  "name": "Media Sources",
-  "identifier": "com.nuvio.media",
+  "name": "All-in-One-Nuvio",
   "version": "1.0.0",
-  "description": "Media source providers",
-  "author": "Nuvio Community",
-  
-  "provider": {
-    "name": "Media Provider",
-    "type": "media",
-    "version": "1.0.0"
-  },
-  
-  "sources": [
+  "scrapers": [
     {
-      "id": "bdix-ctgmovies",
-      "name": "BDIX CTG Movies",
-      "script": "Bdix(ctgmovies).js"
+      "id": "castle",
+      "name": "🏰 Castle",
+      "description": "Multi Lang provider",
+      "version": "2.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/castle.js",
+      "enabled": true,
+      "hasSettings": true,
+      "formats": ["mp4", "m3u8"],
+      "logo": "https://i.postimg.cc/0NvGzFyK/castle.png",
+      "contentLanguage": ["en"]
     },
     {
-      "id": "anikototv",
-      "name": "Anikoto TV",
-      "script": "anikototv.js"
-    },
-    {
-      "id": "fibwatch",
-      "name": "FibWatch",
-      "script": "fibwatch.js"
-    },
-    {
-      "id": "hdhub4u",
-      "name": "HDHub4U",
-      "script": "hdhub4u.js"
-    },
-    {
-      "id": "moviebox",
-      "name": "MovieBox",
-      "script": "moviebox.js"
-    },
-    {
-      "id": "plusstrem",
-      "name": "PlusStrem",
-      "script": "plusstrem.js"
-    },
-    {
-      "id": "vidsrc",
-      "name": "VidSrc",
-      "script": "vidsrc.js"
+      "id": "kisskh",
+      "name": "💋 Kisskh",
+      "description": "Streams Korean dramas and movies from onlykdrama.top",
+      "version": "1.0.0",
+      "author": "Michat88",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/kisskh.js",
+      "enabled": true,
+      "hasSettings": true,
+      "formats": ["mp4", "m3u8"],
+      "logo": "https://i.postimg.cc/2yLnTzPP/kisskh.jpg",
+      "contentLanguage": ["ko", "ch", "ja", "th"]
     },
     {
       "id": "vixsrc",
       "name": "VixSrc",
-      "script": "vixsrc.js"
+      "description": "VixSrc - The best place to watch movies and TV shows online for free. Stream in 1080p HD",
+      "version": "1.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/vixsrc.js",
+      "enabled": true,
+      "hasSettings": true,
+      "formats": ["mp4", "m3u8"],
+      "logo": "https://i.postimg.cc/1tHrBvzs/vixsrc.png",
+      "contentLanguage": ["en", "Ita"]
     }
   ]
 }
