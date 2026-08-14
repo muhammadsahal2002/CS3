@@ -416,6 +416,7 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
 }
 
 // ====================== MAIN ======================
+// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     const debug = [];
@@ -482,41 +483,100 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       add("EpisodeId → " + episodeId);
 
-      // Get tracks
+      // Get episode and tracks
       const episode = episodes.find(e => e.id?.toString() === episodeId);
       const tracks = episode?.tracks || [];
+      
+      add("Tracks found: " + tracks.map(t => t.languageName || t.abbreviate).join(", "));
 
       const allStreams = [];
       const resolutions = [3, 2, 1]; // All qualities: 1080p, 720p, 480p
 
-      // Check if any track has individual video
-      const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
+      // Get unique languages (some tracks might be duplicate)
+      const uniqueTracks = [];
+      const seenLangs = new Set();
+      for (const track of tracks) {
+        const langKey = (track.languageName || track.abbreviate || "").toLowerCase();
+        if (!seenLangs.has(langKey)) {
+          seenLangs.add(langKey);
+          uniqueTracks.push(track);
+        }
+      }
 
-      if (!hasIndividualVideo && tracks.length > 0) {
-        // No individual video - fetch once, include all language names
-        const allLanguages = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+      // Check if any track has individual video
+      const hasIndividualVideo = uniqueTracks.some(t => t.existIndividualVideo === true);
+
+      if (!hasIndividualVideo && uniqueTracks.length > 0) {
+        // No individual video - fetch once for all languages
+        // But we need to get video for each language separately to get different audio tracks
+        // Actually, if no individual video, the video URL is shared but audio tracks might be separate
+        // Let's try fetching with languageId anyway if available
         
-        for (const res of resolutions) {
-          try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, allLanguages);
-            if (streams.length > 0) allStreams.push(...streams);
-          } catch (e) {
-            add("Res " + res + " failed: " + e.message);
+        let fetchedAny = false;
+        for (const track of uniqueTracks) {
+          const langName = track.languageName || track.abbreviate || "Unknown";
+          const langId = track.languageId;
+          
+          for (const res of resolutions) {
+            try {
+              let videoData;
+              if (langId) {
+                // Try with languageId first
+                videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res, langId);
+              } else {
+                videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
+              }
+              const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, langName);
+              if (streams.length > 0) {
+                allStreams.push(...streams);
+                fetchedAny = true;
+                add("Got " + langName + " " + res);
+              }
+            } catch (e) {
+              add(langName + " " + res + " failed: " + e.message);
+            }
+          }
+        }
+        
+        // If none worked, try once without language
+        if (!fetchedAny) {
+          for (const res of resolutions) {
+            try {
+              const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
+              const allLangs = uniqueTracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+              const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, allLangs);
+              if (streams.length > 0) allStreams.push(...streams);
+            } catch (e) {
+              add("Fallback " + res + " failed: " + e.message);
+            }
           }
         }
       } else {
-        // Fetch each language individually
-        for (const track of tracks) {
+        // Each language has individual video - fetch each separately
+        for (const track of uniqueTracks) {
           const langName = track.languageName || track.abbreviate || "Unknown";
           const langId = track.languageId;
-          if (!langId || !track.existIndividualVideo) continue;
+          
+          // If no languageId but has individual video, try without
+          if (!langId) {
+            for (const res of resolutions) {
+              try {
+                const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
+                const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, langName);
+                if (streams.length > 0) allStreams.push(...streams);
+              } catch (e) {
+                add(langName + " " + res + " failed: " + e.message);
+              }
+            }
+            continue;
+          }
 
           for (const res of resolutions) {
             try {
               const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res, langId);
               const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, langName);
               if (streams.length > 0) allStreams.push(...streams);
+              add("Got " + langName + " " + res);
             } catch (e) {
               add(langName + " " + res + " failed: " + e.message);
             }
@@ -524,23 +584,47 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // Fallback: try without language if no streams
+      // Final fallback: try without any language
       if (allStreams.length === 0) {
+        add("Final fallback - no language");
         for (const res of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res);
             if (streams.length > 0) allStreams.push(...streams);
           } catch (e) {
-            add("Fallback " + res + " failed: " + e.message);
+            add("Final fallback " + res + " failed: " + e.message);
           }
         }
       }
 
-      if (allStreams.length > 0) {
+      // Deduplicate streams by URL + quality + language
+      const seenStreams = new Set();
+      const uniqueStreams = allStreams.filter(s => {
+        // Create a key that includes language info if available
+        const langMatch = s.name.match(/Castle\s*([^-]+?)\s*-\s*(.+)/);
+        const lang = langMatch ? langMatch[1].trim() : "unknown";
+        const key = s.url + "_" + s.quality + "_" + lang;
+        if (seenStreams.has(key)) return false;
+        seenStreams.add(key);
+        return true;
+      });
+
+      // Also deduplicate by just URL+quality as backup
+      const seenSimple = new Set();
+      const finalStreams = uniqueStreams.filter(s => {
+        const key = s.url + "_" + s.quality;
+        if (seenSimple.has(key)) return false;
+        seenSimple.add(key);
+        return true;
+      });
+
+      add("Total unique streams: " + finalStreams.length);
+
+      if (finalStreams.length > 0) {
         // Sort by quality
-        allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return allStreams;
+        finalStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        return finalStreams;
       }
 
       return debug;
@@ -551,5 +635,4 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
   });
 }
-
 module.exports = { getStreams };
