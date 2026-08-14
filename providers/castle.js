@@ -113,14 +113,31 @@ function extractDataBlock(obj) {
 // ====================== TMDB ======================
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
-    const endpoint = mediaType === "tv" ? "tv" : "movie";
-    const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&append_to_response=external_ids";
-    const response = yield makeRequest(url);
-    const data = yield response.json();
-    const title = mediaType === "tv" ? data.name : data.title;
-    const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
-    const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
-    return { title, year, tmdbId };
+    try {
+      const endpoint = mediaType === "tv" ? "tv" : "movie";
+      const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&append_to_response=external_ids";
+      
+      const response = yield makeRequest(url);
+      const data = yield response.json();
+
+      const title = mediaType === "tv" ? data.name : data.title;
+      const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
+      const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
+
+      return {
+        title: title || "Unknown",
+        year: year,
+        tmdbId: tmdbId
+      };
+    } catch (e) {
+      // Fallback if TMDB fails
+      console.error("[Castle] TMDB failed: " + e.message);
+      return {
+        title: "Unknown",
+        year: null,
+        tmdbId: tmdbId
+      };
+    }
   });
 }
 
@@ -403,7 +420,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
 
     try {
-      add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-"));
+add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
 
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
       add("TMDB → " + tmdbInfo.title);
