@@ -473,139 +473,102 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
   return streams;
 }
-// ========== Improved getStreams ==========
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
-    console.log(`[Castle] Starting extraction for TMDB ID: ${tmdbId}, Type: \( {mediaType} \){mediaType === "tv" ? `, S:\( {seasonNum}E: \){episodeNum}` : ""}`);
+    const debugStreams = [];
+
+    function addDebug(msg) {
+      debugStreams.push({
+        name: `Castle DEBUG: ${msg}`,
+        title: "Debug Info",
+        url: "https://test.com",
+        quality: "360p",
+        provider: "castle"
+      });
+    }
+
     try {
+      addDebug(`Start - \( {mediaType} S \){seasonNum || "-"}E${episodeNum || "-"}`);
+
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
-      console.log(`[Castle] TMDB Info: "\( {tmdbInfo.title}" ( \){tmdbInfo.year || "N/A"})`);
+      addDebug(`TMDB: \( {tmdbInfo.title} ( \){tmdbInfo.year || "N/A"})`);
+
       const securityKey = yield getSecurityKey();
+      addDebug("Security key OK");
+
       const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
+      addDebug(`MovieId: ${movieId}`);
+
       let details = yield getDetails(securityKey, movieId);
       let currentMovieId = movieId;
 
-      // ----- Season handling (more tolerant) -----
       if (mediaType === "tv" && seasonNum) {
         const data = extractDataBlock(details);
         const seasons = data.seasons || [];
-        const season = seasons.find((s) => Number(s.number) === Number(seasonNum));
-        if (season && season.movieId && String(season.movieId) !== String(movieId)) {
-          console.log(`[Castle] Fetching season ${seasonNum} details...`);
+        const season = seasons.find(s => Number(s.number) === Number(seasonNum));
+        if (season?.movieId && String(season.movieId) !== String(movieId)) {
           details = yield getDetails(securityKey, season.movieId.toString());
           currentMovieId = season.movieId.toString();
+          addDebug(`Switched to season movieId: ${currentMovieId}`);
         }
       }
 
       const detailsData = extractDataBlock(details);
       const episodes = detailsData.episodes || [];
+      addDebug(`Episodes found: ${episodes.length}`);
 
-      // ----- Episode finding (much more robust) -----
-      let episodeId = null;
       let episode = null;
-
-      if (mediaType === "tv" && seasonNum && episodeNum) {
-        // 1. Try exact number match
-        episode = episodes.find((e) => Number(e.number) === Number(episodeNum));
-
-        // 2. Fallback: treat episodeNum as 1-based index (common when Castle only has E1, E2...)
+      if (mediaType === "tv" && episodeNum) {
+        episode = episodes.find(e => Number(e.number) === Number(episodeNum));
         if (!episode && episodes.length >= episodeNum) {
           episode = episodes[episodeNum - 1];
-          console.log(`[Castle] Fallback: using episode index ${episodeNum - 1}`);
+          addDebug(`Used index fallback: ${episodeNum - 1}`);
         }
-
-        // 3. Last fallback: first episode
-        if (!episode && episodes.length > 0) {
-          episode = episodes[0];
-          console.log(`[Castle] Fallback: using first episode`);
-        }
-      } else if (episodes.length > 0) {
-        // Movie or no season/episode specified
+      }
+      if (!episode && episodes.length > 0) {
         episode = episodes[0];
+        addDebug("Used first episode");
       }
 
-      if (episode && episode.id) {
-        episodeId = episode.id.toString();
+      if (!episode?.id) {
+        addDebug("No episode ID found");
+        return debugStreams;
       }
 
-      if (!episodeId) {
-        console.log(`[Castle] No episode found. Available episodes: ${episodes.length}`);
-        throw new Error("Could not find episode ID");
-      }
+      const episodeId = episode.id.toString();
+      addDebug(`EpisodeId: ${episodeId} | ${episode.title || "No title"}`);
 
-      console.log(`[Castle] Using episodeId: ${episodeId} (title: ${episode.title || "N/A"})`);
-
-      const tracks = episode.tracks || [];
-      const resolutions = [3, 2, 1]; // 1080p → 720p → 480p
+      // Try multiple resolutions
+      const resolutions = [3, 2, 1];
       const allStreams = [];
 
-      // ----- Language + Resolution loop -----
-      const hasIndividualVideo = tracks.some((t) => t.existIndividualVideo === true);
-
-      if (!hasIndividualVideo && tracks.length > 0) {
-        // Shared stream case (most common)
-        console.log("[Castle] Using shared stream path (v2)");
-        for (const resolution of resolutions) {
-          try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, "[Shared]");
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              console.log(`[Castle] ✅ Shared ${resolutionToQuality(resolution)}: ${streams.length} stream(s)`);
-            }
-          } catch (err) {
-            console.log(`[Castle] ⚠️ Shared res ${resolution} failed: ${err.message}`);
-          }
-        }
-      } else {
-        // Individual language tracks
-        for (const track of tracks) {
-          const langName = track.languageName || track.abbreviate || "Unknown";
-          if (!track.languageId) continue;
-
-          for (const resolution of resolutions) {
-            try {
-              console.log(`[Castle] Fetching ${langName} @ ${resolutionToQuality(resolution)}`);
-              const videoData = yield getVideoV1(securityKey, currentMovieId, episodeId, track.languageId, resolution);
-              const langStreams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, `[${langName}]`);
-              if (langStreams.length > 0) {
-                allStreams.push(...langStreams);
-                console.log(`[Castle] ✅ ${langName} ${resolutionToQuality(resolution)}`);
-              }
-            } catch (err) {
-              console.log(`[Castle] ⚠️ ${langName} res ${resolution} failed: ${err.message}`);
-            }
-          }
-        }
-      }
-
-      // Final fallback if nothing found
-      if (allStreams.length === 0) {
-        console.log("[Castle] Final fallback to shared v2 @ 720p");
+      for (const res of resolutions) {
         try {
-          const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, 2);
-          const sharedStreams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, 2, "[Shared]");
-          allStreams.push(...sharedStreams);
-        } catch (e) {}
-      }
-
-      // Remove duplicates & sort by quality
-      const unique = [];
-      const seen = new Set();
-      for (const s of allStreams) {
-        const key = `\( {s.url}_ \){s.quality}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          unique.push(s);
+          const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
+          const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, "");
+          if (streams.length > 0) {
+            allStreams.push(...streams);
+            addDebug(`Got ${resolutionToQuality(res)}`);
+          } else {
+            addDebug(`${resolutionToQuality(res)} → empty`);
+          }
+        } catch (e) {
+          addDebug(`${resolutionToQuality(res)} error: ${e.message}`);
         }
       }
-      unique.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
 
-      console.log(`[Castle] Total unique streams: ${unique.length}`);
-      return unique;
+      if (allStreams.length > 0) {
+        // Success – return real streams
+        allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        return allStreams;
+      }
+
+      addDebug("No real streams found");
+      return debugStreams;
+
     } catch (error) {
-      console.error(`[Castle] Error: ${error.message}`);
-      return [];
+      addDebug(`FATAL: ${error.message}`);
+      return debugStreams;
     }
   });
 }
