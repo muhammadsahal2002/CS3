@@ -388,18 +388,35 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   return streams;
 }
 
-// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
+    const debug = [];
+
+    function add(msg) {
+      debug.push({
+        name: "Castle: " + msg,
+        title: "Debug",
+        url: "https://test.com",
+        quality: "360p",
+        provider: "castle"
+      });
+    }
+
     try {
+      add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-"));
+
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
+      add("TMDB → " + tmdbInfo.title);
+
       const securityKey = yield getSecurityKey();
+      add("Key OK");
+
       const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
+      add("MovieId → " + movieId);
 
       let details = yield getDetails(securityKey, movieId);
       let currentMovieId = movieId;
 
-      // Handle different season movieId if exists
       if (mediaType === "tv" && seasonNum) {
         const data = extractDataBlock(details);
         const seasons = data.seasons || [];
@@ -407,70 +424,51 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         if (season && season.movieId && String(season.movieId) !== String(movieId)) {
           details = yield getDetails(securityKey, season.movieId.toString());
           currentMovieId = season.movieId.toString();
+          add("Season switched → " + currentMovieId);
         }
       }
 
       const detailsData = extractDataBlock(details);
       const episodes = detailsData.episodes || [];
+      add("Episodes → " + episodes.length);
 
-      // ===== Only care about episode number =====
       let episodeId = null;
 
       if (mediaType === "tv" && episodeNum) {
-        // 1. Match by number
         let ep = episodes.find(e => Number(e.number) === Number(episodeNum));
-
-        // 2. Fallback to index
         if (!ep && episodes.length >= episodeNum) {
           ep = episodes[episodeNum - 1];
+          add("Used index fallback");
         }
-
-        if (ep && ep.id) {
-          episodeId = ep.id.toString();
-        }
+        if (ep && ep.id) episodeId = ep.id.toString();
       } else if (episodes.length > 0) {
-        // Movie → take first episode
         episodeId = episodes[0].id.toString();
       } else {
-        // Movie with no episodes array
         episodeId = currentMovieId;
       }
 
-      if (!episodeId) return [];
-
-      // Try multiple resolutions
-      const resolutions = [3, 2, 1]; // 1080 → 720 → 480
-      const allStreams = [];
-
-      for (const res of resolutions) {
-        try {
-          const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
-          const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res);
-          if (streams.length > 0) {
-            allStreams.push(...streams);
-          }
-        } catch (e) {}
+      if (!episodeId) {
+        add("No episodeId found");
+        return debug;
       }
 
-      // Remove duplicates
-      const unique = [];
-      const seen = new Set();
-      for (const s of allStreams) {
-        const key = s.url + "_" + s.quality;
-        if (!seen.has(key)) {
-          seen.add(key);
-          unique.push(s);
-        }
+      add("EpisodeId → " + episodeId);
+
+      // Try get video
+      const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, 2);
+      const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, 2);
+
+      if (streams.length > 0) {
+        return streams;
       }
 
-      unique.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-      return unique;
+      add("getVideo2 returned empty");
+      return debug;
 
     } catch (error) {
-      console.error("[Castle] Error: " + error.message);
-      return [];
+      add("ERROR: " + error.message);
+      return debug;
     }
   });
 }
-
 module.exports = { getStreams };
