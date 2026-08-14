@@ -1,6 +1,6 @@
 /**
- * castle - Full quality & audio support
- * All resolutions (1080p, 720p, 480p) + All audio tracks
+ * castle - Clean simplified version
+ * Search by title → Match by episode number only
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -114,7 +114,11 @@ function extractDataBlock(obj) {
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
     if (String(tmdbId).startsWith("tt")) {
-      return { title: "Unknown", year: null, tmdbId: tmdbId };
+      return {
+        title: "Unknown",
+        year: null,
+        tmdbId: tmdbId
+      };
     }
 
     try {
@@ -127,9 +131,17 @@ function getTMDBDetails(tmdbId, mediaType) {
       const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
       const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
 
-      return { title: title || "Unknown", year: year, tmdbId: tmdbId };
+      return {
+        title: title || "Unknown",
+        year: year,
+        tmdbId: tmdbId
+      };
     } catch (e) {
-      return { title: "Unknown", year: null, tmdbId: tmdbId };
+      return {
+        title: "Unknown",
+        year: null,
+        tmdbId: tmdbId
+      };
     }
   });
 }
@@ -251,38 +263,7 @@ function getDetails(securityKey, movieId) {
   });
 }
 
-function getVideoWithLanguage(securityKey, movieId, episodeId, languageId, resolution = 2) {
-  return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
-                "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
-
-    const body = {
-      mode: "1",
-      appMarket: "GuanWang",
-      clientType: CLIENT,
-      woolUser: "false",
-      apkSignKey: APK_SIGN_KEY,
-      androidVersion: "13",
-      movieId: movieId.toString(),
-      episodeId: episodeId.toString(),
-      languageId: languageId.toString(),
-      isNewUser: "true",
-      resolution: resolution.toString(),
-      packageName: PKG
-    };
-
-    const response = yield makeRequest(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const cipher = yield extractCipherFromResponse(response);
-    const decrypted = yield decryptCastle(cipher, securityKey);
-    return JSON.parse(decrypted);
-  });
-}
-
-function getVideoNoLanguage(securityKey, movieId, episodeId, resolution = 2) {
+function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId = null) {
   return __async(this, null, function* () {
     const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
@@ -300,6 +281,10 @@ function getVideoNoLanguage(securityKey, movieId, episodeId, resolution = 2) {
       resolution: resolution.toString(),
       packageName: PKG
     };
+
+    if (languageId) {
+      body.languageId = languageId.toString();
+    }
 
     const response = yield makeRequest(url, {
       method: "POST",
@@ -369,15 +354,6 @@ function resolutionToQuality(resolution) {
   return map[resolution] || resolution + "p";
 }
 
-function transformPreviewUrl(url) {
-  if (!url) return url;
-  if (url.includes("preview") || url.endsWith(".jpg") || url.endsWith(".png") || url.endsWith(".jpeg")) {
-    const basePath = url.split("?")[0].split("/").slice(0, -1).join("/");
-    return basePath + "/index.m3u8";
-  }
-  return url;
-}
-
 // ====================== PROCESS VIDEO ======================
 function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
@@ -407,38 +383,33 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
 
   const quality = resolutionToQuality(resolution);
 
-  // Handle preview/transform URL
-  let finalUrl = transformPreviewUrl(videoUrl);
-  const isPreview = videoUrl.includes("preview");
-
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
-      const streamUrl = transformPreviewUrl(video.url || finalUrl);
-      const preview = video.url?.includes("preview") || isPreview;
-      
+      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
-        name: languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality,
+        name: streamName,
         title: mediaTitle,
-        url: streamUrl,
+        url: video.url || videoUrl,
         quality: videoQuality,
         size: formatSize(video.size),
         headers: PLAYBACK_HEADERS,
         provider: "castle",
-        subtitles: preview ? [] : subtitles // No subtitles for preview
+        subtitles
       });
     }
   } else {
+    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
-      name: languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality,
+      name: streamName,
       title: mediaTitle,
-      url: finalUrl,
+      url: videoUrl,
       quality,
       size: formatSize(data.size),
       headers: PLAYBACK_HEADERS,
       provider: "castle",
-      subtitles: isPreview ? [] : subtitles
+      subtitles
     });
   }
   return streams;
@@ -511,29 +482,25 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       add("EpisodeId → " + episodeId);
 
-      // Get the episode details to find available tracks
+      // Get tracks
       const episode = episodes.find(e => e.id?.toString() === episodeId);
       const tracks = episode?.tracks || [];
-      
+
       const allStreams = [];
-      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
+      const resolutions = [3, 2, 1]; // All qualities: 1080p, 720p, 480p
 
       // Check if any track has individual video
       const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
 
       if (!hasIndividualVideo && tracks.length > 0) {
-        // If no individual video, fetch once with no languageId
-        // but include all language names in the stream name
-        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+        // No individual video - fetch once, include all language names
+        const allLanguages = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
         
         for (const res of resolutions) {
           try {
-            const videoData = yield getVideoNoLanguage(securityKey, currentMovieId, episodeId, res);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, allLanguageNames);
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              add("Found " + res + " → " + streams.length + " streams");
-            }
+            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, allLanguages);
+            if (streams.length > 0) allStreams.push(...streams);
           } catch (e) {
             add("Res " + res + " failed: " + e.message);
           }
@@ -543,18 +510,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         for (const track of tracks) {
           const langName = track.languageName || track.abbreviate || "Unknown";
           const langId = track.languageId;
-          
-          // Skip if no languageId or no individual video flag
           if (!langId || !track.existIndividualVideo) continue;
 
           for (const res of resolutions) {
             try {
-              const videoData = yield getVideoWithLanguage(securityKey, currentMovieId, episodeId, langId, res);
+              const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res, langId);
               const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, langName);
-              if (streams.length > 0) {
-                allStreams.push(...streams);
-                add("Found " + langName + " " + res + " → " + streams.length + " streams");
-              }
+              if (streams.length > 0) allStreams.push(...streams);
             } catch (e) {
               add(langName + " " + res + " failed: " + e.message);
             }
@@ -562,39 +524,23 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // Fallback: if no streams found, try without language
+      // Fallback: try without language if no streams
       if (allStreams.length === 0) {
-        add("Trying fallback (no language)");
         for (const res of resolutions) {
           try {
-            const videoData = yield getVideoNoLanguage(securityKey, currentMovieId, episodeId, res);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, "Shared");
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              add("Fallback " + res + " → " + streams.length + " streams");
-            }
+            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res);
+            if (streams.length > 0) allStreams.push(...streams);
           } catch (e) {
             add("Fallback " + res + " failed: " + e.message);
           }
         }
       }
 
-      // Sort by quality (highest first)
-      allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-      
-      // Remove duplicates (same url, same quality)
-      const seen = new Set();
-      const uniqueStreams = allStreams.filter(s => {
-        const key = s.url + "_" + s.quality;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      add("Total unique streams: " + uniqueStreams.length);
-
-      if (uniqueStreams.length > 0) {
-        return uniqueStreams;
+      if (allStreams.length > 0) {
+        // Sort by quality
+        allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        return allStreams;
       }
 
       return debug;
