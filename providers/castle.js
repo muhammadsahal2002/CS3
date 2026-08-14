@@ -475,12 +475,12 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
 }
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
-    const debugStreams = [];
+    const debug = [];
 
-    function addDebug(msg) {
-      debugStreams.push({
-        name: `Castle DEBUG: ${msg}`,
-        title: "Debug Info",
+    function add(msg) {
+      debug.push({
+        name: "Castle DEBUG: " + msg,
+        title: "Debug",
         url: "https://test.com",
         quality: "360p",
         provider: "castle"
@@ -488,16 +488,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
 
     try {
-      addDebug(`Start - \( {mediaType} S \){seasonNum || "-"}E${episodeNum || "-"}`);
+      add("Start - " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-"));
 
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
-      addDebug(`TMDB: \( {tmdbInfo.title} ( \){tmdbInfo.year || "N/A"})`);
+      add("TMDB: " + tmdbInfo.title + " (" + (tmdbInfo.year || "N/A") + ")");
 
       const securityKey = yield getSecurityKey();
-      addDebug("Security key OK");
+      add("Security key OK");
 
       const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
-      addDebug(`MovieId: ${movieId}`);
+      add("MovieId: " + movieId);
 
       let details = yield getDetails(securityKey, movieId);
       let currentMovieId = movieId;
@@ -505,70 +505,90 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       if (mediaType === "tv" && seasonNum) {
         const data = extractDataBlock(details);
         const seasons = data.seasons || [];
-        const season = seasons.find(s => Number(s.number) === Number(seasonNum));
-        if (season?.movieId && String(season.movieId) !== String(movieId)) {
+        const season = seasons.find(function(s) {
+          return Number(s.number) === Number(seasonNum);
+        });
+        if (season && season.movieId && String(season.movieId) !== String(movieId)) {
           details = yield getDetails(securityKey, season.movieId.toString());
           currentMovieId = season.movieId.toString();
-          addDebug(`Switched to season movieId: ${currentMovieId}`);
+          add("Switched season movieId: " + currentMovieId);
         }
       }
 
       const detailsData = extractDataBlock(details);
-      const episodes = detailsData.episodes || [];
-      addDebug(`Episodes found: ${episodes.length}`);
+      let episodes = detailsData.episodes || [];
+      add("Episodes found: " + episodes.length);
 
-      let episode = null;
-      if (mediaType === "tv" && episodeNum) {
-        episode = episodes.find(e => Number(e.number) === Number(episodeNum));
-        if (!episode && episodes.length >= episodeNum) {
-          episode = episodes[episodeNum - 1];
-          addDebug(`Used index fallback: ${episodeNum - 1}`);
+      // ===== Important fix for movies with 0 episodes =====
+      let episodeId = null;
+
+      if (episodes.length > 0) {
+        let episode = null;
+
+        if (mediaType === "tv" && episodeNum) {
+          episode = episodes.find(function(e) {
+            return Number(e.number) === Number(episodeNum);
+          });
+          if (!episode && episodes.length >= episodeNum) {
+            episode = episodes[episodeNum - 1];
+            add("Used index fallback");
+          }
         }
-      }
-      if (!episode && episodes.length > 0) {
-        episode = episodes[0];
-        addDebug("Used first episode");
+
+        if (!episode) {
+          episode = episodes[0];
+          add("Used first episode");
+        }
+
+        if (episode && episode.id) {
+          episodeId = episode.id.toString();
+        }
+      } else {
+        // Movie has no episodes array → try using movieId as episodeId
+        episodeId = currentMovieId;
+        add("No episodes array - using movieId as episodeId");
       }
 
-      if (!episode?.id) {
-        addDebug("No episode ID found");
-        return debugStreams;
+      if (!episodeId) {
+        add("No episode ID found");
+        return debug;
       }
 
-      const episodeId = episode.id.toString();
-      addDebug(`EpisodeId: ${episodeId} | ${episode.title || "No title"}`);
+      add("Final episodeId: " + episodeId);
 
-      // Try multiple resolutions
+      // Try qualities
       const resolutions = [3, 2, 1];
       const allStreams = [];
 
-      for (const res of resolutions) {
+      for (let i = 0; i < resolutions.length; i++) {
+        const res = resolutions[i];
         try {
           const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
           const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, "");
           if (streams.length > 0) {
-            allStreams.push(...streams);
-            addDebug(`Got ${resolutionToQuality(res)}`);
+            allStreams.push.apply(allStreams, streams);
+            add("Got " + resolutionToQuality(res));
           } else {
-            addDebug(`${resolutionToQuality(res)} → empty`);
+            add(resolutionToQuality(res) + " empty");
           }
         } catch (e) {
-          addDebug(`${resolutionToQuality(res)} error: ${e.message}`);
+          add(resolutionToQuality(res) + " error: " + e.message);
         }
       }
 
       if (allStreams.length > 0) {
-        // Success – return real streams
-        allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        allStreams.sort(function(a, b) {
+          return getQualityValue(b.quality) - getQualityValue(a.quality);
+        });
         return allStreams;
       }
 
-      addDebug("No real streams found");
-      return debugStreams;
+      add("No real streams");
+      return debug;
 
     } catch (error) {
-      addDebug(`FATAL: ${error.message}`);
-      return debugStreams;
+      add("FATAL: " + error.message);
+      return debug;
     }
   });
 }
