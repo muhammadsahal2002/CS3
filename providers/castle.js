@@ -543,7 +543,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const hasIndividualVideo = tracks.some((t) => t.existIndividualVideo === true);
 
       if (!hasIndividualVideo && tracks.length > 0) {
-        // Shared stream case (most common for this provider)
+        // Shared stream case (most common)
         console.log("[Castle] Using shared stream path (v2)");
         for (const resolution of resolutions) {
           try {
