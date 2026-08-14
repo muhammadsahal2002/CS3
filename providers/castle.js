@@ -134,7 +134,7 @@ function decryptCastle(encryptedB64, securityKeyB64) {
     console.log("[Castle] Starting local AES-CBC decryption...");
     try {
       const CryptoJS = require("crypto-js");
-      
+
       // Monkey-patch to bypass NuvioMobile QuickJS JNI typed array mapping bug
       if (typeof __crypto_aes_decrypt_raw !== 'undefined') {
         const originalDecrypt = CryptoJS.AES.decrypt;
@@ -159,12 +159,12 @@ function decryptCastle(encryptedB64, securityKeyB64) {
             const kBytes = wordArrayToBytes(key);
             const ivBytes = (options && options.iv) ? wordArrayToBytes(options.iv) : new Uint8Array(0);
             const mode = (options && options.mode) || 'AES-CBC';
-            
+
             // Map Uint8Array (unsigned) to Int8Array (signed) to match Kotlin ByteArray
             const keyArg = typeof Int8Array !== 'undefined' ? new Int8Array(kBytes.buffer) : kBytes;
             const ivArg = typeof Int8Array !== 'undefined' ? new Int8Array(ivBytes.buffer) : ivBytes;
             const dataArg = typeof Int8Array !== 'undefined' ? new Int8Array(data.buffer) : data;
-            
+
             const resBytes = __crypto_aes_decrypt_raw(mode, keyArg, ivArg, dataArg);
             const plain = new TextDecoder().decode(resBytes);
             return { toString: function() { return plain; } };
@@ -176,11 +176,11 @@ function decryptCastle(encryptedB64, securityKeyB64) {
       }
 
       const CASTLE_SUFFIX = "T!BgJB";
-      
+
       const securityKeyWords = CryptoJS.enc.Base64.parse(securityKeyB64);
       const suffixWords = CryptoJS.enc.Utf8.parse(CASTLE_SUFFIX);
       const keyMaterial = securityKeyWords.concat(suffixWords);
-      
+
       let finalKey;
       if (keyMaterial.sigBytes < 16) {
         const padding = CryptoJS.lib.WordArray.create(new Array(16 - keyMaterial.sigBytes).fill(0));
@@ -190,20 +190,20 @@ function decryptCastle(encryptedB64, securityKeyB64) {
       } else {
         finalKey = keyMaterial;
       }
-      
+
       const iv = finalKey;
-      
+
       const decrypted = CryptoJS.AES.decrypt(encryptedB64, finalKey, {
         iv,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7
       });
-      
+
       const result = decrypted.toString(CryptoJS.enc.Utf8);
       if (!result) {
         throw new Error("Decryption resulted in empty string (possible key/IV mismatch)");
       }
-      
+
       console.log("[Castle] Local decryption successful");
       return result;
     } catch (error) {
@@ -312,33 +312,59 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
     return JSON.parse(decrypted);
   });
 }
+function normalizeTitle(t) {
+  return (t || "")
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")   // removes ?, ., !, commas, etc.
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function findCastleMovieId(securityKey, tmdbInfo) {
   return __async(this, null, function* () {
-    const searchTerm = tmdbInfo.year ? `${tmdbInfo.title} ${tmdbInfo.year}` : tmdbInfo.title;
-    const searchResult = yield searchCastle(securityKey, searchTerm);
-    const data = extractDataBlock(searchResult);
-    const rows = data.rows || [];
+    const searchTerms = [];
+    if (tmdbInfo.year) searchTerms.push(`${tmdbInfo.title} ${tmdbInfo.year}`);
+    searchTerms.push(tmdbInfo.title);
+
+    let rows = [];
+    for (const term of searchTerms) {
+      console.log(`[Castle] Searching for: ${term}`);
+      const searchResult = yield searchCastle(securityKey, term);
+      const data = extractDataBlock(searchResult);
+      rows = data.rows || [];
+      if (rows.length > 0) break;
+    }
+
     if (rows.length === 0) {
       throw new Error("No search results found");
     }
+
+    const searchNorm = normalizeTitle(tmdbInfo.title);
+    let best = null;
+
     for (const item of rows) {
-      const itemTitle = (item.title || item.name || "").toLowerCase();
-      const searchTitle = tmdbInfo.title.toLowerCase();
-      if (itemTitle.includes(searchTitle) || searchTitle.includes(itemTitle)) {
-        const movieId2 = item.id || item.redirectId || item.redirectIdStr;
-        if (movieId2) {
-          console.log(`[Castle] Found match: ${item.title || item.name} (id: ${movieId2})`);
-          return movieId2.toString();
+      const itemNorm = normalizeTitle(item.title || item.name || "");
+      const isTv = (item.movieTypeName || "").toLowerCase().includes("tv") || item.movieType === 1;
+      const exact = itemNorm === searchNorm;
+      const contains = itemNorm.includes(searchNorm) || searchNorm.includes(itemNorm);
+
+      if (exact || contains) {
+        // Prefer exact match, then TV shows
+        if (!best || exact || (isTv && !best.isTv)) {
+          best = { item, exact, isTv };
         }
       }
     }
-    const firstItem = rows[0];
-    const movieId = firstItem.id || firstItem.redirectId || firstItem.redirectIdStr;
-    if (movieId) {
-      console.log(`[Castle] Using first result: ${firstItem.title || firstItem.name} (id: ${movieId})`);
-      return movieId.toString();
+
+    const chosen = best ? best.item : rows[0];
+    const movieId = chosen.id || chosen.redirectId || chosen.redirectIdStr;
+
+    if (!movieId) {
+      throw new Error("Could not extract movie ID from search results");
     }
-    throw new Error("Could not extract movie ID from search results");
+
+    console.log(`[Castle] Selected: "${chosen.title || chosen.name}" (id: ${movieId})`);
+    return movieId.toString();
   });
 }
 
@@ -393,7 +419,7 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
     console.log("[Castle] No videoUrl found in response");
     return streams;
   }
-  
+
   const subtitles = [];
   if (data.subtitles && Array.isArray(data.subtitles)) {
     data.subtitles.forEach((sub) => {
@@ -460,7 +486,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       if (mediaType === "tv" && seasonNum && episodeNum) {
         const data = extractDataBlock(details);
         const seasons = data.seasons || [];
-        const season = seasons.find((s) => s.number === seasonNum);
+        const season = seasons.find((s) => Number(s.number) === Number(seasonNum));
         if (season && season.movieId && season.movieId !== movieId) {
           console.log(`[Castle] Fetching season ${seasonNum} details...`);
           details = yield getDetails(securityKey, season.movieId.toString());
@@ -471,7 +497,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const episodes = detailsData.episodes || [];
       let episodeId = null;
       if (mediaType === "tv" && seasonNum && episodeNum) {
-        const episode2 = episodes.find((e) => e.number === episodeNum);
+        const episode2 = episodes.find((e) => Number(e.number) === Number(episodeNum));
         if (episode2 && episode2.id) {
           episodeId = episode2.id.toString();
         }
