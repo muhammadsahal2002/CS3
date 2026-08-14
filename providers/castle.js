@@ -1,6 +1,5 @@
 /**
- * castle - Built from src/castle/
- * Generated: 2025-12-31T21:23:16.715Z
+ * castle - Updated for real app request (v2.0.7 + India2 + com.journey.indiab)
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -40,14 +39,16 @@ var __async = (__this, __arguments, generator) => {
   });
 };
 
-// src/castle/constants.js
+// ====================== CONSTANTS ======================
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var CASTLE_BASE = "https://api.hlowb.com";
-var PKG = "com.external.castle";
-var CHANNEL = "IndiaA";
+var PKG = "com.journey.indiab";
+var CHANNEL = "India2";
 var CLIENT = "1";
 var LANG = "en-US";
+var APK_SIGN_KEY = "3E9F4979E27C7A9ABB2688C38E6BABAD645BE135";
+
 var API_HEADERS = {
   "User-Agent": "okhttp/4.9.3",
   "Accept": "application/json",
@@ -55,6 +56,7 @@ var API_HEADERS = {
   "Connection": "Keep-Alive",
   "Referer": CASTLE_BASE
 };
+
 var PLAYBACK_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
   "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
@@ -67,7 +69,7 @@ var PLAYBACK_HEADERS = {
   "DNT": "1"
 };
 
-// src/castle/http.js
+// ====================== HTTP ======================
 function makeRequest(_0) {
   return __async(this, arguments, function* (url, options = {}) {
     try {
@@ -77,66 +79,57 @@ function makeRequest(_0) {
         body: options.body
       });
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        throw new Error("HTTP " + response.status + ": " + response.statusText);
       }
       return response;
     } catch (error) {
-      console.error(`[Castle] Request failed for ${url}: ${error.message}`);
+      console.error("[Castle] Request failed for " + url + ": " + error.message);
       throw error;
     }
   });
 }
+
 function extractCipherFromResponse(response) {
   return __async(this, null, function* () {
     const text = yield response.text();
     const trimmed = text.trim();
-    if (!trimmed) {
-      throw new Error("Empty response");
-    }
+    if (!trimmed) throw new Error("Empty response");
     try {
       const json = JSON.parse(trimmed);
       if (json && json.data && typeof json.data === "string") {
         return json.data.trim();
       }
-    } catch (e) {
-    }
+    } catch (e) {}
     return trimmed;
   });
 }
+
 function extractDataBlock(obj) {
-  if (obj && obj.data && typeof obj.data === "object") {
-    return obj.data;
-  }
+  if (obj && obj.data && typeof obj.data === "object") return obj.data;
   return obj || {};
 }
 
-// src/castle/tmdb.js
+// ====================== TMDB ======================
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
     const endpoint = mediaType === "tv" ? "tv" : "movie";
-    const url = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
+    const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&append_to_response=external_ids";
     const response = yield makeRequest(url);
     const data = yield response.json();
     const title = mediaType === "tv" ? data.name : data.title;
     const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
     const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
-    return {
-      title,
-      year,
-      tmdbId
-    };
+    return { title, year, tmdbId };
   });
 }
 
-// src/castle/decrypt.js
+// ====================== DECRYPT ======================
 function decryptCastle(encryptedB64, securityKeyB64) {
   return __async(this, null, function* () {
-    console.log("[Castle] Starting local AES-CBC decryption...");
     try {
       const CryptoJS = require("crypto-js");
 
-      // Monkey-patch to bypass NuvioMobile QuickJS JNI typed array mapping bug
-      if (typeof __crypto_aes_decrypt_raw !== 'undefined') {
+      if (typeof __crypto_aes_decrypt_raw !== "undefined") {
         const originalDecrypt = CryptoJS.AES.decrypt;
         CryptoJS.AES.decrypt = function(cipher, key, options) {
           try {
@@ -150,33 +143,29 @@ function decryptCastle(encryptedB64, securityKeyB64) {
             const toUint8Array = (data) => {
               if (data instanceof Uint8Array) return data;
               if (data instanceof ArrayBuffer) return new Uint8Array(data);
-              if (data && typeof data.length === 'number') return new Uint8Array(Array.prototype.slice.call(data));
+              if (data && typeof data.length === "number") return new Uint8Array(Array.prototype.slice.call(data));
               return new Uint8Array(0);
             };
-            const data = typeof cipher === 'string'
+            const data = typeof cipher === "string"
               ? new Uint8Array(Array.from(atob(cipher), c => c.charCodeAt(0)))
               : (cipher.ciphertext ? wordArrayToBytes(cipher.ciphertext) : toUint8Array(cipher));
             const kBytes = wordArrayToBytes(key);
             const ivBytes = (options && options.iv) ? wordArrayToBytes(options.iv) : new Uint8Array(0);
-            const mode = (options && options.mode) || 'AES-CBC';
 
-            // Map Uint8Array (unsigned) to Int8Array (signed) to match Kotlin ByteArray
-            const keyArg = typeof Int8Array !== 'undefined' ? new Int8Array(kBytes.buffer) : kBytes;
-            const ivArg = typeof Int8Array !== 'undefined' ? new Int8Array(ivBytes.buffer) : ivBytes;
-            const dataArg = typeof Int8Array !== 'undefined' ? new Int8Array(data.buffer) : data;
+            const keyArg = typeof Int8Array !== "undefined" ? new Int8Array(kBytes.buffer) : kBytes;
+            const ivArg = typeof Int8Array !== "undefined" ? new Int8Array(ivBytes.buffer) : ivBytes;
+            const dataArg = typeof Int8Array !== "undefined" ? new Int8Array(data.buffer) : data;
 
-            const resBytes = __crypto_aes_decrypt_raw(mode, keyArg, ivArg, dataArg);
+            const resBytes = __crypto_aes_decrypt_raw("AES-CBC", keyArg, ivArg, dataArg);
             const plain = new TextDecoder().decode(resBytes);
             return { toString: function() { return plain; } };
           } catch (err) {
-            console.error("[Castle JNI Patch] Decrypt failed, falling back:", err);
             return originalDecrypt.call(CryptoJS.AES, cipher, key, options);
           }
         };
       }
 
       const CASTLE_SUFFIX = "T!BgJB";
-
       const securityKeyWords = CryptoJS.enc.Base64.parse(securityKeyB64);
       const suffixWords = CryptoJS.enc.Utf8.parse(CASTLE_SUFFIX);
       const keyMaterial = securityKeyWords.concat(suffixWords);
@@ -192,7 +181,6 @@ function decryptCastle(encryptedB64, securityKeyB64) {
       }
 
       const iv = finalKey;
-
       const decrypted = CryptoJS.AES.decrypt(encryptedB64, finalKey, {
         iv,
         mode: CryptoJS.mode.CBC,
@@ -200,36 +188,28 @@ function decryptCastle(encryptedB64, securityKeyB64) {
       });
 
       const result = decrypted.toString(CryptoJS.enc.Utf8);
-      if (!result) {
-        throw new Error("Decryption resulted in empty string (possible key/IV mismatch)");
-      }
-
-      console.log("[Castle] Local decryption successful");
+      if (!result) throw new Error("Decryption resulted in empty string");
       return result;
     } catch (error) {
-      console.error(`[Castle] Local decryption failed: ${error.message}`);
+      console.error("[Castle] Decryption failed: " + error.message);
       throw error;
     }
   });
 }
 
-// src/castle/api.js
+// ====================== API ======================
 function getSecurityKey() {
   return __async(this, null, function* () {
-    console.log("[Castle] Fetching security key...");
-    const url = `${CASTLE_BASE}/v0.1/system/getSecurityKey/1?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`;
+    const url = CASTLE_BASE + "/v0.1/system/getSecurityKey/1?channel=" + CHANNEL + "&clientType=" + CLIENT + "&lang=" + LANG;
     const response = yield makeRequest(url);
     const data = yield response.json();
-    if (data.code !== 200 || !data.data) {
-      throw new Error(`Security key API error: ${JSON.stringify(data)}`);
-    }
-    console.log("[Castle] Security key obtained");
+    if (data.code !== 200 || !data.data) throw new Error("Security key API error");
     return data.data;
   });
 }
+
 function searchCastle(securityKey, keyword, page = 1, size = 30) {
   return __async(this, null, function* () {
-    console.log(`[Castle] Searching for: ${keyword}`);
     const params = new URLSearchParams({
       channel: CHANNEL,
       clientType: CLIENT,
@@ -240,41 +220,80 @@ function searchCastle(securityKey, keyword, page = 1, size = 30) {
       page: page.toString(),
       size: size.toString()
     });
-    const url = `${CASTLE_BASE}/film-api/v1.1.0/movie/searchByKeyword?${params.toString()}`;
+    const url = CASTLE_BASE + "/film-api/v1.1.0/movie/searchByKeyword?" + params.toString();
     const response = yield makeRequest(url);
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
     return JSON.parse(decrypted);
   });
 }
+
 function getDetails(securityKey, movieId) {
   return __async(this, null, function* () {
-    console.log(`[Castle] Fetching details for movieId: ${movieId}`);
-    const url = `${CASTLE_BASE}/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}&movieId=${movieId}&packageName=${PKG}`;
+    const url = CASTLE_BASE + "/film-api/v1.9.9/movie?channel=" + CHANNEL +
+                "&clientType=" + CLIENT + "&lang=" + LANG +
+                "&movieId=" + movieId + "&packageName=" + PKG;
     const response = yield makeRequest(url);
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
     return JSON.parse(decrypted);
   });
 }
-function getVideoV1(securityKey, movieId, episodeId, languageId, resolution = 2) {
+
+function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
   return __async(this, null, function* () {
-    console.log(`[Castle] Fetching video (v1) for movieId: ${movieId}, languageId: ${languageId}`);
-    const url = `${CASTLE_BASE}/film-api/v2.0.1/movie/getVideo2?clientType=${CLIENT}&packageName=${PKG}&channel=${CHANNEL}&lang=${LANG}`;
+    const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
+                "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
+
     const body = {
       mode: "1",
       appMarket: "GuanWang",
       clientType: CLIENT,
       woolUser: "false",
-      apkSignKey: "ED0955EB04E67A1D9F3305B95454FED485261475",
-      androidVersion: "13",
+      apkSignKey: APK_SIGN_KEY,
+      androidVersion: "12",
+      useVipCdn: "false",
+      movieId: movieId.toString(),
+      episodeId: episodeId.toString(),
+      isNewUser: "false",
+      resolution: resolution.toString(),
+      packageName: PKG,
+      firstAccessTime: Date.now().toString()
+    };
+
+    const response = yield makeRequest(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const cipher = yield extractCipherFromResponse(response);
+    const decrypted = yield decryptCastle(cipher, securityKey);
+    return JSON.parse(decrypted);
+  });
+}
+
+function getVideoV1(securityKey, movieId, episodeId, languageId, resolution = 2) {
+  return __async(this, null, function* () {
+    const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
+                "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
+
+    const body = {
+      mode: "1",
+      appMarket: "GuanWang",
+      clientType: CLIENT,
+      woolUser: "false",
+      apkSignKey: APK_SIGN_KEY,
+      androidVersion: "12",
+      useVipCdn: "false",
       movieId: movieId.toString(),
       episodeId: episodeId.toString(),
       languageId: languageId.toString(),
-      isNewUser: "true",
+      isNewUser: "false",
       resolution: resolution.toString(),
-      packageName: PKG
+      packageName: PKG,
+      firstAccessTime: Date.now().toString()
     };
+
     const response = yield makeRequest(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -285,59 +304,27 @@ function getVideoV1(securityKey, movieId, episodeId, languageId, resolution = 2)
     return JSON.parse(decrypted);
   });
 }
-function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
-  return __async(this, null, function* () {
-    console.log(`[Castle] Fetching video (v2) for movieId: ${movieId}, episodeId: ${episodeId}`);
-    const url = `${CASTLE_BASE}/film-api/v2.0.1/movie/getVideo2?clientType=${CLIENT}&packageName=${PKG}&channel=${CHANNEL}&lang=${LANG}`;
-    const body = {
-      mode: "1",
-      appMarket: "GuanWang",
-      clientType: CLIENT,
-      woolUser: "false",
-      apkSignKey: "ED0955EB04E67A1D9F3305B95454FED485261475",
-      androidVersion: "13",
-      movieId: movieId.toString(),
-      episodeId: episodeId.toString(),
-      isNewUser: "true",
-      resolution: resolution.toString(),
-      packageName: PKG
-    };
-    const response = yield makeRequest(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const cipher = yield extractCipherFromResponse(response);
-    const decrypted = yield decryptCastle(cipher, securityKey);
-    return JSON.parse(decrypted);
-  });
-}
+
+// ====================== HELPERS ======================
 function normalizeTitle(t) {
-  return (t || "")
-    .toLowerCase()
-    .replace(/[^\w\s]/g, "")   // removes ?, ., !, commas, etc.
-    .replace(/\s+/g, " ")
-    .trim();
+  return (t || "").toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
 }
 
 function findCastleMovieId(securityKey, tmdbInfo) {
   return __async(this, null, function* () {
     const searchTerms = [];
-    if (tmdbInfo.year) searchTerms.push(`${tmdbInfo.title} ${tmdbInfo.year}`);
+    if (tmdbInfo.year) searchTerms.push(tmdbInfo.title + " " + tmdbInfo.year);
     searchTerms.push(tmdbInfo.title);
 
     let rows = [];
     for (const term of searchTerms) {
-      console.log(`[Castle] Searching for: ${term}`);
       const searchResult = yield searchCastle(securityKey, term);
       const data = extractDataBlock(searchResult);
       rows = data.rows || [];
       if (rows.length > 0) break;
     }
 
-    if (rows.length === 0) {
-      throw new Error("No search results found");
-    }
+    if (rows.length === 0) throw new Error("No search results found");
 
     const searchNorm = normalizeTitle(tmdbInfo.title);
     let best = null;
@@ -349,7 +336,6 @@ function findCastleMovieId(securityKey, tmdbInfo) {
       const contains = itemNorm.includes(searchNorm) || searchNorm.includes(itemNorm);
 
       if (exact || contains) {
-        // Prefer exact match, then TV shows
         if (!best || exact || (isTv && !best.isTv)) {
           best = { item, exact, isTv };
         }
@@ -358,71 +344,41 @@ function findCastleMovieId(securityKey, tmdbInfo) {
 
     const chosen = best ? best.item : rows[0];
     const movieId = chosen.id || chosen.redirectId || chosen.redirectIdStr;
-
-    if (!movieId) {
-      throw new Error("Could not extract movie ID from search results");
-    }
-
-    console.log(`[Castle] Selected: "${chosen.title || chosen.name}" (id: ${movieId})`);
+    if (!movieId) throw new Error("Could not extract movie ID");
     return movieId.toString();
   });
 }
 
-// src/castle/utils.js
 function getQualityValue(quality) {
-  if (!quality)
-    return 0;
-  const cleanQuality = quality.toString().toLowerCase().replace(/^(sd|hd|fhd|uhd|4k)\s*/i, "").replace(/p$/, "").trim();
-  const qualityMap = {
-    "4k": 2160,
-    "2160": 2160,
-    "1440": 1440,
-    "1080": 1080,
-    "720": 720,
-    "480": 480,
-    "360": 360,
-    "240": 240
-  };
-  if (qualityMap[cleanQuality]) {
-    return qualityMap[cleanQuality];
-  }
-  const numQuality = parseInt(cleanQuality);
-  if (!isNaN(numQuality) && numQuality > 0) {
-    return numQuality;
-  }
-  return 0;
-}
-function formatSize(sizeValue) {
-  if (typeof sizeValue !== "number" || sizeValue <= 0) {
-    return "Unknown";
-  }
-  if (sizeValue > 1e9) {
-    return `${(sizeValue / 1e9).toFixed(2)} GB`;
-  }
-  return `${(sizeValue / 1e6).toFixed(0)} MB`;
-}
-function resolutionToQuality(resolution) {
-  const qualityMap = {
-    1: "480p",
-    2: "720p",
-    3: "1080p"
-  };
-  return qualityMap[resolution] || `${resolution}p`;
+  if (!quality) return 0;
+  const clean = quality.toString().toLowerCase().replace(/^(sd|hd|fhd|uhd|4k)\s*/i, "").replace(/p$/, "").trim();
+  const map = { "4k": 2160, "2160": 2160, "1440": 1440, "1080": 1080, "720": 720, "480": 480, "360": 360, "240": 240 };
+  if (map[clean]) return map[clean];
+  const num = parseInt(clean);
+  return isNaN(num) ? 0 : num;
 }
 
-// src/castle/index.js
+function formatSize(sizeValue) {
+  if (typeof sizeValue !== "number" || sizeValue <= 0) return "Unknown";
+  if (sizeValue > 1e9) return (sizeValue / 1e9).toFixed(2) + " GB";
+  return (sizeValue / 1e6).toFixed(0) + " MB";
+}
+
+function resolutionToQuality(resolution) {
+  const map = { 1: "480p", 2: "720p", 3: "1080p" };
+  return map[resolution] || resolution + "p";
+}
+
+// ====================== PROCESS VIDEO ======================
 function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
   const data = extractDataBlock(videoData);
   const videoUrl = data.videoUrl;
-  if (!videoUrl) {
-    console.log("[Castle] No videoUrl found in response");
-    return streams;
-  }
+  if (!videoUrl) return streams;
 
   const subtitles = [];
   if (data.subtitles && Array.isArray(data.subtitles)) {
-    data.subtitles.forEach((sub) => {
+    data.subtitles.forEach(sub => {
       if (sub.url) {
         subtitles.push({
           url: sub.url,
@@ -435,18 +391,18 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
 
   let mediaTitle = mediaInfo.title || "Unknown";
-  if (mediaInfo.year) {
-    mediaTitle += ` (${mediaInfo.year})`;
-  }
+  if (mediaInfo.year) mediaTitle += " (" + mediaInfo.year + ")";
   if (seasonNum && episodeNum) {
-    mediaTitle = `${mediaInfo.title} S${String(seasonNum).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
+    mediaTitle = mediaInfo.title + " S" + String(seasonNum).padStart(2, "0") + "E" + String(episodeNum).padStart(2, "0");
   }
+
   const quality = resolutionToQuality(resolution);
+
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
-      let videoQuality = video.resolutionDescription || video.resolution || quality;
+      let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
-      const streamName = languageInfo ? `Castle ${languageInfo} - ${videoQuality}` : `Castle - ${videoQuality}`;
+      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
         name: streamName,
         title: mediaTitle,
@@ -459,7 +415,7 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
       });
     }
   } else {
-    const streamName = languageInfo ? `Castle ${languageInfo} - ${quality}` : `Castle - ${quality}`;
+    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
       name: streamName,
       title: mediaTitle,
@@ -473,123 +429,86 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
   return streams;
 }
+
+// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
-    const debug = [];
-
-    function add(msg) {
-      debug.push({
-        name: "Castle DEBUG: " + msg,
-        title: "Debug",
-        url: "https://test.com",
-        quality: "360p",
-        provider: "castle"
-      });
-    }
-
     try {
-      add("Start - " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-"));
-
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
-      add("TMDB: " + tmdbInfo.title + " (" + (tmdbInfo.year || "N/A") + ")");
-
       const securityKey = yield getSecurityKey();
-      add("Security key OK");
-
       const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
-      add("MovieId: " + movieId);
 
       let details = yield getDetails(securityKey, movieId);
       let currentMovieId = movieId;
 
+      // Season handling
       if (mediaType === "tv" && seasonNum) {
         const data = extractDataBlock(details);
         const seasons = data.seasons || [];
-        const season = seasons.find(function(s) {
-          return Number(s.number) === Number(seasonNum);
-        });
+        const season = seasons.find(s => Number(s.number) === Number(seasonNum));
         if (season && season.movieId && String(season.movieId) !== String(movieId)) {
           details = yield getDetails(securityKey, season.movieId.toString());
           currentMovieId = season.movieId.toString();
-          add("Switched season movieId: " + currentMovieId);
         }
       }
 
       const detailsData = extractDataBlock(details);
-      let episodes = detailsData.episodes || [];
-      add("Episodes found: " + episodes.length);
+      const episodes = detailsData.episodes || [];
 
-      // ===== Important fix for movies with 0 episodes =====
+      // Episode finding
+      let episode = null;
+      if (mediaType === "tv" && episodeNum) {
+        episode = episodes.find(e => Number(e.number) === Number(episodeNum));
+        if (!episode && episodes.length >= episodeNum) {
+          episode = episodes[episodeNum - 1];
+        }
+      }
+      if (!episode && episodes.length > 0) {
+        episode = episodes[0];
+      }
+
       let episodeId = null;
-
-      if (episodes.length > 0) {
-        let episode = null;
-
-        if (mediaType === "tv" && episodeNum) {
-          episode = episodes.find(function(e) {
-            return Number(e.number) === Number(episodeNum);
-          });
-          if (!episode && episodes.length >= episodeNum) {
-            episode = episodes[episodeNum - 1];
-            add("Used index fallback");
-          }
-        }
-
-        if (!episode) {
-          episode = episodes[0];
-          add("Used first episode");
-        }
-
-        if (episode && episode.id) {
-          episodeId = episode.id.toString();
-        }
-      } else {
-        // Movie has no episodes array → try using movieId as episodeId
+      if (episode && episode.id) {
+        episodeId = episode.id.toString();
+      } else if (mediaType !== "tv") {
+        // Movie with no episodes array
         episodeId = currentMovieId;
-        add("No episodes array - using movieId as episodeId");
       }
 
-      if (!episodeId) {
-        add("No episode ID found");
-        return debug;
-      }
+      if (!episodeId) return [];
 
-      add("Final episodeId: " + episodeId);
-
-      // Try qualities
-      const resolutions = [3, 2, 1];
+      const resolutions = [3, 2, 1]; // 1080 → 720 → 480
       const allStreams = [];
 
-      for (let i = 0; i < resolutions.length; i++) {
-        const res = resolutions[i];
+      for (const res of resolutions) {
         try {
           const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
           const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, "");
           if (streams.length > 0) {
-            allStreams.push.apply(allStreams, streams);
-            add("Got " + resolutionToQuality(res));
-          } else {
-            add(resolutionToQuality(res) + " empty");
+            allStreams.push(...streams);
           }
-        } catch (e) {
-          add(resolutionToQuality(res) + " error: " + e.message);
+        } catch (e) {}
+      }
+
+      // Remove duplicates
+      const unique = [];
+      const seen = new Set();
+      for (const s of allStreams) {
+        const key = s.url + "_" + s.quality;
+        if (!seen.has(key)) {
+          seen.add(key);
+          unique.push(s);
         }
       }
 
-      if (allStreams.length > 0) {
-        allStreams.sort(function(a, b) {
-          return getQualityValue(b.quality) - getQualityValue(a.quality);
-        });
-        return allStreams;
-      }
-
-      add("No real streams");
-      return debug;
+      unique.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+      return unique;
 
     } catch (error) {
-      add("FATAL: " + error.message);
-      return debug;
+      console.error("[Castle] Error: " + error.message);
+      return [];
     }
   });
 }
+
 module.exports = { getStreams };
