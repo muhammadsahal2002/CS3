@@ -1,5 +1,6 @@
 /**
- * castle - Updated for real app request (v2.0.7 + India2 + com.journey.indiab)
+ * castle - Clean simplified version
+ * Search by title → Match by episode number only
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -43,11 +44,11 @@ var __async = (__this, __arguments, generator) => {
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var CASTLE_BASE = "https://api.hlowb.com";
-var PKG = "com.journey.indiab";
-var CHANNEL = "India2";
+var PKG = "com.external.castle";
+var CHANNEL = "IndiaA";
 var CLIENT = "1";
 var LANG = "en-US";
-var APK_SIGN_KEY = "3E9F4979E27C7A9ABB2688C38E6BABAD645BE135";
+var APK_SIGN_KEY = "ED0955EB04E67A1D9F3305B95454FED485261475";
 
 var API_HEADERS = {
   "User-Agent": "okhttp/4.9.3",
@@ -83,7 +84,7 @@ function makeRequest(_0) {
       }
       return response;
     } catch (error) {
-      console.error("[Castle] Request failed for " + url + ": " + error.message);
+      console.error("[Castle] Request failed: " + error.message);
       throw error;
     }
   });
@@ -242,7 +243,7 @@ function getDetails(securityKey, movieId) {
 
 function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
   return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
+    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
 
     const body = {
@@ -251,47 +252,12 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
       clientType: CLIENT,
       woolUser: "false",
       apkSignKey: APK_SIGN_KEY,
-      androidVersion: "12",
-      useVipCdn: "false",
+      androidVersion: "13",
       movieId: movieId.toString(),
       episodeId: episodeId.toString(),
-      isNewUser: "false",
+      isNewUser: "true",
       resolution: resolution.toString(),
-      packageName: PKG,
-      firstAccessTime: Date.now().toString()
-    };
-
-    const response = yield makeRequest(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    const cipher = yield extractCipherFromResponse(response);
-    const decrypted = yield decryptCastle(cipher, securityKey);
-    return JSON.parse(decrypted);
-  });
-}
-
-function getVideoV1(securityKey, movieId, episodeId, languageId, resolution = 2) {
-  return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
-                "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
-
-    const body = {
-      mode: "1",
-      appMarket: "GuanWang",
-      clientType: CLIENT,
-      woolUser: "false",
-      apkSignKey: APK_SIGN_KEY,
-      androidVersion: "12",
-      useVipCdn: "false",
-      movieId: movieId.toString(),
-      episodeId: episodeId.toString(),
-      languageId: languageId.toString(),
-      isNewUser: "false",
-      resolution: resolution.toString(),
-      packageName: PKG,
-      firstAccessTime: Date.now().toString()
+      packageName: PKG
     };
 
     const response = yield makeRequest(url, {
@@ -312,38 +278,32 @@ function normalizeTitle(t) {
 
 function findCastleMovieId(securityKey, tmdbInfo) {
   return __async(this, null, function* () {
-    const searchTerms = [];
-    if (tmdbInfo.year) searchTerms.push(tmdbInfo.title + " " + tmdbInfo.year);
-    searchTerms.push(tmdbInfo.title);
+    const terms = [];
+    if (tmdbInfo.year) terms.push(tmdbInfo.title + " " + tmdbInfo.year);
+    terms.push(tmdbInfo.title);
 
     let rows = [];
-    for (const term of searchTerms) {
-      const searchResult = yield searchCastle(securityKey, term);
-      const data = extractDataBlock(searchResult);
-      rows = data.rows || [];
+    for (const term of terms) {
+      const result = yield searchCastle(securityKey, term);
+      rows = extractDataBlock(result).rows || [];
       if (rows.length > 0) break;
     }
 
     if (rows.length === 0) throw new Error("No search results found");
 
+    // Simple matching
     const searchNorm = normalizeTitle(tmdbInfo.title);
-    let best = null;
+    let best = rows[0];
 
     for (const item of rows) {
       const itemNorm = normalizeTitle(item.title || item.name || "");
-      const isTv = (item.movieTypeName || "").toLowerCase().includes("tv") || item.movieType === 1;
-      const exact = itemNorm === searchNorm;
-      const contains = itemNorm.includes(searchNorm) || searchNorm.includes(itemNorm);
-
-      if (exact || contains) {
-        if (!best || exact || (isTv && !best.isTv)) {
-          best = { item, exact, isTv };
-        }
+      if (itemNorm === searchNorm || itemNorm.includes(searchNorm) || searchNorm.includes(itemNorm)) {
+        best = item;
+        break;
       }
     }
 
-    const chosen = best ? best.item : rows[0];
-    const movieId = chosen.id || chosen.redirectId || chosen.redirectIdStr;
+    const movieId = best.id || best.redirectId || best.redirectIdStr;
     if (!movieId) throw new Error("Could not extract movie ID");
     return movieId.toString();
   });
@@ -370,7 +330,7 @@ function resolutionToQuality(resolution) {
 }
 
 // ====================== PROCESS VIDEO ======================
-function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
+function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution) {
   const streams = [];
   const data = extractDataBlock(videoData);
   const videoUrl = data.videoUrl;
@@ -402,9 +362,8 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
-      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
-        name: streamName,
+        name: "Castle - " + videoQuality,
         title: mediaTitle,
         url: video.url || videoUrl,
         quality: videoQuality,
@@ -415,9 +374,8 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
       });
     }
   } else {
-    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
-      name: streamName,
+      name: "Castle - " + quality,
       title: mediaTitle,
       url: videoUrl,
       quality,
@@ -441,7 +399,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       let details = yield getDetails(securityKey, movieId);
       let currentMovieId = movieId;
 
-      // Season handling
+      // Handle different season movieId if exists
       if (mediaType === "tv" && seasonNum) {
         const data = extractDataBlock(details);
         const seasons = data.seasons || [];
@@ -455,35 +413,39 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const detailsData = extractDataBlock(details);
       const episodes = detailsData.episodes || [];
 
-      // Episode finding
-      let episode = null;
-      if (mediaType === "tv" && episodeNum) {
-        episode = episodes.find(e => Number(e.number) === Number(episodeNum));
-        if (!episode && episodes.length >= episodeNum) {
-          episode = episodes[episodeNum - 1];
-        }
-      }
-      if (!episode && episodes.length > 0) {
-        episode = episodes[0];
-      }
-
+      // ===== Only care about episode number =====
       let episodeId = null;
-      if (episode && episode.id) {
-        episodeId = episode.id.toString();
-      } else if (mediaType !== "tv") {
+
+      if (mediaType === "tv" && episodeNum) {
+        // 1. Match by number
+        let ep = episodes.find(e => Number(e.number) === Number(episodeNum));
+
+        // 2. Fallback to index
+        if (!ep && episodes.length >= episodeNum) {
+          ep = episodes[episodeNum - 1];
+        }
+
+        if (ep && ep.id) {
+          episodeId = ep.id.toString();
+        }
+      } else if (episodes.length > 0) {
+        // Movie → take first episode
+        episodeId = episodes[0].id.toString();
+      } else {
         // Movie with no episodes array
         episodeId = currentMovieId;
       }
 
       if (!episodeId) return [];
 
+      // Try multiple resolutions
       const resolutions = [3, 2, 1]; // 1080 → 720 → 480
       const allStreams = [];
 
       for (const res of resolutions) {
         try {
           const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, res);
-          const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, "");
+          const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res);
           if (streams.length > 0) {
             allStreams.push(...streams);
           }
