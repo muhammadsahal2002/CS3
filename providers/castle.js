@@ -113,10 +113,18 @@ function extractDataBlock(obj) {
 // ====================== TMDB ======================
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
+    // If Nuvio sent IMDb ID (tt...), we can't use TMDB
+    if (String(tmdbId).startsWith("tt")) {
+      return {
+        title: "Unknown",
+        year: null,
+        tmdbId: tmdbId
+      };
+    }
+
     try {
       const endpoint = mediaType === "tv" ? "tv" : "movie";
-      const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&append_to_response=external_ids";
-      
+      const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
       const response = yield makeRequest(url);
       const data = yield response.json();
 
@@ -130,8 +138,6 @@ function getTMDBDetails(tmdbId, mediaType) {
         tmdbId: tmdbId
       };
     } catch (e) {
-      // Fallback if TMDB fails
-      console.error("[Castle] TMDB failed: " + e.message);
       return {
         title: "Unknown",
         year: null,
@@ -140,7 +146,6 @@ function getTMDBDetails(tmdbId, mediaType) {
     }
   });
 }
-
 // ====================== DECRYPT ======================
 function decryptCastle(encryptedB64, securityKeyB64) {
   return __async(this, null, function* () {
