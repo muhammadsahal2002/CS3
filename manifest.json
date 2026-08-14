@@ -9,7 +9,7 @@
       "version": "2.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/4khdhub.js",
+      "filename": "providers/castle.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["mp4", "m3u8"],
