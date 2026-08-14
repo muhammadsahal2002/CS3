@@ -1,6 +1,6 @@
 /**
- * castle - Clean simplified version
- * Search by title → Match by episode number only
+ * castle - Full quality & audio support
+ * All resolutions (1080p, 720p, 480p) + All audio tracks
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -113,13 +113,8 @@ function extractDataBlock(obj) {
 // ====================== TMDB ======================
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
-    // If Nuvio sent IMDb ID (tt...), we can't use TMDB
     if (String(tmdbId).startsWith("tt")) {
-      return {
-        title: "Unknown",
-        year: null,
-        tmdbId: tmdbId
-      };
+      return { title: "Unknown", year: null, tmdbId: tmdbId };
     }
 
     try {
@@ -132,20 +127,13 @@ function getTMDBDetails(tmdbId, mediaType) {
       const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
       const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
 
-      return {
-        title: title || "Unknown",
-        year: year,
-        tmdbId: tmdbId
-      };
+      return { title: title || "Unknown", year: year, tmdbId: tmdbId };
     } catch (e) {
-      return {
-        title: "Unknown",
-        year: null,
-        tmdbId: tmdbId
-      };
+      return { title: "Unknown", year: null, tmdbId: tmdbId };
     }
   });
 }
+
 // ====================== DECRYPT ======================
 function decryptCastle(encryptedB64, securityKeyB64) {
   return __async(this, null, function* () {
@@ -263,7 +251,38 @@ function getDetails(securityKey, movieId) {
   });
 }
 
-function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
+function getVideoWithLanguage(securityKey, movieId, episodeId, languageId, resolution = 2) {
+  return __async(this, null, function* () {
+    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
+                "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
+
+    const body = {
+      mode: "1",
+      appMarket: "GuanWang",
+      clientType: CLIENT,
+      woolUser: "false",
+      apkSignKey: APK_SIGN_KEY,
+      androidVersion: "13",
+      movieId: movieId.toString(),
+      episodeId: episodeId.toString(),
+      languageId: languageId.toString(),
+      isNewUser: "true",
+      resolution: resolution.toString(),
+      packageName: PKG
+    };
+
+    const response = yield makeRequest(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const cipher = yield extractCipherFromResponse(response);
+    const decrypted = yield decryptCastle(cipher, securityKey);
+    return JSON.parse(decrypted);
+  });
+}
+
+function getVideoNoLanguage(securityKey, movieId, episodeId, resolution = 2) {
   return __async(this, null, function* () {
     const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
@@ -313,7 +332,6 @@ function findCastleMovieId(securityKey, tmdbInfo) {
 
     if (rows.length === 0) throw new Error("No search results found");
 
-    // Simple matching
     const searchNorm = normalizeTitle(tmdbInfo.title);
     let best = rows[0];
 
@@ -351,8 +369,17 @@ function resolutionToQuality(resolution) {
   return map[resolution] || resolution + "p";
 }
 
+function transformPreviewUrl(url) {
+  if (!url) return url;
+  if (url.includes("preview") || url.endsWith(".jpg") || url.endsWith(".png") || url.endsWith(".jpeg")) {
+    const basePath = url.split("?")[0].split("/").slice(0, -1).join("/");
+    return basePath + "/index.m3u8";
+  }
+  return url;
+}
+
 // ====================== PROCESS VIDEO ======================
-function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution) {
+function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
   const data = extractDataBlock(videoData);
   const videoUrl = data.videoUrl;
@@ -380,36 +407,44 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
 
   const quality = resolutionToQuality(resolution);
 
+  // Handle preview/transform URL
+  let finalUrl = transformPreviewUrl(videoUrl);
+  const isPreview = videoUrl.includes("preview");
+
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
+      const streamUrl = transformPreviewUrl(video.url || finalUrl);
+      const preview = video.url?.includes("preview") || isPreview;
+      
       streams.push({
-        name: "Castle - " + videoQuality,
+        name: languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality,
         title: mediaTitle,
-        url: video.url || videoUrl,
+        url: streamUrl,
         quality: videoQuality,
         size: formatSize(video.size),
         headers: PLAYBACK_HEADERS,
         provider: "castle",
-        subtitles
+        subtitles: preview ? [] : subtitles // No subtitles for preview
       });
     }
   } else {
     streams.push({
-      name: "Castle - " + quality,
+      name: languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality,
       title: mediaTitle,
-      url: videoUrl,
+      url: finalUrl,
       quality,
       size: formatSize(data.size),
       headers: PLAYBACK_HEADERS,
       provider: "castle",
-      subtitles
+      subtitles: isPreview ? [] : subtitles
     });
   }
   return streams;
 }
 
+// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     const debug = [];
@@ -425,7 +460,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
 
     try {
-add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
+      add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
 
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
       add("TMDB → " + tmdbInfo.title);
@@ -476,15 +511,92 @@ add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-")
 
       add("EpisodeId → " + episodeId);
 
-      // Try get video
-      const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, 2);
-      const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, 2);
+      // Get the episode details to find available tracks
+      const episode = episodes.find(e => e.id?.toString() === episodeId);
+      const tracks = episode?.tracks || [];
+      
+      const allStreams = [];
+      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
 
-      if (streams.length > 0) {
-        return streams;
+      // Check if any track has individual video
+      const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
+
+      if (!hasIndividualVideo && tracks.length > 0) {
+        // If no individual video, fetch once with no languageId
+        // but include all language names in the stream name
+        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+        
+        for (const res of resolutions) {
+          try {
+            const videoData = yield getVideoNoLanguage(securityKey, currentMovieId, episodeId, res);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, allLanguageNames);
+            if (streams.length > 0) {
+              allStreams.push(...streams);
+              add("Found " + res + " → " + streams.length + " streams");
+            }
+          } catch (e) {
+            add("Res " + res + " failed: " + e.message);
+          }
+        }
+      } else {
+        // Fetch each language individually
+        for (const track of tracks) {
+          const langName = track.languageName || track.abbreviate || "Unknown";
+          const langId = track.languageId;
+          
+          // Skip if no languageId or no individual video flag
+          if (!langId || !track.existIndividualVideo) continue;
+
+          for (const res of resolutions) {
+            try {
+              const videoData = yield getVideoWithLanguage(securityKey, currentMovieId, episodeId, langId, res);
+              const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, langName);
+              if (streams.length > 0) {
+                allStreams.push(...streams);
+                add("Found " + langName + " " + res + " → " + streams.length + " streams");
+              }
+            } catch (e) {
+              add(langName + " " + res + " failed: " + e.message);
+            }
+          }
+        }
       }
 
-      add("getVideo2 returned empty");
+      // Fallback: if no streams found, try without language
+      if (allStreams.length === 0) {
+        add("Trying fallback (no language)");
+        for (const res of resolutions) {
+          try {
+            const videoData = yield getVideoNoLanguage(securityKey, currentMovieId, episodeId, res);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, res, "Shared");
+            if (streams.length > 0) {
+              allStreams.push(...streams);
+              add("Fallback " + res + " → " + streams.length + " streams");
+            }
+          } catch (e) {
+            add("Fallback " + res + " failed: " + e.message);
+          }
+        }
+      }
+
+      // Sort by quality (highest first)
+      allStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+      
+      // Remove duplicates (same url, same quality)
+      const seen = new Set();
+      const uniqueStreams = allStreams.filter(s => {
+        const key = s.url + "_" + s.quality;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      add("Total unique streams: " + uniqueStreams.length);
+
+      if (uniqueStreams.length > 0) {
+        return uniqueStreams;
+      }
+
       return debug;
 
     } catch (error) {
@@ -493,4 +605,5 @@ add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-")
     }
   });
 }
+
 module.exports = { getStreams };
