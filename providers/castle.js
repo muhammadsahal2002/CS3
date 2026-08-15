@@ -256,7 +256,6 @@ function getDetails(securityKey, movieId) {
 
 function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId = null) {
   return __async(this, null, function* () {
-    // Updated endpoint to v2.0.7
     const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
 
@@ -266,30 +265,32 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
       clientType: CLIENT,
       woolUser: "false",
       apkSignKey: APK_SIGN_KEY,
-      androidVersion: "12",                // updated from 13
+      androidVersion: "12",
       movieId: movieId.toString(),
-      episodeId: episodeId.toString(),
-      isNewUser: "false",                  // changed from true
+      isNewUser: "false",
       resolution: resolution.toString(),
       packageName: PKG,
       useVipCdn: "false",
-      firstAccessTime: "1786720922752"     // static, can be generated
+      firstAccessTime: Date.now().toString()   // dynamic
     };
+
+    if (episodeId !== null && episodeId !== undefined) {
+      body.episodeId = episodeId.toString();
+    }
 
     if (languageId !== null) {
       body.languageId = languageId.toString();
     }
 
-    // Required headers from official app
     const headers = {
       "Content-Type": "application/json",
       "version": "2.0.8",
       "clientType": CLIENT,
-      "deviceId": "5f2c2f2b-523b-377f-9f2f-c454ac72784f", // static
-      "guid": "6787a0a8c3b440e99e71bd0fbd12c7e32289",       // static
+      "deviceId": "5f2c2f2b-523b-377f-9f2f-c454ac72784f",
+      "guid": "6787a0a8c3b440e99e71bd0fbd12c7e32289",
       "channel": CHANNEL,
       "timestamp": Date.now().toString(),
-      "nonce": "2e80099e4f144f23bcfc546c548f2331"           // static
+      "nonce": Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15) // random 26 chars
     };
 
     const response = yield makeRequest(url, {
@@ -465,6 +466,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const detailsData = extractDataBlock(details);
       const episodes = detailsData.episodes || [];
       add("Episodes → " + episodes.length);
+      if (episodes.length > 0) {
+        add("First episode id: " + (episodes[0].id || "null"));
+      }
 
       let episodeId = null;
 
@@ -479,6 +483,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         episodeId = episodes[0].id.toString();
       } else {
         episodeId = currentMovieId;
+        add("No episodes – using movieId as episodeId");
       }
 
       if (!episodeId) {
@@ -491,19 +496,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       // Get episode and tracks
       const episode = episodes.find(e => e.id?.toString() === episodeId);
       const tracks = episode?.tracks || [];
-      
       add("Tracks found: " + tracks.map(t => (t.languageName || t.abbreviate || "Unknown") + (t.existIndividualVideo ? " [IND]" : " [SHARED]")).join(", "));
 
       const allStreams = [];
       const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
 
-      // Check if any track has individual video
-      const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
-
-      // ---- New approach: Always try per-track first ----
       let fetchedAny = false;
-      
-      // Try each track individually (if it has languageId)
+
+      // ------------------------------------------
+      // 1. Try per‑track with languageId
+      // ------------------------------------------
       for (const track of tracks) {
         const langName = track.languageName || track.abbreviate || "Unknown";
         const langId = track.languageId;
@@ -517,6 +519,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               allStreams.push(...streams);
               fetchedAny = true;
               add("Got " + langName + " " + resolutionToQuality(resolution));
+            } else {
+              add(langName + " " + resolution + " returned no streams");
             }
           } catch (e) {
             add(langName + " " + resolution + " failed: " + e.message);
@@ -524,7 +528,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // If none of the per-track fetches worked, fallback to shared method
+      // ------------------------------------------
+      // 2. Fallback: shared method (use first languageId)
+      // ------------------------------------------
       if (!fetchedAny) {
         add("No per-track streams, falling back to shared method");
         const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
@@ -539,9 +545,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             } else {
               videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             }
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames || "Shared");
             if (streams.length > 0) {
               allStreams.push(...streams);
+              fetchedAny = true;
               add("Got shared " + resolutionToQuality(resolution));
             }
           } catch (e) {
@@ -550,21 +557,49 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // Final fallback: try without any language
-      if (allStreams.length === 0) {
-        add("Final fallback - no language");
+      // ------------------------------------------
+      // 3. Final fallback: try without episodeId (some endpoints allow it)
+      // ------------------------------------------
+      if (!fetchedAny) {
+        add("Trying without episodeId");
+        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
         for (const resolution of resolutions) {
           try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
-            if (streams.length > 0) allStreams.push(...streams);
+            // Pass null for episodeId – getVideo2 will omit it from the body
+            const videoData = yield getVideo2(securityKey, currentMovieId, null, resolution);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames || "NoEpisode");
+            if (streams.length > 0) {
+              allStreams.push(...streams);
+              fetchedAny = true;
+              add("Got without episodeId " + resolutionToQuality(resolution));
+            }
           } catch (e) {
-            add("Final fallback " + resolution + " failed: " + e.message);
+            add("Without episodeId " + resolution + " failed: " + e.message);
           }
         }
       }
 
-      // Deduplicate by URL + quality + language
+      // ------------------------------------------
+      // 4. Ultra fallback: try no language, no episodeId
+      // ------------------------------------------
+      if (!fetchedAny) {
+        add("Final fallback - no language, no episodeId");
+        for (const resolution of resolutions) {
+          try {
+            const videoData = yield getVideo2(securityKey, currentMovieId, null, resolution);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
+            if (streams.length > 0) {
+              allStreams.push(...streams);
+              fetchedAny = true;
+              add("Ultra fallback " + resolutionToQuality(resolution));
+            }
+          } catch (e) {
+            add("Ultra fallback " + resolution + " failed: " + e.message);
+          }
+        }
+      }
+
+      // Deduplicate
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
         const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
