@@ -1,12 +1,12 @@
 /**
- * castle - Clean simplified version
- * Search by title → Match by episode number only
+ * castle - Full audio & video quality support (clean, no debug)
+ * Matches latest smali + deduplication + proper quality sorting
  */
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropSymbols = Object.getOwnPropertySymbols;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __propIsEnum = Object.prototype.propertyIsEnumerable;
+var __hasOwnProp = Object.prototype.hasOwnProp;
+var __propIsEnum = Object.prototype.propertyIsEnum;
 var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
 var __spreadValues = (a, b) => {
   for (var prop in b || (b = {}))
@@ -21,20 +21,8 @@ var __spreadValues = (a, b) => {
 };
 var __async = (__this, __arguments, generator) => {
   return new Promise((resolve, reject) => {
-    var fulfilled = (value) => {
-      try {
-        step(generator.next(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var rejected = (value) => {
-      try {
-        step(generator.throw(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
+    var fulfilled = (value) => { try { step(generator.next(value)); } catch (e) { reject(e); } };
+    var rejected = (value) => { try { step(generator.throw(value)); } catch (e) { reject(e); } };
     var step = (x) => x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected);
     step((generator = generator.apply(__this, __arguments)).next());
   });
@@ -72,22 +60,20 @@ var PLAYBACK_HEADERS = {
 
 // ====================== HTTP ======================
 function makeRequest(_0) {
-  return __async(this, arguments, function* (url, options = {}) {
+  return __async(this, arguments, function* (url, options = {})) {
     try {
       const response = yield fetch(url, {
         method: options.method || "GET",
         headers: __spreadValues(__spreadValues({}, API_HEADERS), options.headers),
         body: options.body
       });
-      if (!response.ok) {
-        throw new Error("HTTP " + response.status + ": " + response.statusText);
-      }
+      if (!response.ok) throw new Error("HTTP " + response.status + ": " + response.statusText);
       return response;
     } catch (error) {
       console.error("[Castle] Request failed: " + error.message);
       throw error;
     }
-  });
+  };
 }
 
 function extractCipherFromResponse(response) {
@@ -97,9 +83,7 @@ function extractCipherFromResponse(response) {
     if (!trimmed) throw new Error("Empty response");
     try {
       const json = JSON.parse(trimmed);
-      if (json && json.data && typeof json.data === "string") {
-        return json.data.trim();
-      }
+      if (json && json.data && typeof json.data === "string") return json.data.trim();
     } catch (e) {}
     return trimmed;
   });
@@ -113,78 +97,47 @@ function extractDataBlock(obj) {
 // ====================== TMDB ======================
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
-    // If Nuvio sent IMDb ID (tt...), we can't use TMDB
-    if (String(tmdbId).startsWith("tt")) {
-      return {
-        title: "Unknown",
-        year: null,
-        tmdbId: tmdbId
-      };
-    }
-
+    if (String(tmdbId).startsWith("tt")) return { title: "Unknown", year: null, tmdbId: tmdbId };
     try {
       const endpoint = mediaType === "tv" ? "tv" : "movie";
       const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
       const response = yield makeRequest(url);
       const data = yield response.json();
-
       const title = mediaType === "tv" ? data.name : data.title;
       const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
       const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
-
-      return {
-        title: title || "Unknown",
-        year: year,
-        tmdbId: tmdbId
-      };
+      return { title: title || "Unknown", year: year, tmdbId: tmdbId };
     } catch (e) {
-      return {
-        title: "Unknown",
-        year: null,
-        tmdbId: tmdbId
-      };
+      return { title: "Unknown", year: null, tmdbId: tmdbId };
     }
   });
 }
+
 // ====================== DECRYPT ======================
 function decryptCastle(encryptedB64, securityKeyB64) {
   return __async(this, null, function* () {
     try {
       const CryptoJS = require("crypto-js");
-
       if (typeof __crypto_aes_decrypt_raw !== "undefined") {
         const originalDecrypt = CryptoJS.AES.decrypt;
         CryptoJS.AES.decrypt = function(cipher, key, options) {
           try {
             const wordArrayToBytes = (wordArray) => {
               const bytes = new Uint8Array(wordArray.sigBytes);
-              for (let i = 0; i < wordArray.sigBytes; i++) {
-                bytes[i] = (wordArray.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-              }
+              for (let i = 0; i < wordArray.sigBytes; i++) bytes[i] = (wordArray.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
               return bytes;
             };
-            const toUint8Array = (data) => {
-              if (data instanceof Uint8Array) return data;
-              if (data instanceof ArrayBuffer) return new Uint8Array(data);
-              if (data && typeof data.length === "number") return new Uint8Array(Array.prototype.slice.call(data));
-              return new Uint8Array(0);
-            };
-            const data = typeof cipher === "string"
-              ? new Uint8Array(Array.from(atob(cipher), c => c.charCodeAt(0)))
-              : (cipher.ciphertext ? wordArrayToBytes(cipher.ciphertext) : toUint8Array(cipher));
+            const toUint8Array = (data) => data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : data && typeof data.length === "number" ? new Uint8Array(Array.prototype.slice.call(data)) : new Uint8Array(0);
+            const data = typeof cipher === "string" ? new Uint8Array(Array.from(atob(cipher), c => c.charCodeAt(0))) : (cipher.ciphertext ? wordArrayToBytes(cipher.ciphertext) : toUint8Array(cipher));
             const kBytes = wordArrayToBytes(key);
             const ivBytes = (options && options.iv) ? wordArrayToBytes(options.iv) : new Uint8Array(0);
-
             const keyArg = typeof Int8Array !== "undefined" ? new Int8Array(kBytes.buffer) : kBytes;
             const ivArg = typeof Int8Array !== "undefined" ? new Int8Array(ivBytes.buffer) : ivBytes;
             const dataArg = typeof Int8Array !== "undefined" ? new Int8Array(data.buffer) : data;
-
             const resBytes = __crypto_aes_decrypt_raw("AES-CBC", keyArg, ivArg, dataArg);
             const plain = new TextDecoder().decode(resBytes);
             return { toString: function() { return plain; } };
-          } catch (err) {
-            return originalDecrypt.call(CryptoJS.AES, cipher, key, options);
-          }
+          } catch (err) { return originalDecrypt.call(CryptoJS.AES, cipher, key, options); }
         };
       }
 
@@ -204,12 +157,7 @@ function decryptCastle(encryptedB64, securityKeyB64) {
       }
 
       const iv = finalKey;
-      const decrypted = CryptoJS.AES.decrypt(encryptedB64, finalKey, {
-        iv,
-        mode: CryptoJS.mode.CBC,
-        padding: CryptoJS.pad.Pkcs7
-      });
-
+      const decrypted = CryptoJS.AES.decrypt(encryptedB64, finalKey, { iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
       const result = decrypted.toString(CryptoJS.enc.Utf8);
       if (!result) throw new Error("Decryption resulted in empty string");
       return result;
@@ -233,16 +181,7 @@ function getSecurityKey() {
 
 function searchCastle(securityKey, keyword, page = 1, size = 30) {
   return __async(this, null, function* () {
-    const params = new URLSearchParams({
-      channel: CHANNEL,
-      clientType: CLIENT,
-      keyword,
-      lang: LANG,
-      mode: "1",
-      packageName: PKG,
-      page: page.toString(),
-      size: size.toString()
-    });
+    const params = new URLSearchParams({ channel: CHANNEL, clientType: CLIENT, keyword, lang: LANG, mode: "1", packageName: PKG, page: page.toString(), size: size.toString() });
     const url = CASTLE_BASE + "/film-api/v1.1.0/movie/searchByKeyword?" + params.toString();
     const response = yield makeRequest(url);
     const cipher = yield extractCipherFromResponse(response);
@@ -253,9 +192,7 @@ function searchCastle(securityKey, keyword, page = 1, size = 30) {
 
 function getDetails(securityKey, movieId) {
   return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v1.9.9/movie?channel=" + CHANNEL +
-                "&clientType=" + CLIENT + "&lang=" + LANG +
-                "&movieId=" + movieId + "&packageName=" + PKG;
+    const url = CASTLE_BASE + "/film-api/v1.9.9/movie?channel=" + CHANNEL + "&clientType=" + CLIENT + "&lang=" + LANG + "&movieId=" + movieId + "&packageName=" + PKG;
     const response = yield makeRequest(url);
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
@@ -263,11 +200,9 @@ function getDetails(securityKey, movieId) {
   });
 }
 
-function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
+function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId = null) {
   return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
-                "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
-
+    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT + "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
     const body = {
       mode: "1",
       appMarket: "GuanWang",
@@ -281,12 +216,8 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
       resolution: resolution.toString(),
       packageName: PKG
     };
-
-    const response = yield makeRequest(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
+    if (languageId !== null) body.languageId = languageId.toString();
+    const response = yield makeRequest(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
     return JSON.parse(decrypted);
@@ -294,9 +225,7 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
 }
 
 // ====================== HELPERS ======================
-function normalizeTitle(t) {
-  return (t || "").toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
-}
+function normalizeTitle(t) { return (t || "").toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim(); }
 
 function findCastleMovieId(securityKey, tmdbInfo) {
   return __async(this, null, function* () {
@@ -310,13 +239,10 @@ function findCastleMovieId(securityKey, tmdbInfo) {
       rows = extractDataBlock(result).rows || [];
       if (rows.length > 0) break;
     }
-
     if (rows.length === 0) throw new Error("No search results found");
 
-    // Simple matching
     const searchNorm = normalizeTitle(tmdbInfo.title);
     let best = rows[0];
-
     for (const item of rows) {
       const itemNorm = normalizeTitle(item.title || item.name || "");
       if (itemNorm === searchNorm || itemNorm.includes(searchNorm) || searchNorm.includes(itemNorm)) {
@@ -324,7 +250,6 @@ function findCastleMovieId(securityKey, tmdbInfo) {
         break;
       }
     }
-
     const movieId = best.id || best.redirectId || best.redirectIdStr;
     if (!movieId) throw new Error("Could not extract movie ID");
     return movieId.toString();
@@ -352,7 +277,7 @@ function resolutionToQuality(resolution) {
 }
 
 // ====================== PROCESS VIDEO ======================
-function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution) {
+function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
   const data = extractDataBlock(videoData);
   const videoUrl = data.videoUrl;
@@ -384,38 +309,44 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
+      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
-        name: "Castle - " + videoQuality,
+        name: streamName,
         title: mediaTitle,
         url: video.url || videoUrl,
         quality: videoQuality,
         size: formatSize(video.size),
         headers: PLAYBACK_HEADERS,
         provider: "castle",
-        subtitles
+        subtitles: subtitles
       });
     }
   } else {
+    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
-      name: "Castle - " + quality,
+      name: streamName,
       title: mediaTitle,
       url: videoUrl,
-      quality,
+      quality: quality,
       size: formatSize(data.size),
       headers: PLAYBACK_HEADERS,
       provider: "castle",
-      subtitles
+      subtitles: subtitles
     });
   }
   return streams;
 }
 
+// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     try {
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
+
       const securityKey = yield getSecurityKey();
+
       const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
+
       let details = yield getDetails(securityKey, movieId);
       let currentMovieId = movieId;
 
@@ -431,13 +362,11 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       const detailsData = extractDataBlock(details);
       const episodes = detailsData.episodes || [];
-      let episodeId = null;
 
+      let episodeId = null;
       if (mediaType === "tv" && episodeNum) {
         let ep = episodes.find(e => Number(e.number) === Number(episodeNum));
-        if (!ep && episodes.length >= episodeNum) {
-          ep = episodes[episodeNum - 1];
-        }
+        if (!ep && episodes.length >= episodeNum) { ep = episodes[episodeNum - 1]; }
         if (ep && ep.id) episodeId = ep.id.toString();
       } else if (episodes.length > 0) {
         episodeId = episodes[0].id.toString();
@@ -445,17 +374,84 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         episodeId = currentMovieId;
       }
 
-      if (!episodeId) {
-        return [];
+      if (!episodeId) return [];
+
+      const episode = episodes.find(e => e.id?.toString() === episodeId);
+      const tracks = episode?.tracks || [];
+
+      const allStreams = [];
+      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p (high-to-low)
+
+      // Per-track + per-resolution
+      for (const track of tracks) {
+        const langName = track.languageName || track.abbreviate || "Unknown";
+        const langId = track.languageId;
+        if (!langId) continue;
+
+        for (const resolution of resolutions) {
+          try {
+            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, langName);
+            if (streams.length > 0) {
+              allStreams.push(...streams);
+            }
+          } catch (e) {}
+        }
       }
 
-      const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, 2);
-      const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, 2);
+      // Shared fallback
+      if (allStreams.length === 0) {
+        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+        const firstTrack = tracks[0];
+        const languageId = firstTrack ? firstTrack.languageId : null;
 
-      return streams.length > 0 ? streams : [];
+        for (const resolution of resolutions) {
+          try {
+            let videoData;
+            if (languageId) {
+              videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, languageId);
+            } else {
+              videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
+            }
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames);
+            if (streams.length > 0) {
+              allStreams.push(...streams);
+            }
+          } catch (e) {}
+        }
+      }
+
+      // Final fallback (no language)
+      if (allStreams.length === 0) {
+        for (const resolution of resolutions) {
+          try {
+            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
+            if (streams.length > 0) allStreams.push(...streams);
+          } catch (e) {}
+        }
+      }
+
+      // Deduplication
+      const seen = new Set();
+      const uniqueStreams = allStreams.filter(s => {
+        const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
+        const lang = langMatch ? langMatch[1].trim() : "unknown";
+        const key = s.url + "_" + s.quality + "_" + lang;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      // Quality sort (high to low)
+      uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+
+      return uniqueStreams.length > 0 ? uniqueStreams : [];
+
     } catch (error) {
       return [];
     }
   });
 }
+
 module.exports = { getStreams };
