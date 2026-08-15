@@ -271,7 +271,7 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
       resolution: resolution.toString(),
       packageName: PKG,
       useVipCdn: "false",
-      firstAccessTime: Date.now().toString()   // dynamic
+      firstAccessTime: Date.now().toString()
     };
 
     if (episodeId !== null && episodeId !== undefined) {
@@ -290,7 +290,7 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
       "guid": "6787a0a8c3b440e99e71bd0fbd12c7e32289",
       "channel": CHANNEL,
       "timestamp": Date.now().toString(),
-      "nonce": Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15) // random 26 chars
+      "nonce": Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
     };
 
     const response = yield makeRequest(url, {
@@ -437,6 +437,12 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       });
     }
 
+    function logRaw(obj, label) {
+      try {
+        add(label + ": " + JSON.stringify(obj).substring(0, 200));
+      } catch (e) {}
+    }
+
     try {
       add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
 
@@ -450,24 +456,48 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       add("MovieId → " + movieId);
 
       let details = yield getDetails(securityKey, movieId);
+      logRaw(details, "Raw details");
+
       let currentMovieId = movieId;
 
-      if (mediaType === "tv" && seasonNum) {
-        const data = extractDataBlock(details);
-        const seasons = data.seasons || [];
+      // Check seasons
+      const detailsData = extractDataBlock(details);
+      let seasons = detailsData.seasons || [];
+      add("Seasons: " + seasons.length);
+
+      if (seasons.length > 0 && mediaType === "tv" && seasonNum) {
         const season = seasons.find(s => Number(s.number) === Number(seasonNum));
         if (season && season.movieId && String(season.movieId) !== String(movieId)) {
+          add("Fetching season " + seasonNum + " details...");
           details = yield getDetails(securityKey, season.movieId.toString());
           currentMovieId = season.movieId.toString();
           add("Season switched → " + currentMovieId);
+          logRaw(details, "Season details");
         }
       }
 
-      const detailsData = extractDataBlock(details);
-      const episodes = detailsData.episodes || [];
+      // Get episodes from the (possibly updated) details
+      const finalDetails = extractDataBlock(details);
+      let episodes = finalDetails.episodes || [];
       add("Episodes → " + episodes.length);
       if (episodes.length > 0) {
         add("First episode id: " + (episodes[0].id || "null"));
+      }
+
+      // If episodes empty but seasons exist and we didn't switch (maybe movie)
+      if (episodes.length === 0 && seasons.length > 0 && mediaType !== "tv") {
+        // Try using the first season's movieId
+        const firstSeason = seasons[0];
+        if (firstSeason && firstSeason.movieId) {
+          add("Fetching season " + firstSeason.number + " details for movie...");
+          details = yield getDetails(securityKey, firstSeason.movieId.toString());
+          currentMovieId = firstSeason.movieId.toString();
+          add("Season movieId → " + currentMovieId);
+          const seasonDetails = extractDataBlock(details);
+          episodes = seasonDetails.episodes || [];
+          add("Episodes from season: " + episodes.length);
+          logRaw(seasonDetails, "Season details for movie");
+        }
       }
 
       let episodeId = null;
@@ -493,19 +523,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       add("EpisodeId → " + episodeId);
 
-      // Get episode and tracks
+      // Get tracks from the episode
       const episode = episodes.find(e => e.id?.toString() === episodeId);
       const tracks = episode?.tracks || [];
       add("Tracks found: " + tracks.map(t => (t.languageName || t.abbreviate || "Unknown") + (t.existIndividualVideo ? " [IND]" : " [SHARED]")).join(", "));
 
       const allStreams = [];
-      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
-
+      const resolutions = [3, 2, 1];
       let fetchedAny = false;
 
-      // ------------------------------------------
-      // 1. Try per‑track with languageId
-      // ------------------------------------------
+      // 1. Try per-track with languageId
       for (const track of tracks) {
         const langName = track.languageName || track.abbreviate || "Unknown";
         const langId = track.languageId;
@@ -514,6 +541,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         for (const resolution of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
+            logRaw(videoData, "Video response for " + langName + " " + resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, langName);
             if (streams.length > 0) {
               allStreams.push(...streams);
@@ -528,9 +556,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // ------------------------------------------
-      // 2. Fallback: shared method (use first languageId)
-      // ------------------------------------------
+      // 2. Fallback: shared method
       if (!fetchedAny) {
         add("No per-track streams, falling back to shared method");
         const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
@@ -545,6 +571,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             } else {
               videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             }
+            logRaw(videoData, "Shared video response " + resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames || "Shared");
             if (streams.length > 0) {
               allStreams.push(...streams);
@@ -557,16 +584,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // ------------------------------------------
-      // 3. Final fallback: try without episodeId (some endpoints allow it)
-      // ------------------------------------------
+      // 3. Try without episodeId
       if (!fetchedAny) {
         add("Trying without episodeId");
         const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
         for (const resolution of resolutions) {
           try {
-            // Pass null for episodeId – getVideo2 will omit it from the body
             const videoData = yield getVideo2(securityKey, currentMovieId, null, resolution);
+            logRaw(videoData, "No episodeId response " + resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames || "NoEpisode");
             if (streams.length > 0) {
               allStreams.push(...streams);
@@ -579,14 +604,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // ------------------------------------------
-      // 4. Ultra fallback: try no language, no episodeId
-      // ------------------------------------------
+      // 4. Ultra fallback: no language, no episodeId
       if (!fetchedAny) {
         add("Final fallback - no language, no episodeId");
         for (const resolution of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, null, resolution);
+            logRaw(videoData, "Ultra fallback response " + resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
             if (streams.length > 0) {
               allStreams.push(...streams);
