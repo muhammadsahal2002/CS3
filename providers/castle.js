@@ -1,6 +1,5 @@
 /**
  * castle - Full audio & video quality support
- * Matches Kotlin smali logic: All tracks + All resolutions
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -343,7 +342,7 @@ function resolutionToQuality(resolution) {
 }
 
 // ====================== PROCESS VIDEO ======================
-function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution) {
+function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
   const data = extractDataBlock(videoData);
   const videoUrl = data.videoUrl;
@@ -375,8 +374,9 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
+      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
-        name: "Castle - " + videoQuality,
+        name: streamName,
         title: mediaTitle,
         url: video.url || videoUrl,
         quality: videoQuality,
@@ -387,8 +387,9 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
       });
     }
   } else {
+    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
-      name: "Castle - " + quality,
+      name: streamName,
       title: mediaTitle,
       url: videoUrl,
       quality: quality,
@@ -442,22 +443,39 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return [];
       }
 
-      // Get all available streams by quality only (one per quality)
-      const resolutions = [3, 2, 1];
-      const allStreams = [];
+      const episode = episodes.find(e => e.id?.toString() === episodeId);
+      const tracks = episode?.tracks || [];
 
-      // Try each resolution once - no language parameter
+      const allStreams = [];
+      // Order: 1080p (3), 720p (2), 480p (1)
+      const resolutions = [3, 2, 1];
+      
+      // Get all language names
+      const languageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").filter(Boolean);
+      const allLanguages = languageNames.length > 0 ? languageNames.join(" + ") : null;
+
+      // Try each resolution in order (1080p first)
       for (const resolution of resolutions) {
         try {
-          const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-          const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
+          // Try with first track's language
+          const firstTrack = tracks[0];
+          const languageId = firstTrack ? firstTrack.languageId : null;
+          
+          let videoData;
+          if (languageId) {
+            videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, languageId);
+          } else {
+            videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
+          }
+          
+          const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguages);
           allStreams.push(...streams);
         } catch (e) {
-          // Silently skip failed resolutions
+          // Skip failed resolution
         }
       }
 
-      // Final fallback: try without any language (already done above)
+      // If no streams found, try without language
       if (allStreams.length === 0) {
         for (const resolution of resolutions) {
           try {
@@ -465,23 +483,23 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
             allStreams.push(...streams);
           } catch (e) {
-            // Silently skip
+            // Skip
           }
         }
       }
 
-      // Deduplicate by URL + quality (exact match)
+      // Deduplicate by URL + quality (keep first occurrence which will be highest quality order)
       const seen = new Set();
-      const uniqueStreams = allStreams.filter(s => {
-        const key = s.url + "_" + s.quality;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      // Sort by quality (highest first)
-      uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+      const uniqueStreams = [];
       
+      for (const stream of allStreams) {
+        const key = stream.url + "_" + stream.quality;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueStreams.push(stream);
+        }
+      }
+
       return uniqueStreams;
 
     } catch (error) {
