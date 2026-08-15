@@ -1,6 +1,6 @@
 /**
- * castle - Full audio & video quality support
- * Matches Kotlin smali logic: All tracks + All resolutions
+ * castle - Updated to use official app endpoints
+ * All resolutions (1080p, 720p, 480p) + All audio tracks
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -40,24 +40,26 @@ var __async = (__this, __arguments, generator) => {
   });
 };
 
-// ====================== CONSTANTS ======================
+// ====================== CONSTANTS (UPDATED) ======================
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
-var CASTLE_BASE = "https://api.hlowb.com";
-var PKG = "com.external.castle";
-var CHANNEL = "IndiaA";
+var CASTLE_BASE = "https://api.flwck.com";                   // new base
+var PKG = "com.journey.indiab";                               // new package
+var CHANNEL = "India2";                                       // new channel
 var CLIENT = "1";
 var LANG = "en-US";
-var APK_SIGN_KEY = "ED0955EB04E67A1D9F3305B95454FED485261475";
+var APK_SIGN_KEY = "3E9F4979E27C7A9ABB2688C38E6BABAD645BE135"; // new sign key
 
+// Headers used for all requests (except video which adds extra)
 var API_HEADERS = {
-  "User-Agent": "okhttp/4.9.3",
+  "User-Agent": "okhttp/4.9.3", // keep same
   "Accept": "application/json",
   "Accept-Language": "en-US,en;q=0.9",
   "Connection": "Keep-Alive",
   "Referer": CASTLE_BASE
 };
 
+// Playback headers (unchanged)
 var PLAYBACK_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
   "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
@@ -230,6 +232,7 @@ function searchCastle(securityKey, keyword, page = 1, size = 30) {
       packageName: PKG,
       page: page.toString(),
       size: size.toString()
+      // locationId: "1001" // optionally add
     });
     const url = CASTLE_BASE + "/film-api/v1.1.0/movie/searchByKeyword?" + params.toString();
     const response = yield makeRequest(url);
@@ -253,7 +256,8 @@ function getDetails(securityKey, movieId) {
 
 function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId = null) {
   return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
+    // Updated endpoint to v2.0.7
+    const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
 
     const body = {
@@ -262,21 +266,35 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
       clientType: CLIENT,
       woolUser: "false",
       apkSignKey: APK_SIGN_KEY,
-      androidVersion: "13",
+      androidVersion: "12",                // updated from 13
       movieId: movieId.toString(),
       episodeId: episodeId.toString(),
-      isNewUser: "true",
+      isNewUser: "false",                  // changed from true
       resolution: resolution.toString(),
-      packageName: PKG
+      packageName: PKG,
+      useVipCdn: "false",
+      firstAccessTime: "1786720922752"     // static, can be generated
     };
 
     if (languageId !== null) {
       body.languageId = languageId.toString();
     }
 
+    // Required headers from official app
+    const headers = {
+      "Content-Type": "application/json",
+      "version": "2.0.8",
+      "clientType": CLIENT,
+      "deviceId": "5f2c2f2b-523b-377f-9f2f-c454ac72784f", // static
+      "guid": "6787a0a8c3b440e99e71bd0fbd12c7e32289",       // static
+      "channel": CHANNEL,
+      "timestamp": Date.now().toString(),
+      "nonce": "2e80099e4f144f23bcfc546c548f2331"           // static
+    };
+
     const response = yield makeRequest(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: headers,
       body: JSON.stringify(body)
     });
     const cipher = yield extractCipherFromResponse(response);
@@ -403,6 +421,7 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   return streams;
 }
 
+// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     const debug = [];
@@ -481,7 +500,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       // Check if any track has individual video
       const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
 
-      // --- New approach: Always try per-track first ---
+      // ---- New approach: Always try per-track first ----
       let fetchedAny = false;
       
       // Try each track individually (if it has languageId)
@@ -490,8 +509,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         const langId = track.languageId;
         if (!langId) continue;
 
-        // Even if existIndividualVideo is false, we still try with languageId
-        // (the API might still accept it)
         for (const resolution of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
@@ -547,10 +564,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // Deduplicate by URL + quality + language (extract language from stream name)
+      // Deduplicate by URL + quality + language
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
-        // Extract language from name: "Castle <language> - <quality>"
         const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
         const lang = langMatch ? langMatch[1].trim() : "unknown";
         const key = s.url + "_" + s.quality + "_" + lang;
