@@ -370,16 +370,26 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
 
   const quality = resolutionToQuality(resolution);
+  
+  // Track unique streams within this response to prevent duplicates
+  const seenUrls = new Set();
 
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
+      const streamUrl = video.url || videoUrl;
+      
+      // Skip duplicates (same URL + quality)
+      const key = streamUrl + "_" + videoQuality;
+      if (seenUrls.has(key)) continue;
+      seenUrls.add(key);
+      
       const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
         name: streamName,
         title: mediaTitle,
-        url: video.url || videoUrl,
+        url: streamUrl,
         quality: videoQuality,
         size: formatSize(video.size),
         headers: PLAYBACK_HEADERS,
@@ -500,6 +510,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
+      // First pass: Deduplicate by URL + quality + language
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
         const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
@@ -510,9 +521,19 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return true;
       });
 
-      if (uniqueStreams.length > 0) {
-        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return uniqueStreams;
+      // Second pass: Remove any remaining duplicates (same URL + quality)
+      const seen2 = new Set();
+      const finalStreams = uniqueStreams.filter(s => {
+        const key = s.url + "_" + s.quality;
+        if (seen2.has(key)) return false;
+        seen2.add(key);
+        return true;
+      });
+
+      // Sort by quality (highest first: 1080p, 720p, 480p)
+      if (finalStreams.length > 0) {
+        finalStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        return finalStreams;
       }
 
       return [];
