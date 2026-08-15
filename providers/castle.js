@@ -1,6 +1,6 @@
 /**
- * castle - Updated to use official app endpoints
- * All resolutions (1080p, 720p, 480p) + All audio tracks
+ * castle - Full audio & video quality support
+ * Matches Kotlin smali logic: All tracks + All resolutions
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -40,26 +40,24 @@ var __async = (__this, __arguments, generator) => {
   });
 };
 
-// ====================== CONSTANTS (UPDATED) ======================
+// ====================== CONSTANTS ======================
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
-var CASTLE_BASE = "https://api.flwck.com";                   // new base
-var PKG = "com.journey.indiab";                               // new package
-var CHANNEL = "India2";                                       // new channel
+var CASTLE_BASE = "https://api.hlowb.com";
+var PKG = "com.external.castle";
+var CHANNEL = "IndiaA";
 var CLIENT = "1";
 var LANG = "en-US";
-var APK_SIGN_KEY = "3E9F4979E27C7A9ABB2688C38E6BABAD645BE135"; // new sign key
+var APK_SIGN_KEY = "ED0955EB04E67A1D9F3305B95454FED485261475";
 
-// Headers used for all requests (except video which adds extra)
 var API_HEADERS = {
-  "User-Agent": "okhttp/4.9.3", // keep same
+  "User-Agent": "okhttp/4.9.3",
   "Accept": "application/json",
   "Accept-Language": "en-US,en;q=0.9",
   "Connection": "Keep-Alive",
   "Referer": CASTLE_BASE
 };
 
-// Playback headers (unchanged)
 var PLAYBACK_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
   "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
@@ -232,7 +230,6 @@ function searchCastle(securityKey, keyword, page = 1, size = 30) {
       packageName: PKG,
       page: page.toString(),
       size: size.toString()
-      // locationId: "1001" // optionally add
     });
     const url = CASTLE_BASE + "/film-api/v1.1.0/movie/searchByKeyword?" + params.toString();
     const response = yield makeRequest(url);
@@ -256,7 +253,7 @@ function getDetails(securityKey, movieId) {
 
 function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId = null) {
   return __async(this, null, function* () {
-    const url = CASTLE_BASE + "/film-api/v2.0.7/movie/getVideo2?clientType=" + CLIENT +
+    const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
 
     const body = {
@@ -265,37 +262,21 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
       clientType: CLIENT,
       woolUser: "false",
       apkSignKey: APK_SIGN_KEY,
-      androidVersion: "12",
+      androidVersion: "13",
       movieId: movieId.toString(),
-      isNewUser: "false",
+      episodeId: episodeId.toString(),
+      isNewUser: "true",
       resolution: resolution.toString(),
-      packageName: PKG,
-      useVipCdn: "false",
-      firstAccessTime: Date.now().toString()
+      packageName: PKG
     };
-
-    if (episodeId !== null && episodeId !== undefined) {
-      body.episodeId = episodeId.toString();
-    }
 
     if (languageId !== null) {
       body.languageId = languageId.toString();
     }
 
-    const headers = {
-      "Content-Type": "application/json",
-      "version": "2.0.8",
-      "clientType": CLIENT,
-      "deviceId": "5f2c2f2b-523b-377f-9f2f-c454ac72784f",
-      "guid": "6787a0a8c3b440e99e71bd0fbd12c7e32289",
-      "channel": CHANNEL,
-      "timestamp": Date.now().toString(),
-      "nonce": Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
-    };
-
     const response = yield makeRequest(url, {
       method: "POST",
-      headers: headers,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
     const cipher = yield extractCipherFromResponse(response);
@@ -422,83 +403,28 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   return streams;
 }
 
-// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
-    const debug = [];
-
-    function add(msg) {
-      debug.push({
-        name: "Castle: " + msg,
-        title: "Debug",
-        url: "https://test.com",
-        quality: "360p",
-        provider: "castle"
-      });
-    }
-
-    function logRaw(obj, label) {
-      try {
-        add(label + ": " + JSON.stringify(obj).substring(0, 200));
-      } catch (e) {}
-    }
-
     try {
-      add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
-
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
-      add("TMDB → " + tmdbInfo.title);
-
       const securityKey = yield getSecurityKey();
-      add("Key OK");
-
       const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
-      add("MovieId → " + movieId);
 
       let details = yield getDetails(securityKey, movieId);
-      logRaw(details, "Raw details");
-
       let currentMovieId = movieId;
 
-      // Check seasons
-      const detailsData = extractDataBlock(details);
-      let seasons = detailsData.seasons || [];
-      add("Seasons: " + seasons.length);
-
-      if (seasons.length > 0 && mediaType === "tv" && seasonNum) {
+      if (mediaType === "tv" && seasonNum) {
+        const data = extractDataBlock(details);
+        const seasons = data.seasons || [];
         const season = seasons.find(s => Number(s.number) === Number(seasonNum));
         if (season && season.movieId && String(season.movieId) !== String(movieId)) {
-          add("Fetching season " + seasonNum + " details...");
           details = yield getDetails(securityKey, season.movieId.toString());
           currentMovieId = season.movieId.toString();
-          add("Season switched → " + currentMovieId);
-          logRaw(details, "Season details");
         }
       }
 
-      // Get episodes from the (possibly updated) details
-      const finalDetails = extractDataBlock(details);
-      let episodes = finalDetails.episodes || [];
-      add("Episodes → " + episodes.length);
-      if (episodes.length > 0) {
-        add("First episode id: " + (episodes[0].id || "null"));
-      }
-
-      // If episodes empty but seasons exist and we didn't switch (maybe movie)
-      if (episodes.length === 0 && seasons.length > 0 && mediaType !== "tv") {
-        // Try using the first season's movieId
-        const firstSeason = seasons[0];
-        if (firstSeason && firstSeason.movieId) {
-          add("Fetching season " + firstSeason.number + " details for movie...");
-          details = yield getDetails(securityKey, firstSeason.movieId.toString());
-          currentMovieId = firstSeason.movieId.toString();
-          add("Season movieId → " + currentMovieId);
-          const seasonDetails = extractDataBlock(details);
-          episodes = seasonDetails.episodes || [];
-          add("Episodes from season: " + episodes.length);
-          logRaw(seasonDetails, "Season details for movie");
-        }
-      }
+      const detailsData = extractDataBlock(details);
+      const episodes = detailsData.episodes || [];
 
       let episodeId = null;
 
@@ -506,33 +432,26 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         let ep = episodes.find(e => Number(e.number) === Number(episodeNum));
         if (!ep && episodes.length >= episodeNum) {
           ep = episodes[episodeNum - 1];
-          add("Used index fallback");
         }
         if (ep && ep.id) episodeId = ep.id.toString();
       } else if (episodes.length > 0) {
         episodeId = episodes[0].id.toString();
       } else {
         episodeId = currentMovieId;
-        add("No episodes – using movieId as episodeId");
       }
 
       if (!episodeId) {
-        add("No episodeId found");
-        return debug;
+        return [];
       }
 
-      add("EpisodeId → " + episodeId);
-
-      // Get tracks from the episode
       const episode = episodes.find(e => e.id?.toString() === episodeId);
       const tracks = episode?.tracks || [];
-      add("Tracks found: " + tracks.map(t => (t.languageName || t.abbreviate || "Unknown") + (t.existIndividualVideo ? " [IND]" : " [SHARED]")).join(", "));
 
       const allStreams = [];
       const resolutions = [3, 2, 1];
+
       let fetchedAny = false;
 
-      // 1. Try per-track with languageId
       for (const track of tracks) {
         const langName = track.languageName || track.abbreviate || "Unknown";
         const langId = track.languageId;
@@ -541,24 +460,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         for (const resolution of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
-            logRaw(videoData, "Video response for " + langName + " " + resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, langName);
             if (streams.length > 0) {
               allStreams.push(...streams);
               fetchedAny = true;
-              add("Got " + langName + " " + resolutionToQuality(resolution));
-            } else {
-              add(langName + " " + resolution + " returned no streams");
             }
-          } catch (e) {
-            add(langName + " " + resolution + " failed: " + e.message);
-          }
+          } catch (e) {}
         }
       }
 
-      // 2. Fallback: shared method
       if (!fetchedAny) {
-        add("No per-track streams, falling back to shared method");
         const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
         const firstTrack = tracks[0];
         const languageId = firstTrack ? firstTrack.languageId : null;
@@ -571,59 +482,24 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             } else {
               videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             }
-            logRaw(videoData, "Shared video response " + resolution);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames || "Shared");
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames);
             if (streams.length > 0) {
               allStreams.push(...streams);
-              fetchedAny = true;
-              add("Got shared " + resolutionToQuality(resolution));
             }
-          } catch (e) {
-            add("Shared " + resolution + " failed: " + e.message);
-          }
+          } catch (e) {}
         }
       }
 
-      // 3. Try without episodeId
-      if (!fetchedAny) {
-        add("Trying without episodeId");
-        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+      if (allStreams.length === 0) {
         for (const resolution of resolutions) {
           try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, null, resolution);
-            logRaw(videoData, "No episodeId response " + resolution);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames || "NoEpisode");
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              fetchedAny = true;
-              add("Got without episodeId " + resolutionToQuality(resolution));
-            }
-          } catch (e) {
-            add("Without episodeId " + resolution + " failed: " + e.message);
-          }
-        }
-      }
-
-      // 4. Ultra fallback: no language, no episodeId
-      if (!fetchedAny) {
-        add("Final fallback - no language, no episodeId");
-        for (const resolution of resolutions) {
-          try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, null, resolution);
-            logRaw(videoData, "Ultra fallback response " + resolution);
+            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              fetchedAny = true;
-              add("Ultra fallback " + resolutionToQuality(resolution));
-            }
-          } catch (e) {
-            add("Ultra fallback " + resolution + " failed: " + e.message);
-          }
+            if (streams.length > 0) allStreams.push(...streams);
+          } catch (e) {}
         }
       }
 
-      // Deduplicate
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
         const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
@@ -634,18 +510,15 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return true;
       });
 
-      add("Total unique streams: " + uniqueStreams.length);
-
       if (uniqueStreams.length > 0) {
         uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
         return uniqueStreams;
       }
 
-      return debug;
+      return [];
 
     } catch (error) {
-      add("ERROR: " + error.message);
-      return debug;
+      return [];
     }
   });
 }
