@@ -371,8 +371,8 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
 
   const quality = resolutionToQuality(resolution);
   
-  // Track unique streams within this response to prevent duplicates
-  const seenUrls = new Set();
+  // Track unique streams within this response
+  const seen = new Set();
 
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
@@ -380,10 +380,10 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
       const streamUrl = video.url || videoUrl;
       
-      // Skip duplicates (same URL + quality)
-      const key = streamUrl + "_" + videoQuality;
-      if (seenUrls.has(key)) continue;
-      seenUrls.add(key);
+      // Skip duplicates - same URL + quality is a duplicate regardless of size
+      const key = streamUrl + "|" + videoQuality;
+      if (seen.has(key)) continue;
+      seen.add(key);
       
       const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
@@ -510,30 +510,19 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // First pass: Deduplicate by URL + quality + language
+      // Deduplicate by URL + quality only (ignoring language since it's in the name)
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
-        const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
-        const lang = langMatch ? langMatch[1].trim() : "unknown";
-        const key = s.url + "_" + s.quality + "_" + lang;
+        const key = s.url + "|" + s.quality;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
 
-      // Second pass: Remove any remaining duplicates (same URL + quality)
-      const seen2 = new Set();
-      const finalStreams = uniqueStreams.filter(s => {
-        const key = s.url + "_" + s.quality;
-        if (seen2.has(key)) return false;
-        seen2.add(key);
-        return true;
-      });
-
-      // Sort by quality (highest first: 1080p, 720p, 480p)
-      if (finalStreams.length > 0) {
-        finalStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return finalStreams;
+      // Sort by quality (highest first)
+      if (uniqueStreams.length > 0) {
+        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        return uniqueStreams;
       }
 
       return [];
