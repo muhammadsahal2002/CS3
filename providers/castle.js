@@ -370,26 +370,16 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
 
   const quality = resolutionToQuality(resolution);
-  
-  // Track unique streams within this response
-  const seen = new Set();
 
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
-      const streamUrl = video.url || videoUrl;
-      
-      // Skip duplicates - same URL + quality is a duplicate regardless of size
-      const key = streamUrl + "|" + videoQuality;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      
       const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
         name: streamName,
         title: mediaTitle,
-        url: streamUrl,
+        url: video.url || videoUrl,
         quality: videoQuality,
         size: formatSize(video.size),
         headers: PLAYBACK_HEADERS,
@@ -460,27 +450,28 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const allStreams = [];
       const resolutions = [3, 2, 1];
 
-      let fetchedAny = false;
+      const hasIndividualVideo = tracks.some(t => t.existIndividualVideo === true);
 
-      for (const track of tracks) {
-        const langName = track.languageName || track.abbreviate || "Unknown";
-        const langId = track.languageId;
-        if (!langId) continue;
+      if (hasIndividualVideo) {
+        for (const track of tracks) {
+          if (!track.existIndividualVideo) continue;
+          
+          const langName = track.languageName || track.abbreviate || "Unknown";
+          const langId = track.languageId;
+          if (!langId) continue;
 
-        for (const resolution of resolutions) {
-          try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, langName);
-            if (streams.length > 0) {
+          for (const resolution of resolutions) {
+            try {
+              const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
+              const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, langName);
               allStreams.push(...streams);
-              fetchedAny = true;
+            } catch (e) {
+              // Silently skip failed tracks
             }
-          } catch (e) {}
+          }
         }
-      }
-
-      if (!fetchedAny) {
-        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+      } else {
+        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(" + ");
         const firstTrack = tracks[0];
         const languageId = firstTrack ? firstTrack.languageId : null;
 
@@ -493,10 +484,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             }
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames);
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-            }
-          } catch (e) {}
+            allStreams.push(...streams);
+          } catch (e) {
+            // Silently skip failed resolutions
+          }
         }
       }
 
@@ -505,29 +496,27 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
-            if (streams.length > 0) allStreams.push(...streams);
-          } catch (e) {}
+            allStreams.push(...streams);
+          } catch (e) {
+            // Silently skip
+          }
         }
       }
 
-      // Deduplicate by URL + quality only (ignoring language since it's in the name)
+      // Deduplicate by URL + quality
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
-        const key = s.url + "|" + s.quality;
+        const key = s.url + "_" + s.quality;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
 
-      // Sort by quality (highest first)
-      if (uniqueStreams.length > 0) {
-        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return uniqueStreams;
-      }
-
-      return [];
+      uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+      return uniqueStreams;
 
     } catch (error) {
+      console.error("[Castle] Error: " + error.message);
       return [];
     }
   });
