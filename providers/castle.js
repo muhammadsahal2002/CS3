@@ -1,6 +1,6 @@
 /**
- * castle - Full audio & video quality support
- * Matches Kotlin smali logic exactly
+ * castle - Clean simplified version
+ * Search by title → Match by episode number only
  */
 "use strict";
 var __defProp = Object.defineProperty;
@@ -113,8 +113,13 @@ function extractDataBlock(obj) {
 // ====================== TMDB ======================
 function getTMDBDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
+    // If Nuvio sent IMDb ID (tt...), we can't use TMDB
     if (String(tmdbId).startsWith("tt")) {
-      return { title: "Unknown", year: null, tmdbId: tmdbId };
+      return {
+        title: "Unknown",
+        year: null,
+        tmdbId: tmdbId
+      };
     }
 
     try {
@@ -127,13 +132,20 @@ function getTMDBDetails(tmdbId, mediaType) {
       const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
       const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
 
-      return { title: title || "Unknown", year: year, tmdbId: tmdbId };
+      return {
+        title: title || "Unknown",
+        year: year,
+        tmdbId: tmdbId
+      };
     } catch (e) {
-      return { title: "Unknown", year: null, tmdbId: tmdbId };
+      return {
+        title: "Unknown",
+        year: null,
+        tmdbId: tmdbId
+      };
     }
   });
 }
-
 // ====================== DECRYPT ======================
 function decryptCastle(encryptedB64, securityKeyB64) {
   return __async(this, null, function* () {
@@ -251,7 +263,7 @@ function getDetails(securityKey, movieId) {
   });
 }
 
-function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId = null) {
+function getVideo2(securityKey, movieId, episodeId, resolution = 2) {
   return __async(this, null, function* () {
     const url = CASTLE_BASE + "/film-api/v2.0.1/movie/getVideo2?clientType=" + CLIENT +
                 "&packageName=" + PKG + "&channel=" + CHANNEL + "&lang=" + LANG;
@@ -269,10 +281,6 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
       resolution: resolution.toString(),
       packageName: PKG
     };
-
-    if (languageId !== null) {
-      body.languageId = languageId.toString();
-    }
 
     const response = yield makeRequest(url, {
       method: "POST",
@@ -305,6 +313,7 @@ function findCastleMovieId(securityKey, tmdbInfo) {
 
     if (rows.length === 0) throw new Error("No search results found");
 
+    // Simple matching
     const searchNorm = normalizeTitle(tmdbInfo.title);
     let best = rows[0];
 
@@ -343,7 +352,7 @@ function resolutionToQuality(resolution) {
 }
 
 // ====================== PROCESS VIDEO ======================
-function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
+function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution) {
   const streams = [];
   const data = extractDataBlock(videoData);
   const videoUrl = data.videoUrl;
@@ -375,35 +384,32 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
       videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
-      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
-        name: streamName,
+        name: "Castle - " + videoQuality,
         title: mediaTitle,
         url: video.url || videoUrl,
         quality: videoQuality,
         size: formatSize(video.size),
         headers: PLAYBACK_HEADERS,
         provider: "castle",
-        subtitles: subtitles
+        subtitles
       });
     }
   } else {
-    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
-      name: streamName,
+      name: "Castle - " + quality,
       title: mediaTitle,
       url: videoUrl,
-      quality: quality,
+      quality,
       size: formatSize(data.size),
       headers: PLAYBACK_HEADERS,
       provider: "castle",
-      subtitles: subtitles
+      subtitles
     });
   }
   return streams;
 }
 
-// ====================== MAIN ======================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     const debug = [];
@@ -419,7 +425,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
 
     try {
-      add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
+add("Start " + mediaType + " S" + (seasonNum || "-") + "E" + (episodeNum || "-") + " | ID:" + tmdbId);
 
       const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
       add("TMDB → " + tmdbInfo.title);
@@ -470,129 +476,15 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       add("EpisodeId → " + episodeId);
 
-      // Get episode and tracks
-      const episode = episodes.find(e => e.id?.toString() === episodeId);
-      const availableTracks = episode?.tracks || [];
+      // Try get video
+      const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, 2);
+      const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, 2);
 
-      // Check if any track has individual video - Kotlin line 670
-      const hasIndividualVideo = availableTracks.some(t => t.existIndividualVideo === true);
-
-      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
-      let videoLoaded = false;
-
-      // Kotlin lines 671-757: If no individual video
-      if (!hasIndividualVideo && availableTracks.length > 0) {
-        const firstTrack = availableTracks[0];
-        const languageId = firstTrack.languageId;
-        
-        // Build all language names - Kotlin line 674
-        const allLanguageNames = availableTracks
-          .map(t => t.languageName || t.abbreviate || "Unknown")
-          .join(", ");
-
-        // Kotlin lines 676-695: Loop through resolutions
-        for (const resolution of resolutions) {
-          try {
-            let videoData;
-            
-            // Kotlin lines 677-693: Use first track's languageId
-            if (languageId) {
-              videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, languageId);
-            } else {
-              videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-            }
-
-            // Kotlin lines 699-757: Process response
-            const decryptedJson = videoData ? JSON.stringify(videoData) : null;
-            if (decryptedJson) {
-              const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames);
-              if (streams.length > 0) {
-                // Kotlin lines 739-754: Add subtitles and streams
-                videoLoaded = true;
-                // Process subtitles
-                const videoDataObj = extractDataBlock(videoData);
-                if (videoDataObj.subtitles) {
-                  for (const sub of videoDataObj.subtitles) {
-                    if (sub.url) {
-                      // subtitle callback would go here
-                    }
-                  }
-                }
-                allStreams.push(...streams);
-              }
-            }
-          } catch (e) {
-            // Kotlin line 697: Continue on error
-            add("Resolution " + resolution + " failed: " + e.message);
-          }
-        }
-      } 
-      // Kotlin lines 761-846: If has individual video
-      else {
-        // Kotlin line 761: Loop through tracks
-        for (const track of availableTracks) {
-          // Kotlin line 762: Get languageId
-          const languageId = track.languageId;
-          if (!languageId) continue;
-
-          // Kotlin line 763: Get language name
-          const languageName = track.languageName || track.abbreviate || "Unknown";
-
-          // Kotlin line 765: Loop through resolutions
-          for (const resolution of resolutions) {
-            try {
-              // Kotlin lines 767-788: Fetch video with languageId
-              const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, languageId);
-              
-              const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, languageName);
-              if (streams.length > 0) {
-                videoLoaded = true;
-                allStreams.push(...streams);
-              }
-            } catch (e) {
-              // Kotlin line 790: Continue on error
-              add(languageName + " " + resolution + " failed: " + e.message);
-            }
-          }
-        }
+      if (streams.length > 0) {
+        return streams;
       }
 
-      // Kotlin lines 847-857: Fallback if no streams
-      if (!videoLoaded) {
-        add("Falling back to shared stream");
-        for (const resolution of resolutions) {
-          try {
-            const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-            const allLangs = availableTracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLangs);
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              videoLoaded = true;
-            }
-          } catch (e) {
-            add("Fallback " + resolution + " failed: " + e.message);
-          }
-        }
-      }
-
-      // Deduplicate by URL + quality + language
-      const seen = new Set();
-      const uniqueStreams = allStreams.filter(s => {
-        const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
-        const lang = langMatch ? langMatch[1].trim() : "unknown";
-        const key = s.url + "_" + s.quality + "_" + lang;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      add("Total unique streams: " + uniqueStreams.length);
-
-      if (uniqueStreams.length > 0) {
-        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return uniqueStreams;
-      }
-
+      add("getVideo2 returned empty");
       return debug;
 
     } catch (error) {
@@ -601,5 +493,4 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
   });
 }
-
 module.exports = { getStreams };
