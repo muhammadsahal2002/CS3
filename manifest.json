@@ -2,14 +2,28 @@
   "name": "All-in-One-Nuvio",
   "version": "1.0.0",
   "scrapers": [
-  {
-  "id": "anikoto",
-  "name": "AnikotoTV",
-  "version": "1.0.0",
-  "filename": "providers/anikoto.js",
-  "supportedTypes": ["movie", "tv"],
-  "enabled": true,
-  "formats": ["m3u8"]
-}
+    {
+      "id": "castle",
+      "name": "Castle",
+      "description": "Multi Lang provider",
+      "version": "2.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/castle.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"]
+    },
+    {
+      "id": "anikoto",
+      "name": "AnikotoTV",
+      "description": "Anime streams from anikoto.cz (SUB + DUB)",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/anikoto.js",
+      "enabled": true,
+      "formats": ["m3u8"],
+      "contentLanguage": ["en", "ja"]
+    }
   ]
 }
