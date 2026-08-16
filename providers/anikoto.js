@@ -1,6 +1,5 @@
 /**
- * AnikotoTV - Improved from working debug version
- * Better matching + SUB + DUB + debug
+ * AnikotoTV - Fixed for multi-season anime
  */
 
 "use strict";
@@ -51,8 +50,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var debug = [];
     var realStreams = [];
     var epNum = episode || 1;
+    var seasonNum = season || 1;
 
-    debug.push(makeDebugStream("START: " + tmdbId + " " + mediaType + " S" + season + "E" + epNum));
+    debug.push(makeDebugStream("START: " + tmdbId + " " + mediaType + " S" + seasonNum + "E" + epNum));
 
     var tmdbUrl = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
 
@@ -60,13 +60,48 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
             var searchTitle = String(tmdbId);
-            if (data) {
-                searchTitle = mediaType === "tv" ? (data.name || searchTitle) : (data.title || searchTitle);
+            var absoluteEpisode = epNum;
+
+            // Get absolute episode number from TMDB data
+            if (data && mediaType === "tv" && data.seasons) {
+                searchTitle = data.name || searchTitle;
                 debug.push(makeDebugStream("TMDB OK: " + searchTitle));
+
+                // Calculate absolute episode number
+                var totalEpisodesBefore = 0;
+                var foundSeason = false;
+
+                // Sort seasons by season_number
+                var sortedSeasons = data.seasons.slice().sort(function(a, b) {
+                    return a.season_number - b.season_number;
+                });
+
+                for (var i = 0; i < sortedSeasons.length; i++) {
+                    var s = sortedSeasons[i];
+                    if (s.season_number === seasonNum) {
+                        foundSeason = true;
+                        break;
+                    }
+                    // Only count episodes for seasons before the target season
+                    if (s.season_number < seasonNum && s.episode_count) {
+                        totalEpisodesBefore += s.episode_count;
+                    }
+                }
+
+                if (foundSeason) {
+                    absoluteEpisode = totalEpisodesBefore + epNum;
+                    debug.push(makeDebugStream("Absolute episode: " + absoluteEpisode + " (S" + seasonNum + "E" + epNum + ")"));
+                } else {
+                    debug.push(makeDebugStream("Season " + seasonNum + " not found, using episode " + epNum + " as-is"));
+                }
+            } else if (data) {
+                searchTitle = mediaType === "tv" ? (data.name || searchTitle) : (data.title || searchTitle);
+                debug.push(makeDebugStream("TMDB OK (movie): " + searchTitle));
             } else {
-                debug.push(makeDebugStream("TMDB FAILED"));
+                debug.push(makeDebugStream("TMDB FAILED - using fallback"));
             }
 
+            // Search for the anime
             var searchUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
             return fetch(searchUrl, { headers: getHeaders() })
                 .then(function(r) { return r.ok ? r.text() : null; })
@@ -101,50 +136,28 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     if (results.length === 0) return debug.concat(realStreams);
 
-                  // Stronger matching
-var q = normalize(searchTitle);
-var best = null;
-var bestScore = -999;
+                    // Better matching
+                    var q = normalize(searchTitle);
+                    var best = null;
+                    var bestScore = -999;
 
-for (var i = 0; i < results.length; i++) {
-    var r = results[i];
-    var t = normalize(r.title);
-    var score = 0;
+                    for (var i = 0; i < results.length; i++) {
+                        var r = results[i];
+                        var t = normalize(r.title);
+                        var score = 0;
 
-    // Exact match is best
-    if (t === q) {
-        score = 200;
-    }
-    // Title contains the full search query
-    else if (t.indexOf(q) !== -1) {
-        score = 120;
-    }
-    // Search query contains the title
-    else if (q.indexOf(t) !== -1) {
-        score = 60;
-    }
+                        if (t === q) score = 100;
+                        else if (t.indexOf(q) !== -1) score = 70;
+                        else if (q.indexOf(t) !== -1) score = 50;
 
-    // Bonus for important keywords (Shippuden, etc.)
-    if (q.indexOf("shippuden") !== -1 || q.indexOf("shippuuden") !== -1) {
-        if (t.indexOf("shippuden") !== -1 || t.indexOf("shippuuden") !== -1) {
-            score += 80;
-        } else {
-            score -= 60; // Penalize if search has Shippuden but result doesn't
-        }
-    }
+                        if (!r.isMovie) score += 35;
+                        if (r.isMovie) score -= 50;
 
-    // Prefer series over movies
-    if (!r.isMovie) score += 25;
-    if (r.isMovie) score -= 40;
-
-    // Small penalty for very short titles
-    if (t.length < 10) score -= 10;
-
-    if (score > bestScore) {
-        bestScore = score;
-        best = r;
-    }
-}
+                        if (score > bestScore) {
+                            bestScore = score;
+                            best = r;
+                        }
+                    }
 
                     if (!best) best = results[0];
 
@@ -170,7 +183,7 @@ for (var i = 0; i < results.length; i++) {
 
                             if (!animeId) return debug.concat(realStreams);
 
-                            // Episodes
+                            // Get episodes
                             var epUrl = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
                             return fetch(epUrl, { headers: getAjaxHeaders(best.url) })
                                 .then(function(r) { return r.ok ? r.text() : null; })
@@ -203,8 +216,57 @@ for (var i = 0; i < results.length; i++) {
 
                                     debug.push(makeDebugStream("EPISODES: " + episodes.length));
 
-                                    var targets = episodes.filter(function(e) { return e.number === epNum; });
-                                    debug.push(makeDebugStream("TARGETS: " + (targets.length ? targets.map(function(t){return t.type;}).join(",") : "NONE")));
+                                    // Try to find the episode using absolute episode number first
+                                    var targets = episodes.filter(function(e) { return e.number === absoluteEpisode; });
+                                    
+                                    // If not found, try the raw episode number as fallback
+                                    if (targets.length === 0 && absoluteEpisode !== epNum) {
+                                        debug.push(makeDebugStream("Absolute episode " + absoluteEpisode + " not found, trying raw " + epNum));
+                                        targets = episodes.filter(function(e) { return e.number === epNum; });
+                                    }
+                                    
+                                    // If still not found, try to find the closest match
+                                    if (targets.length === 0) {
+                                        debug.push(makeDebugStream("Episode " + absoluteEpisode + " not found"));
+                                        
+                                        // Try to find any episode with the same season prefix
+                                        // For multi-season shows, Anikoto might have different numbering
+                                        var sortedEpisodes = episodes.slice().sort(function(a, b) {
+                                            return a.number - b.number;
+                                        });
+                                        
+                                        if (sortedEpisodes.length > 0) {
+                                            // If looking for a high episode number, maybe the show is split differently
+                                            // Try to find episodes in the same range
+                                            var seasonStart = (seasonNum - 1) * 50; // Rough estimate
+                                            var seasonEnd = seasonNum * 50;
+                                            
+                                            var seasonEpisodes = episodes.filter(function(e) {
+                                                return e.number > seasonStart && e.number <= seasonEnd;
+                                            });
+                                            
+                                            if (seasonEpisodes.length > 0) {
+                                                // Find the episode closest to the target
+                                                var bestMatch = null;
+                                                var bestDiff = Infinity;
+                                                
+                                                seasonEpisodes.forEach(function(e) {
+                                                    var diff = Math.abs(e.number - absoluteEpisode);
+                                                    if (diff < bestDiff) {
+                                                        bestDiff = diff;
+                                                        bestMatch = e;
+                                                    }
+                                                });
+                                                
+                                                if (bestMatch && bestDiff < 10) {
+                                                    debug.push(makeDebugStream("Using closest match: episode " + bestMatch.number));
+                                                    targets = [bestMatch];
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    debug.push(makeDebugStream("TARGETS: " + (targets.length ? targets.map(function(t){return t.type + " ep" + t.number;}).join(",") : "NONE")));
 
                                     if (targets.length === 0) {
                                         return debug.concat(realStreams);
