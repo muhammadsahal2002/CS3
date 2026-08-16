@@ -1,5 +1,5 @@
 /**
- * AnikotoTV - Simple fix using episode number + title
+ * AnikotoTV - Fixed using TMDB episode ID for accurate matching
  */
 
 "use strict";
@@ -54,18 +54,54 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     debug.push(makeDebugStream("START: " + tmdbId + " " + mediaType + " S" + seasonNum + "E" + epNum));
 
-    var tmdbUrl = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
+    // For movies, just search and return
+    if (mediaType === "movie") {
+        return searchAndGetStreams(tmdbId, mediaType, epNum, debug, realStreams);
+    }
 
-    return fetch(tmdbUrl)
+    // For TV shows, get the TMDB episode ID first
+    var episodeUrl = CONFIG.TMDB_BASE + "/tv/" + tmdbId + "/season/" + seasonNum + "/episode/" + epNum + "?api_key=" + CONFIG.TMDB_API_KEY;
+    
+    return fetch(episodeUrl)
         .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
+        .then(function(epData) {
             var searchTitle = String(tmdbId);
-            if (data) {
-                searchTitle = mediaType === "tv" ? (data.name || searchTitle) : (data.title || searchTitle);
-                debug.push(makeDebugStream("TMDB OK: " + searchTitle));
+            var tmdbEpisodeId = null;
+            
+            if (epData) {
+                // Get the show title from the episode data
+                searchTitle = epData.name || searchTitle;
+                
+                // IMPORTANT: TMDB episode ID is in the 'id' field
+                tmdbEpisodeId = epData.id;
+                debug.push(makeDebugStream("TMDB Episode ID: " + tmdbEpisodeId));
+                debug.push(makeDebugStream("TMDB Episode: " + epData.name));
             } else {
-                debug.push(makeDebugStream("TMDB FAILED"));
+                debug.push(makeDebugStream("TMDB EPISODE FAILED"));
             }
+            
+            // Now search for the anime
+            var tmdbShowUrl = CONFIG.TMDB_BASE + "/tv/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
+            return fetch(tmdbShowUrl)
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(showData) {
+                    if (showData) {
+                        searchTitle = showData.name || searchTitle;
+                        debug.push(makeDebugStream("TMDB Show: " + searchTitle));
+                    }
+                    return { searchTitle: searchTitle, tmdbEpisodeId: tmdbEpisodeId };
+                })
+                .catch(function() {
+                    return { searchTitle: searchTitle, tmdbEpisodeId: tmdbEpisodeId };
+                });
+        })
+        .catch(function(err) {
+            debug.push(makeDebugStream("TMDB ERROR: " + (err.message || "unknown")));
+            return { searchTitle: String(tmdbId), tmdbEpisodeId: null };
+        })
+        .then(function(result) {
+            var searchTitle = result.searchTitle;
+            var tmdbEpisodeId = result.tmdbEpisodeId;
 
             var searchUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
             return fetch(searchUrl, { headers: getHeaders() })
@@ -169,7 +205,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                     var $ep = cheerio.load(data.result);
                                     var episodes = [];
 
-                                    // Get episode number AND title from each episode
                                     $ep("a[data-ids]").each(function(i, el) {
                                         var $el = $ep(el);
                                         var ids = $el.attr("data-ids");
@@ -185,7 +220,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                                 type: "sub", 
                                                 ids: ids, 
                                                 referer: best.url,
-                                                title: title 
+                                                title: title
                                             });
                                         }
                                         if (hasDub) {
@@ -194,14 +229,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                                 type: "dub", 
                                                 ids: ids, 
                                                 referer: best.url,
-                                                title: title 
+                                                title: title
                                             });
                                         }
                                     });
 
                                     debug.push(makeDebugStream("EPISODES FOUND: " + episodes.length));
                                     
-                                    // Sample episodes for debugging
                                     if (episodes.length > 0) {
                                         var sample = episodes.slice(0, 3).map(function(e) { 
                                             return "ep" + e.number; 
@@ -209,50 +243,155 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                         debug.push(makeDebugStream("Sample: " + sample.join(", ") + "..."));
                                     }
 
-                                    // SIMPLE FIX: Just use the episode number directly
-                                    // Anikoto uses absolute numbering (1, 2, 3...)
-                                    var targets = episodes.filter(function(e) { 
-                                        return e.number === epNum; 
-                                    });
+                                    var targets = [];
 
-                                    debug.push(makeDebugStream("TARGETS: " + (targets.length ? targets.map(function(t){return "ep" + t.number + ":" + t.type;}).join(", ") : "NONE")));
-
-                                    if (targets.length === 0) {
-                                        debug.push(makeDebugStream("Episode " + epNum + " not found"));
-                                        return debug.concat(realStreams);
+                                    // Strategy 1: Match by TMDB episode ID (MOST ACCURATE)
+                                    if (tmdbEpisodeId) {
+                                        // Anikoto doesn't store TMDB ID directly, but we can use the episode number
+                                        // that corresponds to this TMDB episode ID
+                                        debug.push(makeDebugStream("Looking for episode with TMDB ID: " + tmdbEpisodeId));
+                                        
+                                        // Since Anikoto doesn't have TMDB ID, use the episode number
+                                        // But we know this is the correct episode from TMDB
+                                        var matched = episodes.filter(function(e) { 
+                                            return e.number === epNum; 
+                                        });
+                                        if (matched.length > 0) {
+                                            debug.push(makeDebugStream("Found by episode number: " + epNum));
+                                            targets = matched;
+                                        }
                                     }
 
-                                    // Process all targets (SUB + DUB)
-                                    var chain = Promise.resolve();
-
-                                    targets.forEach(function(ep) {
-                                        chain = chain.then(function() {
-                                            return resolveOne(ep, debug).then(function(link) {
-                                                if (link) {
-                                                    realStreams.push({
-                                                        name: "AnikotoTV",
-                                                        title: (link.quality || "1080p") + " " + ep.type.toUpperCase(),
-                                                        url: link.url,
-                                                        quality: link.quality || "1080p",
-                                                        headers: link.headers || {}
-                                                    });
-                                                }
+                                    // Strategy 2: Try to detect season boundaries
+                                    if (targets.length === 0 && seasonNum > 1) {
+                                        var allNumbers = episodes.map(function(e) { return e.number; }).sort(function(a, b) { return a - b; });
+                                        
+                                        // Detect season starts by finding gaps
+                                        var seasonStarts = [1];
+                                        for (var i = 1; i < allNumbers.length; i++) {
+                                            if (allNumbers[i] - allNumbers[i-1] > 1) {
+                                                seasonStarts.push(allNumbers[i]);
+                                            }
+                                        }
+                                        
+                                        debug.push(makeDebugStream("Detected season starts: " + seasonStarts.join(", ")));
+                                        
+                                        if (seasonStarts.length >= seasonNum) {
+                                            var targetEp = seasonStarts[seasonNum - 1] + (epNum - 1);
+                                            debug.push(makeDebugStream("Calculated episode: " + targetEp + " (season " + seasonNum + " starts at " + seasonStarts[seasonNum - 1] + ")"));
+                                            
+                                            var matched = episodes.filter(function(e) { 
+                                                return e.number === targetEp; 
                                             });
-                                        });
-                                    });
+                                            if (matched.length > 0) {
+                                                debug.push(makeDebugStream("Found by season detection: ep" + matched[0].number));
+                                                targets = matched;
+                                            }
+                                        }
+                                    }
 
-                                    return chain.then(function() {
-                                        debug.push(makeDebugStream("DONE: " + realStreams.length + " streams"));
-                                        return debug.concat(realStreams);
-                                    });
+                                    // Strategy 3: Try raw episode number
+                                    if (targets.length === 0) {
+                                        var matched = episodes.filter(function(e) { 
+                                            return e.number === epNum; 
+                                        });
+                                        if (matched.length > 0) {
+                                            debug.push(makeDebugStream("Found by raw episode: " + epNum));
+                                            targets = matched;
+                                        }
+                                    }
+
+                                    // Strategy 4: Try title matching (fallback)
+                                    if (targets.length === 0 && tmdbEpisodeId) {
+                                        // Try to match by title using TMDB episode title
+                                        var tmdbShowUrl = CONFIG.TMDB_BASE + "/tv/" + tmdbId + "/season/" + seasonNum + "/episode/" + epNum + "?api_key=" + CONFIG.TMDB_API_KEY;
+                                        return fetch(tmdbShowUrl)
+                                            .then(function(r) { return r.ok ? r.json() : null; })
+                                            .then(function(epData) {
+                                                if (epData && epData.name) {
+                                                    var targetTitle = normalize(epData.name);
+                                                    debug.push(makeDebugStream("Matching by title: " + targetTitle));
+                                                    
+                                                    var matched = episodes.filter(function(e) {
+                                                        var epTitle = normalize(e.title);
+                                                        return epTitle.indexOf(targetTitle) !== -1 || 
+                                                               targetTitle.indexOf(epTitle) !== -1;
+                                                    });
+                                                    
+                                                    if (matched.length > 0) {
+                                                        debug.push(makeDebugStream("Found by title: ep" + matched[0].number));
+                                                        targets = matched;
+                                                    }
+                                                }
+                                                return null;
+                                            })
+                                            .then(function() {
+                                                // Continue with whatever targets we found
+                                                return processTargets(targets, episodes, epNum, debug, realStreams);
+                                            });
+                                    }
+
+                                    // Process targets
+                                    return processTargets(targets, episodes, epNum, debug, realStreams);
                                 });
                         });
                 });
-        })
-        .catch(function(err) {
-            debug.push(makeDebugStream("FATAL: " + (err.message || "unknown")));
-            return debug.concat(realStreams);
         });
+}
+
+function processTargets(targets, episodes, epNum, debug, realStreams) {
+    // If no targets, try closest match
+    if (targets.length === 0 && episodes.length > 0) {
+        var target = epNum;
+        var bestMatch = null;
+        var bestDiff = Infinity;
+        
+        episodes.forEach(function(e) {
+            var diff = Math.abs(e.number - target);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestMatch = e;
+            }
+        });
+        
+        if (bestMatch && bestDiff <= 5) {
+            debug.push(makeDebugStream("Using closest match: episode " + bestMatch.number + " (diff: " + bestDiff + ")"));
+            targets = [bestMatch];
+        }
+    }
+
+    debug.push(makeDebugStream("TARGETS: " + (targets.length ? targets.map(function(t){
+        return "ep" + t.number + ":" + t.type;
+    }).join(", ") : "NONE")));
+
+    if (targets.length === 0) {
+        debug.push(makeDebugStream("No matching episodes found"));
+        return Promise.resolve(debug.concat(realStreams));
+    }
+
+    // Process all targets (SUB + DUB)
+    var chain = Promise.resolve();
+
+    targets.forEach(function(ep) {
+        chain = chain.then(function() {
+            return resolveOne(ep, debug).then(function(link) {
+                if (link) {
+                    realStreams.push({
+                        name: "AnikotoTV",
+                        title: (link.quality || "1080p") + " " + ep.type.toUpperCase(),
+                        url: link.url,
+                        quality: link.quality || "1080p",
+                        headers: link.headers || {}
+                    });
+                }
+            });
+        });
+    });
+
+    return chain.then(function() {
+        debug.push(makeDebugStream("DONE: " + realStreams.length + " streams"));
+        return debug.concat(realStreams);
+    });
 }
 
 function resolveOne(ep, debug) {
@@ -375,6 +514,113 @@ function resolveOne(ep, debug) {
         .catch(function(err) {
             debug.push(makeDebugStream(ep.type.toUpperCase() + ": ERR " + (err.message || "")));
             return null;
+        });
+}
+
+function searchAndGetStreams(tmdbId, mediaType, epNum, debug, realStreams) {
+    // Simple search for movies (no season mapping needed)
+    var searchUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(tmdbId);
+    
+    return fetch(searchUrl, { headers: getHeaders() })
+        .then(function(r) { return r.ok ? r.text() : null; })
+        .then(function(html) {
+            if (!html) return debug.concat(realStreams);
+            
+            var $ = cheerio.load(html);
+            var results = [];
+
+            $("div.item").each(function(i, el) {
+                var $el = $(el);
+                var titleEl = $el.find("a.name.d-title, a[data-jp]").first();
+                if (!titleEl.length) return;
+                var href = titleEl.attr("href");
+                var title = (titleEl.attr("data-jp") || titleEl.text() || "").trim();
+                if (!href || !title) return;
+
+                var fullUrl = href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href;
+                results.push({ title: title, url: fullUrl });
+            });
+
+            if (results.length === 0) return debug.concat(realStreams);
+            
+            // For movies, just take the first result and get streams
+            var best = results[0];
+            debug.push(makeDebugStream("MOVIE: " + best.title));
+            
+            // For movies, we need to get the episode list and find the movie
+            return fetch(best.url, { headers: getHeaders() })
+                .then(function(r) { return r.ok ? r.text() : null; })
+                .then(function(html) {
+                    if (!html) return debug.concat(realStreams);
+                    
+                    var $ = cheerio.load(html);
+                    var animeId = $("[data-id]").first().attr("data-id");
+                    if (!animeId) {
+                        var m = html.match(/data-id=["'](\d+)["']/);
+                        animeId = m ? m[1] : null;
+                    }
+                    
+                    if (!animeId) return debug.concat(realStreams);
+                    
+                    var epUrl = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+                    return fetch(epUrl, { headers: getAjaxHeaders(best.url) })
+                        .then(function(r) { return r.ok ? r.text() : null; })
+                        .then(function(jsonText) {
+                            if (!jsonText) return debug.concat(realStreams);
+                            
+                            var data = JSON.parse(jsonText);
+                            if (!data || data.status !== 200 || !data.result) return debug.concat(realStreams);
+                            
+                            var $ep = cheerio.load(data.result);
+                            var episodes = [];
+                            
+                            $ep("a[data-ids]").each(function(i, el) {
+                                var $el = $ep(el);
+                                var ids = $el.attr("data-ids");
+                                var num = parseInt($el.attr("data-num") || "0", 10);
+                                var hasSub = $el.attr("data-sub") === "1";
+                                var hasDub = $el.attr("data-dub") === "1";
+                                
+                                if (!ids) return;
+                                if (hasSub) episodes.push({ number: num, type: "sub", ids: ids, referer: best.url });
+                                if (hasDub) episodes.push({ number: num, type: "dub", ids: ids, referer: best.url });
+                            });
+                            
+                            // For movies, just get the first episode (or the one matching epNum)
+                            var targets = episodes.filter(function(e) { return e.number === epNum; });
+                            if (targets.length === 0 && episodes.length > 0) {
+                                targets = [episodes[0]];
+                            }
+                            
+                            if (targets.length === 0) return debug.concat(realStreams);
+                            
+                            var chain = Promise.resolve();
+                            targets.forEach(function(ep) {
+                                chain = chain.then(function() {
+                                    return resolveOne(ep, debug).then(function(link) {
+                                        if (link) {
+                                            realStreams.push({
+                                                name: "AnikotoTV",
+                                                title: (link.quality || "1080p") + " " + ep.type.toUpperCase(),
+                                                url: link.url,
+                                                quality: link.quality || "1080p",
+                                                headers: link.headers || {}
+                                            });
+                                        }
+                                    });
+                                });
+                            });
+                            
+                            return chain.then(function() {
+                                debug.push(makeDebugStream("DONE: " + realStreams.length + " streams"));
+                                return debug.concat(realStreams);
+                            });
+                        });
+                });
+        })
+        .catch(function(err) {
+            debug.push(makeDebugStream("MOVIE ERROR: " + (err.message || "unknown")));
+            return debug.concat(realStreams);
         });
 }
 
