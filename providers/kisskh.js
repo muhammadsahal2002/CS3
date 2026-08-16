@@ -1,13 +1,12 @@
 /**
- * AnikotoTV Provider for Nuvio
- * Working version (anikoto.cz + MegaPlay)
+ * AnikotoTV - Single file version (no build needed)
  */
 
 "use strict";
 
-const cheerio = require("cheerio-without-node-native");
+var cheerio = require("cheerio-without-node-native");
 
-const CONFIG = {
+var CONFIG = {
     BASE_URL: "https://anikoto.cz",
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
@@ -16,11 +15,15 @@ const CONFIG = {
 };
 
 function getHeaders(extra) {
-    return Object.assign({
+    var h = {
         "User-Agent": CONFIG.USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9"
-    }, extra || {});
+    };
+    if (extra) {
+        for (var k in extra) h[k] = extra[k];
+    }
+    return h;
 }
 
 function getAjaxHeaders(referer) {
@@ -32,381 +35,282 @@ function getAjaxHeaders(referer) {
     };
 }
 
-function fetchWithTimeout(url, options, timeout) {
-    timeout = timeout || CONFIG.TIMEOUT;
-    return new Promise(function(resolve, reject) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(function() { controller.abort(); }, timeout);
-
-        fetch(url, Object.assign({}, options, { signal: controller.signal }))
-            .then(function(response) {
-                clearTimeout(timeoutId);
-                resolve(response);
-            })
-            .catch(function(error) {
-                clearTimeout(timeoutId);
-                reject(error);
-            });
-    });
+function fetchText(url, headers) {
+    return fetch(url, { headers: headers || getHeaders() })
+        .then(function(r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.text();
+        });
 }
 
-function jsonResultString(jsonText) {
-    try {
-        const data = JSON.parse(jsonText);
-        if (data.status === 200 && data.result && typeof data.result === "string") {
-            return data.result;
-        }
-        return null;
-    } catch (e) {
-        return null;
-    }
-}
-
-function jsonResultUrl(jsonText) {
-    try {
-        const data = JSON.parse(jsonText);
-        if (data.status === 200 && data.result) {
-            if (typeof data.result === "string") return data.result;
-            if (data.result.url) return data.result.url;
-        }
-        return null;
-    } catch (e) {
-        return null;
-    }
-}
-
-// ==================== TMDB ====================
-function getTMDBDetails(id, mediaType) {
-    return new Promise(function(resolve) {
-        const type = (mediaType === "tv" || mediaType === "series") ? "tv" : "movie";
-        let url = CONFIG.TMDB_BASE + "/" + type + "/" + id + "?api_key=" + CONFIG.TMDB_API_KEY + "&language=en-US";
-
-        if (String(id).indexOf("tt") === 0) {
-            url = CONFIG.TMDB_BASE + "/find/" + id + "?external_source=imdb_id&api_key=" + CONFIG.TMDB_API_KEY;
-        }
-
-        fetchWithTimeout(url)
-            .then(function(r) { return r.ok ? r.json() : null; })
-            .then(function(data) {
-                if (!data) return resolve(null);
-                let result = data;
-                if (String(id).indexOf("tt") === 0) {
-                    const results = type === "tv" ? data.tv_results : data.movie_results;
-                    result = results && results[0] ? results[0] : null;
-                }
-                if (!result) return resolve(null);
-                resolve({ title: type === "tv" ? result.name : result.title });
-            })
-            .catch(function() { resolve(null); });
-    });
+function fetchJson(url, headers) {
+    return fetch(url, { headers: headers || getHeaders() })
+        .then(function(r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        });
 }
 
 // ==================== SEARCH ====================
 function searchAnime(query) {
-    return new Promise(function(resolve) {
-        const url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(query);
-        console.log("[AnikotoTV] Searching: " + url);
+    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(query);
+    console.log("[AnikotoTV] Searching: " + url);
 
-        fetchWithTimeout(url, { headers: getHeaders() })
-            .then(function(r) { return r.ok ? r.text() : null; })
-            .then(function(html) {
-                if (!html) return resolve([]);
-                const $ = cheerio.load(html);
-                const results = [];
+    return fetchText(url).then(function(html) {
+        var $ = cheerio.load(html);
+        var results = [];
 
-                $("div.item").each(function(i, el) {
-                    const $el = $(el);
-                    const titleEl = $el.find("a.name.d-title, a[data-jp]").first();
-                    if (!titleEl.length) return;
+        $("div.item").each(function(i, el) {
+            var $el = $(el);
+            var titleEl = $el.find("a.name.d-title, a[data-jp]").first();
+            if (!titleEl.length) return;
 
-                    const href = titleEl.attr("href");
-                    const title = (titleEl.attr("data-jp") || titleEl.text()).trim();
-                    if (!href || !title) return;
+            var href = titleEl.attr("href");
+            var title = (titleEl.attr("data-jp") || titleEl.text() || "").trim();
+            if (!href || !title) return;
 
-                    results.push({
-                        title: title,
-                        url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href
-                    });
-                });
-
-                console.log("[AnikotoTV] Found " + results.length + " results");
-                resolve(results);
-            })
-            .catch(function(err) {
-                console.error("[AnikotoTV] Search error:", err.message);
-                resolve([]);
+            results.push({
+                title: title,
+                url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href
             });
+        });
+
+        console.log("[AnikotoTV] Found " + results.length + " results");
+        return results;
+    }).catch(function(err) {
+        console.log("[AnikotoTV] Search error: " + err.message);
+        return [];
     });
 }
 
 // ==================== EPISODES ====================
 function getEpisodes(animeId, referer) {
-    return new Promise(function(resolve) {
-        const url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+    var url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+    console.log("[AnikotoTV] Getting episodes: " + url);
 
-        fetchWithTimeout(url, { headers: getAjaxHeaders(referer) })
-            .then(function(r) { return r.ok ? r.text() : null; })
-            .then(function(jsonText) {
-                const html = jsonResultString(jsonText);
-                if (!html) return resolve([]);
+    return fetchText(url, getAjaxHeaders(referer)).then(function(jsonText) {
+        var data = JSON.parse(jsonText);
+        if (!data || data.status !== 200 || !data.result) return [];
 
-                const $ = cheerio.load(html);
-                const episodes = [];
+        var $ = cheerio.load(data.result);
+        var episodes = [];
 
-                $("a[data-ids]").each(function(i, el) {
-                    const $el = $(el);
-                    const serverIds = $el.attr("data-ids");
-                    const num = parseInt($el.attr("data-num") || "0", 10);
-                    const hasSub = $el.attr("data-sub") === "1";
-                    const hasDub = $el.attr("data-dub") === "1";
-                    const name = $el.closest("li").attr("title") || ("Episode " + num);
+        $("a[data-ids]").each(function(i, el) {
+            var $el = $(el);
+            var ids = $el.attr("data-ids");
+            var num = parseInt($el.attr("data-num") || "0", 10);
+            var hasSub = $el.attr("data-sub") === "1";
+            var hasDub = $el.attr("data-dub") === "1";
+            var name = $el.closest("li").attr("title") || ("Episode " + num);
 
-                    if (!serverIds) return;
+            if (!ids) return;
 
-                    if (hasSub) {
-                        episodes.push({ name: name, url: "anikoto|" + referer + "|" + serverIds + "|sub", number: num, type: "sub" });
-                    }
-                    if (hasDub) {
-                        episodes.push({ name: name + " (Dub)", url: "anikoto|" + referer + "|" + serverIds + "|dub", number: num, type: "dub" });
-                    }
-                });
+            if (hasSub) {
+                episodes.push({ number: num, type: "sub", ids: ids, name: name, referer: referer });
+            }
+            if (hasDub) {
+                episodes.push({ number: num, type: "dub", ids: ids, name: name + " (Dub)", referer: referer });
+            }
+        });
 
-                console.log("[AnikotoTV] Parsed " + episodes.length + " episode entries");
-                resolve(episodes);
-            })
-            .catch(function() { resolve([]); });
+        console.log("[AnikotoTV] Episodes found: " + episodes.length);
+        return episodes;
+    }).catch(function(err) {
+        console.log("[AnikotoTV] Episodes error: " + err.message);
+        return [];
     });
 }
 
-// ==================== RESOLVE EPISODE ====================
-function resolveEpisode(data, callback) {
-    return new Promise(function(resolve) {
-        const parts = data.split("|");
-        if (parts.length < 4) return resolve(false);
+// ==================== GET ONE STREAM ====================
+function getOneStream(ep) {
+    console.log("[AnikotoTV] Getting stream for " + ep.type);
 
-        const referer = parts[1];
-        const serverIds = parts[2];
-        const audioType = parts[3] || "sub";
+    var listUrl = CONFIG.BASE_URL + "/ajax/server/list?servers=" + ep.ids;
 
-        const serverListUrl = CONFIG.BASE_URL + "/ajax/server/list?servers=" + serverIds;
+    return fetchText(listUrl, getAjaxHeaders(ep.referer)).then(function(jsonText) {
+        var data = JSON.parse(jsonText);
+        if (!data || data.status !== 200 || !data.result) return null;
 
-        fetchWithTimeout(serverListUrl, { headers: getAjaxHeaders(referer) })
-            .then(function(r) { return r.ok ? r.text() : null; })
-            .then(function(serverJson) {
-                const serverHtml = jsonResultString(serverJson);
-                if (!serverHtml) return resolve(false);
+        var $ = cheerio.load(data.result);
+        var selector = ep.type === "dub"
+            ? 'div.type[data-type="dub"] li[data-link-id]'
+            : 'div.type[data-type="sub"] li[data-link-id], div.type[data-type="hsub"] li[data-link-id]';
 
-                const $ = cheerio.load(serverHtml);
-                const linkIds = [];
-                const typeSelector = audioType === "dub"
-                    ? 'div.type[data-type="dub"]'
-                    : 'div.type[data-type="sub"], div.type[data-type="hsub"]';
+        var linkId = null;
+        $(selector).each(function(i, el) {
+            if (!linkId) linkId = $(el).attr("data-link-id");
+        });
 
-                $(typeSelector).find("li[data-link-id]").each(function(i, el) {
-                    const linkId = $(el).attr("data-link-id");
-                    if (linkId && linkIds.indexOf(linkId) === -1) linkIds.push(linkId);
-                });
-
-                if (linkIds.length === 0) return resolve(false);
-
-                let found = false;
-                let processed = 0;
-
-                linkIds.forEach(function(linkId) {
-                    const serverUrl = CONFIG.BASE_URL + "/ajax/server?get=" + linkId;
-
-                    fetchWithTimeout(serverUrl, { headers: getAjaxHeaders(referer) })
-                        .then(function(r) { return r.ok ? r.text() : null; })
-                        .then(function(sJson) {
-                            processed++;
-                            if (!sJson) {
-                                if (processed >= linkIds.length && !found) resolve(false);
-                                return;
-                            }
-
-                            const embedUrl = jsonResultUrl(sJson);
-                            if (!embedUrl) {
-                                if (processed >= linkIds.length && !found) resolve(false);
-                                return;
-                            }
-
-                            if (embedUrl.indexOf("megaplay.buzz") !== -1) {
-                                extractMegaPlay(embedUrl, referer, callback)
-                                    .then(function(success) {
-                                        if (success) {
-                                            found = true;
-                                            resolve(true);
-                                        } else if (processed >= linkIds.length && !found) {
-                                            resolve(false);
-                                        }
-                                    });
-                            } else if (processed >= linkIds.length && !found) {
-                                resolve(false);
-                            }
-                        })
-                        .catch(function() {
-                            processed++;
-                            if (processed >= linkIds.length && !found) resolve(false);
-                        });
-                });
-            })
-            .catch(function() { resolve(false); });
-    });
-}
-
-// ==================== MEGAPLAY EXTRACTOR ====================
-function extractMegaPlay(url, referer, callback) {
-    return new Promise(function(resolve) {
-        if (url.indexOf("autostart=true") === -1) {
-            url += (url.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
+        if (!linkId) {
+            // fallback
+            $("li[data-link-id]").each(function(i, el) {
+                if (!linkId) linkId = $(el).attr("data-link-id");
+            });
         }
 
-        fetchWithTimeout(url, {
-            headers: getHeaders({
-                "Referer": referer || CONFIG.BASE_URL,
-                "Origin": CONFIG.BASE_URL
-            })
-        })
-            .then(function(r) { return r.ok ? r.text() : null; })
-            .then(function(html) {
-                if (!html) return resolve(false);
+        if (!linkId) {
+            console.log("[AnikotoTV] No linkId found");
+            return null;
+        }
 
-                const dataIdMatch = html.match(/data-id=["'](\d+)["']/);
-                if (!dataIdMatch) return resolve(false);
+        var serverUrl = CONFIG.BASE_URL + "/ajax/server?get=" + linkId;
+        return fetchText(serverUrl, getAjaxHeaders(ep.referer));
+    }).then(function(jsonText) {
+        if (!jsonText) return null;
 
-                const dataId = dataIdMatch[1];
-                const sourcesUrl = "https://megaplay.buzz/stream/getSources?id=" + dataId;
+        var data = JSON.parse(jsonText);
+        var embedUrl = null;
 
-                return fetchWithTimeout(sourcesUrl, {
-                    headers: {
-                        "User-Agent": CONFIG.USER_AGENT,
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Referer": url,
-                        "Accept": "application/json, text/javascript, */*; q=0.01"
-                    }
-                })
-                    .then(function(r) { return r.ok ? r.json() : null; })
-                    .then(function(sourcesData) {
-                        if (!sourcesData || !sourcesData.sources) return resolve(false);
+        if (data && data.status === 200 && data.result) {
+            if (typeof data.result === "string") embedUrl = data.result;
+            else if (data.result.url) embedUrl = data.result.url;
+        }
 
-                        let videoUrl = null;
-                        if (typeof sourcesData.sources === "object" && sourcesData.sources.file) {
-                            videoUrl = sourcesData.sources.file;
-                        } else if (Array.isArray(sourcesData.sources) && sourcesData.sources.length > 0) {
-                            videoUrl = sourcesData.sources[0].file;
-                        }
+        if (!embedUrl || embedUrl.indexOf("megaplay") === -1) {
+            console.log("[AnikotoTV] No megaplay embed");
+            return null;
+        }
 
-                        if (!videoUrl) return resolve(false);
+        console.log("[AnikotoTV] Embed: " + embedUrl);
+        return extractMegaPlay(embedUrl);
+    }).catch(function(err) {
+        console.log("[AnikotoTV] getOneStream error: " + err.message);
+        return null;
+    });
+}
 
-                        callback({
-                            url: videoUrl,
-                            quality: "1080p",
-                            headers: {
-                                "Referer": "https://megaplay.buzz/",
-                                "Origin": "https://megaplay.buzz"
-                            }
-                        });
-                        resolve(true);
-                    })
-                    .catch(function() { resolve(false); });
-            })
-            .catch(function() { resolve(false); });
+// ==================== MEGAPLAY ====================
+function extractMegaPlay(embedUrl) {
+    if (embedUrl.indexOf("autostart=true") === -1) {
+        embedUrl += (embedUrl.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
+    }
+
+    return fetchText(embedUrl, getHeaders({
+        "Referer": CONFIG.BASE_URL,
+        "Origin": CONFIG.BASE_URL
+    })).then(function(html) {
+        var match = html.match(/data-id=["'](\d+)["']/);
+        if (!match) {
+            console.log("[AnikotoTV] No data-id");
+            return null;
+        }
+
+        var sourcesUrl = "https://megaplay.buzz/stream/getSources?id=" + match[1];
+        console.log("[AnikotoTV] Sources: " + sourcesUrl);
+
+        return fetchJson(sourcesUrl, {
+            "User-Agent": CONFIG.USER_AGENT,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": embedUrl,
+            "Accept": "application/json"
+        });
+    }).then(function(sources) {
+        if (!sources || !sources.sources) return null;
+
+        var videoUrl = null;
+        if (sources.sources.file) {
+            videoUrl = sources.sources.file;
+        } else if (Array.isArray(sources.sources) && sources.sources[0]) {
+            videoUrl = sources.sources[0].file;
+        }
+
+        if (!videoUrl) return null;
+
+        console.log("[AnikotoTV] Got stream: " + videoUrl);
+        return {
+            url: videoUrl,
+            quality: "1080p",
+            headers: {
+                "Referer": "https://megaplay.buzz/",
+                "Origin": "https://megaplay.buzz"
+            }
+        };
+    }).catch(function(err) {
+        console.log("[AnikotoTV] MegaPlay error: " + err.message);
+        return null;
     });
 }
 
 // ==================== LOAD ANIME ====================
-function loadAnime(url) {
-    return new Promise(function(resolve) {
-        fetchWithTimeout(url, { headers: getHeaders() })
-            .then(function(r) { return r.ok ? r.text() : null; })
-            .then(function(html) {
-                if (!html) return resolve(null);
+function loadAnime(watchUrl) {
+    console.log("[AnikotoTV] Loading: " + watchUrl);
 
-                const $ = cheerio.load(html);
-                let title = $("h1.title, h1[itemprop=name], h1").first().text().trim();
-                if (!title) return resolve(null);
+    return fetchText(watchUrl).then(function(html) {
+        var $ = cheerio.load(html);
+        var title = $("h1.title, h1[itemprop=name], h1").first().text().trim();
+        if (!title) return null;
 
-                let animeId = $("[data-id]").first().attr("data-id");
-                if (!animeId) {
-                    const m = html.match(/data-id=["'](\d+)["']/);
-                    animeId = m ? m[1] : null;
-                }
-                if (!animeId) return resolve(null);
+        var animeId = $("[data-id]").first().attr("data-id");
+        if (!animeId) {
+            var m = html.match(/data-id=["'](\d+)["']/);
+            animeId = m ? m[1] : null;
+        }
+        if (!animeId) {
+            console.log("[AnikotoTV] No animeId");
+            return null;
+        }
 
-                getEpisodes(animeId, url).then(function(episodes) {
-                    resolve({ title: title, animeId: animeId, url: url, episodes: episodes });
-                });
-            })
-            .catch(function() { resolve(null); });
+        console.log("[AnikotoTV] AnimeID: " + animeId + " | " + title);
+        return getEpisodes(animeId, watchUrl).then(function(episodes) {
+            return { title: title, episodes: episodes, url: watchUrl };
+        });
+    }).catch(function(err) {
+        console.log("[AnikotoTV] loadAnime error: " + err.message);
+        return null;
     });
 }
 
 // ==================== MAIN ====================
 function getStreams(tmdbId, mediaType, season, episode) {
-    return new Promise(function(resolve) {
-        console.log("[AnikotoTV] Request: " + tmdbId + " | " + mediaType + " | S" + (season || "?") + "E" + (episode || "?"));
+    console.log("[AnikotoTV] === START === " + tmdbId + " " + mediaType + " S" + season + "E" + episode);
 
-        let searchTitle = String(tmdbId);
+    var searchTitle = String(tmdbId);
+    var epNum = episode || 1;
 
-        getTMDBDetails(tmdbId, mediaType)
-            .then(function(tmdbInfo) {
-                if (tmdbInfo && tmdbInfo.title) {
-                    searchTitle = tmdbInfo.title;
-                    console.log("[AnikotoTV] TMDB title: " + searchTitle);
-                }
-                return searchAnime(searchTitle);
-            })
-            .then(function(searchResults) {
-                if (!searchResults || searchResults.length === 0) {
-                    console.log("[AnikotoTV] No search results");
-                    return resolve([]);
-                }
+    // Try TMDB first
+    var tmdbUrl = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
 
-                let bestMatch = searchResults[0];
-                const queryLower = searchTitle.toLowerCase();
-                for (let i = 0; i < searchResults.length; i++) {
-                    const t = searchResults[i].title.toLowerCase();
-                    if (t === queryLower || t.indexOf(queryLower) !== -1) {
-                        bestMatch = searchResults[i];
-                        break;
-                    }
-                }
+    return fetchJson(tmdbUrl).then(function(data) {
+        if (data) {
+            searchTitle = mediaType === "tv" ? (data.name || searchTitle) : (data.title || searchTitle);
+            console.log("[AnikotoTV] TMDB: " + searchTitle);
+        }
+        return searchAnime(searchTitle);
+    }).catch(function() {
+        return searchAnime(searchTitle);
+    }).then(function(results) {
+        if (!results || results.length === 0) {
+            console.log("[AnikotoTV] No search results");
+            return [];
+        }
 
-                console.log("[AnikotoTV] Best match: " + bestMatch.title);
-                return loadAnime(bestMatch.url);
-            })
-            .then(function(details) {
-                if (!details || !details.episodes || details.episodes.length === 0) {
-                    console.log("[AnikotoTV] No episodes");
-                    return resolve([]);
-                }
+        var best = results[0];
+        console.log("[AnikotoTV] Using: " + best.title);
+        return loadAnime(best.url);
+    }).then(function(anime) {
+        if (!anime || !anime.episodes || anime.episodes.length === 0) {
+            console.log("[AnikotoTV] No episodes");
+            return [];
+        }
 
-                const epNum = episode || 1;
-                let targetEpisodes = details.episodes.filter(function(ep) {
-                    return ep.number === epNum;
-                });
+        var targets = anime.episodes.filter(function(e) {
+            return e.number === epNum;
+        });
 
-                if (targetEpisodes.length === 0) {
-                    const sorted = details.episodes.slice().sort(function(a, b) { return a.number - b.number; });
-                    const idx = Math.min(Math.max(epNum - 1, 0), sorted.length - 1);
-                    targetEpisodes = [sorted[idx]];
-                }
+        if (targets.length === 0) {
+            targets = [anime.episodes[0]];
+        }
 
-                const streams = [];
-                let pending = targetEpisodes.length;
+        console.log("[AnikotoTV] Targets: " + targets.map(function(t) { return t.type; }).join(", "));
 
-                if (pending === 0) return resolve([]);
+        // Get streams one by one (safer for the app)
+        var streams = [];
+        var chain = Promise.resolve();
 
-                function checkDone() {
-                    pending--;
-                    if (pending <= 0) {
-                        console.log("[AnikotoTV] Returning " + streams.length + " streams");
-                        resolve(streams);
-                    }
-                }
-
-                targetEpisodes.forEach(function(ep) {
-                    resolveEpisode(ep.url, function(link) {
+        targets.forEach(function(ep) {
+            chain = chain.then(function() {
+                return getOneStream(ep).then(function(link) {
+                    if (link) {
                         streams.push({
                             name: "AnikotoTV",
                             title: (link.quality || "1080p") + " " + ep.type.toUpperCase(),
@@ -414,13 +318,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             quality: link.quality || "1080p",
                             headers: link.headers || {}
                         });
-                    }).then(checkDone).catch(checkDone);
+                    }
                 });
-            })
-            .catch(function(err) {
-                console.error("[AnikotoTV] Error:", err.message);
-                resolve([]);
             });
+        });
+
+        return chain.then(function() {
+            console.log("[AnikotoTV] === DONE === " + streams.length + " streams");
+            return streams;
+        });
+    }).catch(function(err) {
+        console.log("[AnikotoTV] Fatal: " + err.message);
+        return [];
     });
 }
 
