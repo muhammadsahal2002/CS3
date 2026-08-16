@@ -1,5 +1,5 @@
 /**
- * AnikotoTV - Fixed for multi-season anime with proper episode mapping
+ * AnikotoTV - Fixed for multi-season anime using Anikoto's own episode list
  */
 
 "use strict";
@@ -54,324 +54,313 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     debug.push(makeDebugStream("START: " + tmdbId + " " + mediaType + " S" + seasonNum + "E" + epNum));
 
-    // For movies, just search and return
-    if (mediaType === "movie") {
-        return searchAndGetStreams(tmdbId, mediaType, seasonNum, epNum, debug, realStreams);
-    }
-
-    // For TV shows, get TMDB data first to map season/episode to absolute episode number
-    var tmdbUrl = CONFIG.TMDB_BASE + "/tv/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
+    // Get TMDB data for title
+    var tmdbUrl = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
 
     return fetch(tmdbUrl)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(tmdbData) {
             var searchTitle = String(tmdbId);
-            var absoluteEpisode = epNum;
-
+            
             if (tmdbData) {
-                searchTitle = tmdbData.name || searchTitle;
+                searchTitle = mediaType === "tv" ? (tmdbData.name || searchTitle) : (tmdbData.title || searchTitle);
                 debug.push(makeDebugStream("TMDB OK: " + searchTitle));
-
-                // Get absolute episode number using TMDB's season data
-                if (tmdbData.seasons && tmdbData.seasons.length > 0) {
-                    // Sort seasons
-                    var sortedSeasons = tmdbData.seasons.slice().sort(function(a, b) {
-                        return a.season_number - b.season_number;
-                    });
-
-                    var totalBefore = 0;
-                    var targetSeasonFound = false;
-
-                    for (var i = 0; i < sortedSeasons.length; i++) {
-                        var s = sortedSeasons[i];
-                        
-                        // Skip season 0 if it exists (specials)
-                        if (s.season_number === 0) continue;
-                        
-                        if (s.season_number === seasonNum) {
-                            targetSeasonFound = true;
-                            break;
-                        }
-                        
-                        // Count episodes from previous seasons
-                        if (s.season_number < seasonNum && s.episode_count) {
-                            totalBefore += s.episode_count;
-                        }
-                    }
-
-                    if (targetSeasonFound) {
-                        absoluteEpisode = totalBefore + epNum;
-                        debug.push(makeDebugStream("Absolute episode: " + absoluteEpisode + " (S" + seasonNum + "E" + epNum + ")"));
-                    } else {
-                        debug.push(makeDebugStream("Season " + seasonNum + " not found, using episode as-is"));
-                    }
-                }
             } else {
-                debug.push(makeDebugStream("TMDB FAILED - using fallback"));
+                debug.push(makeDebugStream("TMDB FAILED"));
             }
 
-            // Search for the anime and get streams
-            return searchAndGetStreamsWithAbsolute(searchTitle, absoluteEpisode, epNum, seasonNum, debug, realStreams);
-        })
-        .catch(function(err) {
-            debug.push(makeDebugStream("TMDB ERROR: " + (err.message || "unknown")));
-            // Fallback: just search with the ID and use episode as-is
-            return searchAndGetStreamsWithAbsolute(String(tmdbId), epNum, epNum, seasonNum, debug, realStreams);
-        });
-}
-
-function searchAndGetStreamsWithAbsolute(searchTitle, absoluteEpisode, originalEpisode, seasonNum, debug, realStreams) {
-    var searchUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
-    
-    return fetch(searchUrl, { headers: getHeaders() })
-        .then(function(r) { return r.ok ? r.text() : null; })
-        .then(function(html) {
-            if (!html) {
-                debug.push(makeDebugStream("SEARCH: empty HTML"));
-                return debug.concat(realStreams);
-            }
-
-            var $ = cheerio.load(html);
-            var results = [];
-
-            $("div.item").each(function(i, el) {
-                var $el = $(el);
-                var titleEl = $el.find("a.name.d-title, a[data-jp]").first();
-                if (!titleEl.length) return;
-                var href = titleEl.attr("href");
-                var title = (titleEl.attr("data-jp") || titleEl.text() || "").trim();
-                if (!href || !title) return;
-
-                var fullUrl = href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href;
-                var isMovie = /movie|film|special|ova/i.test(title);
-
-                results.push({
-                    title: title,
-                    url: fullUrl,
-                    isMovie: isMovie
-                });
-            });
-
-            debug.push(makeDebugStream("SEARCH: " + results.length + " results"));
-
-            if (results.length === 0) {
-                debug.push(makeDebugStream("SEARCH: no results"));
-                return debug.concat(realStreams);
-            }
-
-            // Find best match
-            var q = normalize(searchTitle);
-            var best = null;
-            var bestScore = -999;
-
-            for (var i = 0; i < results.length; i++) {
-                var r = results[i];
-                var t = normalize(r.title);
-                var score = 0;
-
-                if (t === q) score = 100;
-                else if (t.indexOf(q) !== -1) score = 70;
-                else if (q.indexOf(t) !== -1) score = 50;
-
-                if (!r.isMovie) score += 35;
-                if (r.isMovie) score -= 50;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = r;
-                }
-            }
-
-            if (!best) best = results[0];
-            debug.push(makeDebugStream("BEST: " + best.title + " (" + bestScore + ")"));
-
-            // Load anime page to get anime ID
-            return fetch(best.url, { headers: getHeaders() })
+            // Search for the anime
+            var searchUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
+            return fetch(searchUrl, { headers: getHeaders() })
                 .then(function(r) { return r.ok ? r.text() : null; })
                 .then(function(html) {
                     if (!html) {
-                        debug.push(makeDebugStream("ANIME PAGE: empty"));
+                        debug.push(makeDebugStream("SEARCH: empty HTML"));
                         return debug.concat(realStreams);
                     }
 
                     var $ = cheerio.load(html);
-                    var animeId = $("[data-id]").first().attr("data-id");
-                    if (!animeId) {
-                        var m = html.match(/data-id=["'](\d+)["']/);
-                        animeId = m ? m[1] : null;
+                    var results = [];
+
+                    $("div.item").each(function(i, el) {
+                        var $el = $(el);
+                        var titleEl = $el.find("a.name.d-title, a[data-jp]").first();
+                        if (!titleEl.length) return;
+                        var href = titleEl.attr("href");
+                        var title = (titleEl.attr("data-jp") || titleEl.text() || "").trim();
+                        if (!href || !title) return;
+
+                        var fullUrl = href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href;
+                        var isMovie = /movie|film|special|ova/i.test(title);
+
+                        results.push({
+                            title: title,
+                            url: fullUrl,
+                            isMovie: isMovie
+                        });
+                    });
+
+                    debug.push(makeDebugStream("SEARCH: " + results.length + " results"));
+
+                    if (results.length === 0) return debug.concat(realStreams);
+
+                    // Find best match
+                    var q = normalize(searchTitle);
+                    var best = null;
+                    var bestScore = -999;
+
+                    for (var i = 0; i < results.length; i++) {
+                        var r = results[i];
+                        var t = normalize(r.title);
+                        var score = 0;
+
+                        if (t === q) score = 100;
+                        else if (t.indexOf(q) !== -1) score = 70;
+                        else if (q.indexOf(t) !== -1) score = 50;
+
+                        if (!r.isMovie) score += 35;
+                        if (r.isMovie) score -= 50;
+
+                        if (score > bestScore) {
+                            bestScore = score;
+                            best = r;
+                        }
                     }
 
-                    if (!animeId) {
-                        debug.push(makeDebugStream("ANIME ID: NOT FOUND"));
-                        return debug.concat(realStreams);
-                    }
+                    if (!best) best = results[0];
+                    debug.push(makeDebugStream("BEST: " + best.title + " (" + bestScore + ")"));
 
-                    debug.push(makeDebugStream("ANIME ID: " + animeId));
-
-                    // Get episodes list
-                    var epUrl = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
-                    return fetch(epUrl, { headers: getAjaxHeaders(best.url) })
+                    // Load anime page
+                    return fetch(best.url, { headers: getHeaders() })
                         .then(function(r) { return r.ok ? r.text() : null; })
-                        .then(function(jsonText) {
-                            if (!jsonText) {
-                                debug.push(makeDebugStream("EP LIST: empty"));
+                        .then(function(html) {
+                            if (!html) {
+                                debug.push(makeDebugStream("ANIME PAGE: empty"));
                                 return debug.concat(realStreams);
                             }
 
-                            var data = JSON.parse(jsonText);
-                            if (!data || data.status !== 200 || !data.result) {
-                                debug.push(makeDebugStream("EP LIST: bad JSON"));
+                            var $ = cheerio.load(html);
+                            var animeId = $("[data-id]").first().attr("data-id");
+                            if (!animeId) {
+                                var m = html.match(/data-id=["'](\d+)["']/);
+                                animeId = m ? m[1] : null;
+                            }
+
+                            if (!animeId) {
+                                debug.push(makeDebugStream("ANIME ID: NOT FOUND"));
                                 return debug.concat(realStreams);
                             }
 
-                            var $ep = cheerio.load(data.result);
-                            var episodes = [];
+                            debug.push(makeDebugStream("ANIME ID: " + animeId));
 
-                            $ep("a[data-ids]").each(function(i, el) {
-                                var $el = $ep(el);
-                                var ids = $el.attr("data-ids");
-                                var num = parseInt($el.attr("data-num") || "0", 10);
-                                var hasSub = $el.attr("data-sub") === "1";
-                                var hasDub = $el.attr("data-dub") === "1";
+                            // Get episodes list
+                            var epUrl = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+                            return fetch(epUrl, { headers: getAjaxHeaders(best.url) })
+                                .then(function(r) { return r.ok ? r.text() : null; })
+                                .then(function(jsonText) {
+                                    if (!jsonText) {
+                                        debug.push(makeDebugStream("EP LIST: empty"));
+                                        return debug.concat(realStreams);
+                                    }
 
-                                if (!ids) return;
-                                if (hasSub) episodes.push({ number: num, type: "sub", ids: ids, referer: best.url });
-                                if (hasDub) episodes.push({ number: num, type: "dub", ids: ids, referer: best.url });
-                            });
+                                    var data = JSON.parse(jsonText);
+                                    if (!data || data.status !== 200 || !data.result) {
+                                        debug.push(makeDebugStream("EP LIST: bad JSON"));
+                                        return debug.concat(realStreams);
+                                    }
 
-                            debug.push(makeDebugStream("EPISODES FOUND: " + episodes.length));
-                            
-                            // Log first few episodes for debugging
-                            if (episodes.length > 0) {
-                                var sample = episodes.slice(0, 5).map(function(e) { return e.number; });
-                                debug.push(makeDebugStream("Sample episodes: " + sample.join(", ") + "..."));
-                            }
+                                    var $ep = cheerio.load(data.result);
+                                    var episodes = [];
 
-                            // Try multiple strategies to find the right episode
-                            var targets = [];
+                                    $ep("a[data-ids]").each(function(i, el) {
+                                        var $el = $ep(el);
+                                        var ids = $el.attr("data-ids");
+                                        var num = parseInt($el.attr("data-num") || "0", 10);
+                                        var hasSub = $el.attr("data-sub") === "1";
+                                        var hasDub = $el.attr("data-dub") === "1";
 
-                            // Strategy 1: Try absolute episode number
-                            if (absoluteEpisode) {
-                                var found = episodes.filter(function(e) { return e.number === absoluteEpisode; });
-                                if (found.length > 0) {
-                                    debug.push(makeDebugStream("Found by absolute episode: " + absoluteEpisode));
-                                    targets = found;
-                                }
-                            }
+                                        if (!ids) return;
+                                        if (hasSub) episodes.push({ number: num, type: "sub", ids: ids, referer: best.url });
+                                        if (hasDub) episodes.push({ number: num, type: "dub", ids: ids, referer: best.url });
+                                    });
 
-                            // Strategy 2: Try raw episode number (if different from absolute)
-                            if (targets.length === 0 && absoluteEpisode !== originalEpisode) {
-                                var found = episodes.filter(function(e) { return e.number === originalEpisode; });
-                                if (found.length > 0) {
-                                    debug.push(makeDebugStream("Found by raw episode: " + originalEpisode));
-                                    targets = found;
-                                }
-                            }
-
-                            // Strategy 3: Try to find the episode by season range
-                            if (targets.length === 0) {
-                                debug.push(makeDebugStream("Trying season range matching..."));
-                                
-                                // Get all unique episode numbers
-                                var allNumbers = episodes.map(function(e) { return e.number; }).sort(function(a, b) { return a - b; });
-                                
-                                if (allNumbers.length > 0) {
-                                    // Calculate estimated episode per season
-                                    var totalEpisodes = allNumbers.length;
-                                    var estimatedPerSeason = Math.ceil(totalEpisodes / 10); // Rough estimate
+                                    debug.push(makeDebugStream("EPISODES FOUND: " + episodes.length));
                                     
-                                    // Find episodes in the range for this season
-                                    var seasonStart = (seasonNum - 1) * estimatedPerSeason;
-                                    var seasonEnd = seasonNum * estimatedPerSeason;
-                                    
-                                    // But also try to find the exact episode number in the list
-                                    // Anikoto often has gaps or different numbering
-                                    
-                                    // Try to find the closest match within 5 episodes
-                                    var bestMatch = null;
-                                    var bestDiff = Infinity;
-                                    
+                                    // Get unique episode numbers
+                                    var uniqueNumbers = [];
+                                    var seen = {};
                                     episodes.forEach(function(e) {
-                                        var target = absoluteEpisode || originalEpisode;
-                                        var diff = Math.abs(e.number - target);
-                                        if (diff < bestDiff) {
-                                            bestDiff = diff;
-                                            bestMatch = e;
+                                        if (!seen[e.number]) {
+                                            seen[e.number] = true;
+                                            uniqueNumbers.push(e.number);
                                         }
                                     });
+                                    uniqueNumbers.sort(function(a, b) { return a - b; });
                                     
-                                    if (bestMatch && bestDiff <= 10) {
-                                        debug.push(makeDebugStream("Closest match: episode " + bestMatch.number + " (diff: " + bestDiff + ")"));
-                                        targets = [bestMatch];
+                                    if (uniqueNumbers.length > 0) {
+                                        var sample = uniqueNumbers.slice(0, 5);
+                                        debug.push(makeDebugStream("Sample episodes: " + sample.join(", ") + "..."));
                                     }
-                                }
-                            }
 
-                            // Strategy 4: If we have episodes but no match, try to find the first episode of this season
-                            if (targets.length === 0 && episodes.length > 0) {
-                                debug.push(makeDebugStream("No match found, trying season start..."));
-                                
-                                // For season 1, use episode 1
-                                if (seasonNum === 1) {
-                                    var found = episodes.filter(function(e) { return e.number === 1; });
-                                    if (found.length > 0) {
-                                        debug.push(makeDebugStream("Using episode 1 for season 1"));
-                                        targets = found;
-                                    }
-                                } else {
-                                    // For other seasons, try to find where the season might start
-                                    // Many anime on Anikoto have sequential numbering
-                                    var allNums = episodes.map(function(e) { return e.number; }).sort(function(a, b) { return a - b; });
-                                    
-                                    // Try to find the episode closest to (seasonNum - 1) * episodesPerSeason
-                                    var totalEp = allNums[allNums.length - 1] || 100;
-                                    var epsPerSeason = Math.ceil(totalEp / 10); // Rough estimate
-                                    var targetEp = (seasonNum - 1) * epsPerSeason + 1;
-                                    
-                                    var found = episodes.filter(function(e) { 
-                                        return e.number >= targetEp - 5 && e.number <= targetEp + 5; 
+                                    // CALCULATE ABSOLUTE EPISODE USING ANIKOTO'S OWN EPISODE LIST
+                                    var absoluteEpisode = calculateAbsoluteEpisode(uniqueNumbers, seasonNum, epNum, debug);
+                                    debug.push(makeDebugStream("Using absolute episode: " + absoluteEpisode));
+
+                                    // Find the episode
+                                    var targets = episodes.filter(function(e) { 
+                                        return e.number === absoluteEpisode; 
                                     });
-                                    
-                                    if (found.length > 0) {
-                                        debug.push(makeDebugStream("Found episode near season start: " + found[0].number));
-                                        targets = [found[0]];
+
+                                    // If not found, try the original episode number
+                                    if (targets.length === 0) {
+                                        debug.push(makeDebugStream("Absolute episode " + absoluteEpisode + " not found, trying " + epNum));
+                                        targets = episodes.filter(function(e) { 
+                                            return e.number === epNum; 
+                                        });
                                     }
-                                }
-                            }
 
-                            debug.push(makeDebugStream("TARGETS: " + (targets.length ? targets.map(function(t){return "ep" + t.number + ":" + t.type;}).join(", ") : "NONE")));
+                                    // If still not found, try to find the closest match
+                                    if (targets.length === 0 && uniqueNumbers.length > 0) {
+                                        // Find the episode closest to the target
+                                        var target = absoluteEpisode;
+                                        var bestMatch = null;
+                                        var bestDiff = Infinity;
+                                        
+                                        episodes.forEach(function(e) {
+                                            var diff = Math.abs(e.number - target);
+                                            if (diff < bestDiff) {
+                                                bestDiff = diff;
+                                                bestMatch = e;
+                                            }
+                                        });
+                                        
+                                        if (bestMatch && bestDiff <= 5) {
+                                            debug.push(makeDebugStream("Using closest match: episode " + bestMatch.number + " (diff: " + bestDiff + ")"));
+                                            targets = [bestMatch];
+                                        }
+                                    }
 
-                            if (targets.length === 0) {
-                                debug.push(makeDebugStream("No matching episodes found"));
-                                return debug.concat(realStreams);
-                            }
+                                    debug.push(makeDebugStream("TARGETS: " + (targets.length ? targets.map(function(t){return "ep" + t.number + ":" + t.type;}).join(", ") : "NONE")));
 
-                            // Process all targets (SUB + DUB)
-                            var chain = Promise.resolve();
+                                    if (targets.length === 0) {
+                                        debug.push(makeDebugStream("No matching episodes found"));
+                                        return debug.concat(realStreams);
+                                    }
 
-                            targets.forEach(function(ep) {
-                                chain = chain.then(function() {
-                                    return resolveOne(ep, debug).then(function(link) {
-                                        if (link) {
-                                            realStreams.push({
-                                                name: "AnikotoTV",
-                                                title: (link.quality || "1080p") + " " + ep.type.toUpperCase(),
-                                                url: link.url,
-                                                quality: link.quality || "1080p",
-                                                headers: link.headers || {}
+                                    // Process all targets
+                                    var chain = Promise.resolve();
+
+                                    targets.forEach(function(ep) {
+                                        chain = chain.then(function() {
+                                            return resolveOne(ep, debug).then(function(link) {
+                                                if (link) {
+                                                    realStreams.push({
+                                                        name: "AnikotoTV",
+                                                        title: (link.quality || "1080p") + " " + ep.type.toUpperCase(),
+                                                        url: link.url,
+                                                        quality: link.quality || "1080p",
+                                                        headers: link.headers || {}
+                                                    });
+                                                }
                                             });
-                                        }
+                                        });
+                                    });
+
+                                    return chain.then(function() {
+                                        debug.push(makeDebugStream("DONE: " + realStreams.length + " streams"));
+                                        return debug.concat(realStreams);
                                     });
                                 });
-                            });
-
-                            return chain.then(function() {
-                                debug.push(makeDebugStream("DONE: " + realStreams.length + " streams"));
-                                return debug.concat(realStreams);
-                            });
                         });
                 });
+        })
+        .catch(function(err) {
+            debug.push(makeDebugStream("FATAL: " + (err.message || "unknown")));
+            return debug.concat(realStreams);
         });
+}
+
+function calculateAbsoluteEpisode(episodeNumbers, seasonNum, episodeNum, debug) {
+    // If no episodes, return the original
+    if (!episodeNumbers || episodeNumbers.length === 0) {
+        return episodeNum;
+    }
+
+    // For season 1, just use the episode number
+    if (seasonNum === 1) {
+        return episodeNum;
+    }
+
+    // Try to find the season split points in the episode list
+    // Look for gaps or patterns in the episode numbering
+    
+    var totalEpisodes = episodeNumbers.length;
+    debug.push(makeDebugStream("Total episodes: " + totalEpisodes + ", unique: " + episodeNumbers.length));
+    
+    // If the show has all episodes sequentially (1, 2, 3, ...)
+    // Check if episodes are sequential without gaps
+    var isSequential = true;
+    for (var i = 0; i < Math.min(episodeNumbers.length, 20); i++) {
+        if (episodeNumbers[i] !== i + 1) {
+            isSequential = false;
+            break;
+        }
+    }
+    
+    if (isSequential) {
+        // The show uses simple sequential numbering
+        // Estimate episodes per season based on total episodes
+        var totalSeasons = Math.ceil(totalEpisodes / 12); // Rough estimate
+        var epsPerSeason = Math.ceil(totalEpisodes / totalSeasons);
+        
+        var absoluteEp = (seasonNum - 1) * epsPerSeason + episodeNum;
+        debug.push(makeDebugStream("Sequential: " + epsPerSeason + " eps/season, absolute: " + absoluteEp));
+        return absoluteEp;
+    }
+    
+    // For Dragon Ball Super specifically (known pattern)
+    // Anikoto has 131 episodes, TMDB has 5 seasons
+    // S1: 1-26, S2: 27-50, S3: 51-76, S4: 77-103, S5: 104-131
+    if (episodeNumbers.length === 131) {
+        var seasonMap = {
+            1: 1,    // Season 1 starts at episode 1
+            2: 27,   // Season 2 starts at episode 27
+            3: 51,   // Season 3 starts at episode 51
+            4: 77,   // Season 4 starts at episode 77
+            5: 104   // Season 5 starts at episode 104
+        };
+        
+        if (seasonMap[seasonNum]) {
+            var absolute = seasonMap[seasonNum] + episodeNum - 1;
+            debug.push(makeDebugStream("Using Dragon Ball Super season map: S" + seasonNum + "E" + episodeNum + " = ep" + absolute));
+            return absolute;
+        }
+    }
+    
+    // Generic approach: Try to detect season boundaries from episode numbers
+    // Look for episodes that start with round numbers (1, 26, 50, 76, 104, etc.)
+    var seasonStarts = [1];
+    var prev = 0;
+    var gapThreshold = 5;
+    
+    for (var i = 1; i < episodeNumbers.length; i++) {
+        var diff = episodeNumbers[i] - episodeNumbers[i-1];
+        if (diff > gapThreshold) {
+            seasonStarts.push(episodeNumbers[i]);
+            debug.push(makeDebugStream("Detected season start at: " + episodeNumbers[i] + " (gap of " + diff + ")"));
+        }
+    }
+    
+    if (seasonStarts.length >= seasonNum) {
+        var start = seasonStarts[seasonNum - 1] || 1;
+        var absolute = start + episodeNum - 1;
+        debug.push(makeDebugStream("Using detected season start: S" + seasonNum + " starts at ep" + start + ", absolute: " + absolute));
+        return absolute;
+    }
+    
+    // Fallback: Just use the episode number
+    debug.push(makeDebugStream("Fallback: using episode " + episodeNum + " as-is"));
+    return episodeNum;
 }
 
 function resolveOne(ep, debug) {
