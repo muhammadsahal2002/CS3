@@ -101,28 +101,50 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     if (results.length === 0) return debug.concat(realStreams);
 
-                    // Better matching
-                    var q = normalize(searchTitle);
-                    var best = null;
-                    var bestScore = -999;
+                  // Stronger matching
+var q = normalize(searchTitle);
+var best = null;
+var bestScore = -999;
 
-                    for (var i = 0; i < results.length; i++) {
-                        var r = results[i];
-                        var t = normalize(r.title);
-                        var score = 0;
+for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var t = normalize(r.title);
+    var score = 0;
 
-                        if (t === q) score = 100;
-                        else if (t.indexOf(q) !== -1) score = 70;
-                        else if (q.indexOf(t) !== -1) score = 50;
+    // Exact match is best
+    if (t === q) {
+        score = 200;
+    }
+    // Title contains the full search query
+    else if (t.indexOf(q) !== -1) {
+        score = 120;
+    }
+    // Search query contains the title
+    else if (q.indexOf(t) !== -1) {
+        score = 60;
+    }
 
-                        if (!r.isMovie) score += 35;
-                        if (r.isMovie) score -= 50;
+    // Bonus for important keywords (Shippuden, etc.)
+    if (q.indexOf("shippuden") !== -1 || q.indexOf("shippuuden") !== -1) {
+        if (t.indexOf("shippuden") !== -1 || t.indexOf("shippuuden") !== -1) {
+            score += 80;
+        } else {
+            score -= 60; // Penalize if search has Shippuden but result doesn't
+        }
+    }
 
-                        if (score > bestScore) {
-                            bestScore = score;
-                            best = r;
-                        }
-                    }
+    // Prefer series over movies
+    if (!r.isMovie) score += 25;
+    if (r.isMovie) score -= 40;
+
+    // Small penalty for very short titles
+    if (t.length < 10) score -= 10;
+
+    if (score > bestScore) {
+        bestScore = score;
+        best = r;
+    }
+}
 
                     if (!best) best = results[0];
 
