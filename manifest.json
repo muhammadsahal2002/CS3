@@ -2,47 +2,13 @@
   "name": "All-in-One-Nuvio",
   "version": "1.0.0",
   "scrapers": [
-    {
-      "id": "castle",
-      "name": "🏰 Castle",
-      "description": "Multi Lang provider",
-      "version": "2.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/castle.js",
-      "enabled": true,
-      "hasSettings": true,
-      "formats": ["mp4", "m3u8"],
-      "logo": "https://i.postimg.cc/0NvGzFyK/castle.png",
-      "contentLanguage": ["en"]
-    },
-    {
-      "id": "kisskh",
-      "name": "💋 Kisskh",
-      "description": "Streams Korean dramas and movies from onlykdrama.top",
-      "version": "1.0.0",
-      "author": "Michat88",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/kisskh.js",
-      "enabled": true,
-      "hasSettings": true,
-      "formats": ["mp4", "m3u8"],
-      "logo": "https://i.postimg.cc/2yLnTzPP/kisskh.jpg",
-      "contentLanguage": ["ko", "ch", "ja", "th"]
-    },
-    {
-      "id": "vixsrc",
-      "name": "VixSrc",
-      "description": "VixSrc - The best place to watch movies and TV shows online for free. Stream in 1080p HD",
-      "version": "1.0.0",
-      "author": "Nuvio Team",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/vixsrc.js",
-      "enabled": true,
-      "hasSettings": true,
-      "formats": ["mp4", "m3u8"],
-      "logo": "https://i.postimg.cc/1tHrBvzs/vixsrc.png",
-      "contentLanguage": ["en", "Ita"]
-    }
+  {
+  "id": "anikoto",
+  "name": "AnikotoTV",
+  "filename": "providers/anikoto.js",   // ← exact name
+  "supportedTypes": ["movie", "tv"],
+  "enabled": true,
+  "formats": ["m3u8"]
+}
   ]
 }
