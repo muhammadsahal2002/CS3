@@ -5,7 +5,7 @@
   {
   "id": "anikoto",
   "name": "AnikotoTV",
-  "filename": "providers/anikoto.js",   // ← exact name
+  "filename": "providers/anikoto.js",
   "supportedTypes": ["movie", "tv"],
   "enabled": true,
   "formats": ["m3u8"]
