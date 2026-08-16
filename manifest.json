@@ -5,6 +5,7 @@
   {
   "id": "anikoto",
   "name": "AnikotoTV",
+  "version": "1.0.0",
   "filename": "providers/anikoto.js",
   "supportedTypes": ["movie", "tv"],
   "enabled": true,
