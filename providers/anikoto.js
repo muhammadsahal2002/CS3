@@ -35,12 +35,13 @@ function getAjaxHeaders(referer) {
 
 function makeDebugStream(msg) {
     return {
-        name: "AnikotoTV-DEBUG",
+        name: "DEBUG: " + msg,
         title: msg,
         url: "https://test.com/error",
         quality: "DEBUG",
         headers: {}
     };
+
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
