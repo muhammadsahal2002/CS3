@@ -462,36 +462,75 @@ function getStreams(
         if (!result)
             return null;
 
+        /*
+         * Movies do not need season handling.
+         */
+        if (mediaType !== "tv") {
+            return getAnimeId(result.url)
+                .then(function(animeId) {
+                    if (!animeId)
+                        return null;
+
+                    return getDubEpisode(
+                        animeId,
+                        episode
+                    ).then(function(ep) {
+                        if (!ep)
+                            return null;
+
+                        return {
+                            ep: ep,
+                            referer: result.url
+                        };
+                    });
+                });
+        }
+
+        /*
+         * TV:
+         * First get the ID of the normal Anikoto page.
+         */
         return getAnimeId(result.url)
             .then(function(animeId) {
                 if (!animeId)
                     return null;
 
+                /*
+                 * Season 1 can normally use the original page,
+                 * but we still try the seasons API because some
+                 * shows have a real Season 1 page there.
+                 */
                 return getSeasonUrl(
                     animeId,
                     season
-                ).then(function(seasonUrl) {
+                )
+                .then(function(seasonUrl) {
 
                     /*
-                     * No season endpoint result means this
-                     * anime probably has only one season.
+                     * If Anikoto does not have a separate page
+                     * for this season, use the original page.
                      *
-                     * For season 1, use the original URL.
+                     * This handles shows such as Naruto Shippuden
+                     * where episodes are simply 1...500.
                      */
-                    if (!seasonUrl) {
-                        if (season !== 1)
-                            return null;
+                    var targetUrl =
+                        seasonUrl || result.url;
 
-                        seasonUrl = result.url;
-                    }
-
-                    return getAnimeId(seasonUrl)
-                        .then(function(seasonAnimeId) {
-                            if (!seasonAnimeId)
+                    return getAnimeId(targetUrl)
+                        .then(function(targetAnimeId) {
+                            if (!targetAnimeId)
                                 return null;
 
+                            /*
+                             * IMPORTANT:
+                             *
+                             * Do NOT convert S2E1 to E13 etc.
+                             *
+                             * Once we are on the correct season page,
+                             * episode numbers start from 1 again.
+                             */
                             return getDubEpisode(
-                                seasonAnimeId,
+                                targetAnimeId,
                                 episode
                             ).then(function(ep) {
                                 if (!ep)
@@ -499,7 +538,7 @@ function getStreams(
 
                                 return {
                                     ep: ep,
-                                    referer: seasonUrl
+                                    referer: targetUrl
                                 };
                             });
                         });
@@ -553,7 +592,6 @@ function getStreams(
         return [];
     });
 }
-
 module.exports = {
     getStreams: getStreams
 };
