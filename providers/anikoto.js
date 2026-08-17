@@ -1238,3 +1238,365 @@ function resolveOne(
                 .then(function(r) {
                     return r.ok
                         ? r.text()
+                        : null;
+                })
+                .then(function(html) {
+
+                    if (!html) {
+                        return null;
+                    }
+
+                    var m =
+                        html.match(
+                            /data-id=["'](\d+)["']/
+                        );
+
+                    if (!m) {
+                        return null;
+                    }
+
+                    var sourceUrl =
+                        "https://megaplay.buzz/stream/getSources?id=" +
+                        m[1];
+
+                    return fetch(
+                        sourceUrl,
+                        {
+                            headers: {
+                                "User-Agent":
+                                    CONFIG.USER_AGENT,
+
+                                "X-Requested-With":
+                                    "XMLHttpRequest",
+
+                                "Referer":
+                                    embed,
+
+                                "Accept":
+                                    "application/json"
+                            }
+                        }
+                    )
+                        .then(function(r) {
+                            return r.ok
+                                ? r.json()
+                                : null;
+                        })
+                        .then(function(sources) {
+
+                            if (
+                                !sources ||
+                                !sources.sources
+                            ) {
+                                return null;
+                            }
+
+                            var file =
+                                sources.sources.file ||
+                                (
+                                    sources.sources[0] &&
+                                    sources.sources[0].file
+                                );
+
+                            if (!file) {
+                                return null;
+                            }
+
+
+                            debug.push(
+                                debugStream(
+                                    ep.type.toUpperCase() +
+                                    ": SUCCESS"
+                                )
+                            );
+
+
+                            return {
+                                url:
+                                    file,
+
+                                quality:
+                                    "1080p",
+
+                                headers: {
+                                    "Referer":
+                                        "https://megaplay.buzz/",
+
+                                    "Origin":
+                                        "https://megaplay.buzz"
+                                }
+                            };
+                        });
+                });
+        })
+        .catch(function(e) {
+
+            debug.push(
+                debugStream(
+                    ep.type.toUpperCase() +
+                    ": RESOLVE ERROR " +
+                    (e.message || String(e))
+                )
+            );
+
+            return null;
+        });
+}
+
+
+/* =========================================================
+ * MAIN
+ * ========================================================= */
+
+function getStreams(
+    tmdbId,
+    mediaType,
+    season,
+    episode
+) {
+    var debug = [];
+    var streams = [];
+
+    var isTV =
+        mediaType === "tv";
+
+    var s =
+        int(season, 1);
+
+    var e =
+        int(episode, 1);
+
+
+    /*
+     * Movies don't have seasons.
+     */
+    if (!isTV) {
+        s = 1;
+        e = 1;
+    }
+
+
+    debug.push(
+        debugStream(
+            "START " +
+            tmdbId +
+            " " +
+            mediaType +
+            " S" +
+            s +
+            "E" +
+            e
+        )
+    );
+
+
+    /*
+     * Get TMDB series title ONLY to find the
+     * corresponding Anikoto series page.
+     */
+    return getTmdbTitle(
+        tmdbId,
+        mediaType,
+        debug
+    )
+        .then(function(title) {
+
+            return searchAnikoto(
+                title,
+                mediaType,
+                debug
+            );
+        })
+        .then(function(best) {
+
+            if (!best) {
+                debug.push(
+                    debugStream(
+                        "NO ANIKOTO SERIES"
+                    )
+                );
+
+                return null;
+            }
+
+
+            /*
+             * TV:
+             *
+             * SxEy -> absolute episode
+             *
+             * Movie:
+             *
+             * simply use episode 1.
+             */
+            var absolutePromise =
+                isTV
+                    ? getAbsoluteEpisode(
+                        tmdbId,
+                        s,
+                        e,
+                        debug
+                    )
+                    : Promise.resolve(1);
+
+
+            return absolutePromise
+                .then(function(absolute) {
+
+                    /*
+                     * If TMDB season information could
+                     * not be obtained, stop instead of
+                     * guessing from titles.
+                     */
+                    if (
+                        isTV &&
+                        absolute === null
+                    ) {
+                        debug.push(
+                            debugStream(
+                                "ABSOLUTE EPISODE UNKNOWN"
+                            )
+                        );
+
+                        return null;
+                    }
+
+
+                    return getEpisodes(
+                        best.url,
+                        debug
+                    )
+                        .then(function(episodes) {
+
+                            if (
+                                !episodes ||
+                                !episodes.length
+                            ) {
+                                debug.push(
+                                    debugStream(
+                                        "NO EPISODES"
+                                    )
+                                );
+
+                                return null;
+                            }
+
+
+                            var targets =
+                                findTarget(
+                                    episodes,
+                                    mediaType,
+                                    e,
+                                    absolute,
+                                    debug
+                                );
+
+
+                            if (
+                                !targets.length
+                            ) {
+                                return null;
+                            }
+
+
+                            /*
+                             * Resolve every matching type:
+                             *
+                             * SUB
+                             * DUB
+                             */
+                            var chain =
+                                Promise.resolve();
+
+
+                            targets.forEach(
+                                function(ep) {
+
+                                    chain =
+                                        chain.then(
+                                            function() {
+
+                                                return resolveOne(
+                                                    ep,
+                                                    debug
+                                                )
+                                                    .then(
+                                                        function(link) {
+
+                                                            if (!link) {
+                                                                return;
+                                                            }
+
+                                                            streams.push({
+                                                                name:
+                                                                    "AnikotoTV",
+
+                                                                title:
+                                                                    (
+                                                                        link.quality ||
+                                                                        "1080p"
+                                                                    ) +
+                                                                    " " +
+                                                                    ep.type.toUpperCase(),
+
+                                                                url:
+                                                                    link.url,
+
+                                                                quality:
+                                                                    link.quality ||
+                                                                    "1080p",
+
+                                                                headers:
+                                                                    link.headers ||
+                                                                    {}
+                                                            });
+                                                        }
+                                                    );
+                                            }
+                                        );
+                                }
+                            );
+
+
+                            return chain;
+                        });
+                });
+        })
+        .then(function() {
+
+            debug.push(
+                debugStream(
+                    "FINAL STREAMS: " +
+                    streams.length
+                )
+            );
+
+            return debug.concat(
+                streams
+            );
+        })
+        .catch(function(e) {
+
+            debug.push(
+                debugStream(
+                    "FATAL: " +
+                    (
+                        e &&
+                        e.message
+                            ? e.message
+                            : String(e)
+                    )
+                )
+            );
+
+            return debug.concat(
+                streams
+            );
+        });
+}
+
+
+module.exports = {
+    getStreams:
+        getStreams
+};
