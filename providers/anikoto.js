@@ -462,15 +462,15 @@ function getStreams(
         if (!result)
             return null;
 
-        /*
-         * Movies do not need season handling.
-         */
-        if (mediaType !== "tv") {
-            return getAnimeId(result.url)
-                .then(function(animeId) {
-                    if (!animeId)
-                        return null;
+        return getAnimeId(result.url)
+            .then(function(animeId) {
+                if (!animeId)
+                    return null;
 
+                /*
+                 * MOVIE
+                 */
+                if (mediaType !== "tv") {
                     return getDubEpisode(
                         animeId,
                         episode
@@ -483,22 +483,12 @@ function getStreams(
                             referer: result.url
                         };
                     });
-                });
-        }
-
-        /*
-         * TV:
-         * First get the ID of the normal Anikoto page.
-         */
-        return getAnimeId(result.url)
-            .then(function(animeId) {
-                if (!animeId)
-                    return null;
+                }
 
                 /*
-                 * Season 1 can normally use the original page,
-                 * but we still try the seasons API because some
-                 * shows have a real Season 1 page there.
+                 * TV
+                 *
+                 * First try to find an actual season page.
                  */
                 return getSeasonUrl(
                     animeId,
@@ -507,41 +497,65 @@ function getStreams(
                 .then(function(seasonUrl) {
 
                     /*
-                     * If Anikoto does not have a separate page
-                     * for this season, use the original page.
+                     * Anikoto has this season.
                      *
-                     * This handles shows such as Naruto Shippuden
-                     * where episodes are simply 1...500.
+                     * Example:
+                     * Season 2 Episode 5
+                     * -> Season 2 page
+                     * -> Episode 5
                      */
-                    var targetUrl =
-                        seasonUrl || result.url;
-
-                    return getAnimeId(targetUrl)
-                        .then(function(targetAnimeId) {
-                            if (!targetAnimeId)
-                                return null;
-
-                            /*
-                             * IMPORTANT:
-                             *
-                             * Do NOT convert S2E1 to E13 etc.
-                             *
-                             * Once we are on the correct season page,
-                             * episode numbers start from 1 again.
-                             */
-                            return getDubEpisode(
-                                targetAnimeId,
-                                episode
-                            ).then(function(ep) {
-                                if (!ep)
+                    if (seasonUrl) {
+                        return getAnimeId(seasonUrl)
+                            .then(function(seasonAnimeId) {
+                                if (!seasonAnimeId)
                                     return null;
 
-                                return {
-                                    ep: ep,
-                                    referer: targetUrl
-                                };
+                                return getDubEpisode(
+                                    seasonAnimeId,
+                                    episode
+                                ).then(function(ep) {
+                                    if (!ep)
+                                        return null;
+
+                                    return {
+                                        ep: ep,
+                                        referer: seasonUrl
+                                    };
+                                });
                             });
+                    }
+
+                    /*
+                     * No separate season page.
+                     *
+                     * Fall back to the ORIGINAL behavior:
+                     *
+                     * S1E500 -> 500
+                     * S2E1   -> previous season episode count + 1
+                     * S3E1   -> previous seasons + 1
+                     */
+                    return absoluteEpisode(
+                        tmdbId,
+                        season,
+                        episode
+                    )
+                    .then(function(absolute) {
+                        if (!absolute)
+                            return null;
+
+                        return getDubEpisode(
+                            animeId,
+                            absolute
+                        ).then(function(ep) {
+                            if (!ep)
+                                return null;
+
+                            return {
+                                ep: ep,
+                                referer: result.url
+                            };
                         });
+                    });
                 });
             });
     })
@@ -590,6 +604,71 @@ function getStreams(
     })
     .catch(function() {
         return [];
+    });
+}
+function getSeasonUrl(animeId, season) {
+    season = parseInt(season, 10) || 1;
+
+    return fetch(
+        CONFIG.BASE_URL +
+        "/api/seasons/" +
+        encodeURIComponent(animeId),
+        {
+            headers: ajaxHeaders()
+        }
+    )
+    .then(function(r) {
+        if (!r.ok)
+            return null;
+
+        return r.json();
+    })
+    .then(function(data) {
+        if (!data || !data.result)
+            return null;
+
+        var $ = cheerio.load(data.result);
+
+        var found = null;
+
+        $(".season").each(function(i, el) {
+            if (found)
+                return;
+
+            var a = $(el).find("a").first();
+
+            if (!a.length)
+                return;
+
+            var name = a.find(".name").text().trim();
+
+            var match = name.match(
+                /^Season\s+(\d+)$/i
+            );
+
+            if (!match)
+                return;
+
+            if (
+                parseInt(match[1], 10) !== season
+            )
+                return;
+
+            var href = a.attr("href");
+
+            if (!href)
+                return;
+
+            found =
+                href.indexOf("http") === 0
+                    ? href
+                    : CONFIG.BASE_URL + href;
+        });
+
+        return found;
+    })
+    .catch(function() {
+        return null;
     });
 }
 module.exports = {
