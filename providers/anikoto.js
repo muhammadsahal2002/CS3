@@ -456,37 +456,54 @@ function getStreams(
         if (!title)
             return null;
 
-        return Promise.all([
-            absoluteEpisode(
-                tmdbId,
-                season,
-                episode
-            ),
-            search(title)
-        ]);
+        return search(title);
     })
-    .then(function(x) {
-        if (!x || !x[0] || !x[1])
+    .then(function(result) {
+        if (!result)
             return null;
 
-        return getAnimeId(x[1].url)
+        return getAnimeId(result.url)
             .then(function(animeId) {
                 if (!animeId)
                     return null;
 
-                return getDubEpisode(
+                return getSeasonUrl(
                     animeId,
-                    x[0]
-                );
-            })
-            .then(function(ep) {
-                if (!ep)
-                    return null;
+                    season
+                ).then(function(seasonUrl) {
 
-                return {
-                    ep: ep,
-                    referer: x[1].url
-                };
+                    /*
+                     * No season endpoint result means this
+                     * anime probably has only one season.
+                     *
+                     * For season 1, use the original URL.
+                     */
+                    if (!seasonUrl) {
+                        if (season !== 1)
+                            return null;
+
+                        seasonUrl = result.url;
+                    }
+
+                    return getAnimeId(seasonUrl)
+                        .then(function(seasonAnimeId) {
+                            if (!seasonAnimeId)
+                                return null;
+
+                            return getDubEpisode(
+                                seasonAnimeId,
+                                episode
+                            ).then(function(ep) {
+                                if (!ep)
+                                    return null;
+
+                                return {
+                                    ep: ep,
+                                    referer: seasonUrl
+                                };
+                            });
+                        });
+                });
             });
     })
     .then(function(data) {
@@ -536,7 +553,6 @@ function getStreams(
         return [];
     });
 }
-
 
 module.exports = {
     getStreams: getStreams
