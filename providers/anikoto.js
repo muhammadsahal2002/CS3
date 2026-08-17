@@ -40,48 +40,6 @@ function int(value, fallback) {
 }
 
 
-function normalize(str) {
-    return String(str || "")
-        .toLowerCase()
-        .replace(/&amp;/g, "&")
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-
-function titleScore(a, b) {
-    a = normalize(a);
-    b = normalize(b);
-
-    if (!a || !b) return 0;
-
-    if (a === b) return 100;
-
-    if (
-        a.indexOf(b) !== -1 ||
-        b.indexOf(a) !== -1
-    ) {
-        return 80;
-    }
-
-    var aa = a.split(" ");
-    var bb = b.split(" ");
-
-    var hits = 0;
-
-    for (var i = 0; i < aa.length; i++) {
-        if (bb.indexOf(aa[i]) !== -1) {
-            hits++;
-        }
-    }
-
-    return Math.round(
-        (hits / Math.max(aa.length, bb.length)) * 70
-    );
-}
-
-
 function safeJson(text, debug, label) {
     try {
         return JSON.parse(text);
@@ -150,7 +108,11 @@ function tmdbRequest(path) {
 
 
 /*
- * Get TV/movie title.
+ * Only used to search Anikoto.
+ *
+ * IMPORTANT:
+ * The Anikoto title is only used to locate the SERIES page.
+ * It is NOT used for episode matching.
  */
 function getTmdbTitle(
     tmdbId,
@@ -190,11 +152,14 @@ function getTmdbTitle(
                         data.original_title
                     );
 
-            title = title || String(tmdbId);
+            title =
+                title ||
+                String(tmdbId);
 
             debug.push(
                 debugStream(
-                    "TMDB TITLE: " + title
+                    "TMDB SERIES TITLE: " +
+                    title
                 )
             );
 
@@ -213,73 +178,31 @@ function getTmdbTitle(
 }
 
 
-/*
- * Get TMDB episode title.
- *
- * TV ONLY.
- */
-function getEpisodeTitle(
-    tmdbId,
-    season,
-    episode,
-    debug
-) {
-    return tmdbRequest(
-        "/tv/" +
-        encodeURIComponent(tmdbId) +
-        "/season/" +
-        season +
-        "/episode/" +
-        episode
-    )
-        .then(function(data) {
-            if (!data || !data.name) {
-                debug.push(
-                    debugStream(
-                        "TMDB EP TITLE FAILED S" +
-                        season +
-                        "E" +
-                        episode
-                    )
-                );
-
-                return null;
-            }
-
-            debug.push(
-                debugStream(
-                    "TMDB EP TITLE: S" +
-                    season +
-                    "E" +
-                    episode +
-                    " = " +
-                    data.name
-                )
-            );
-
-            return data.name;
-        })
-        .catch(function(e) {
-            debug.push(
-                debugStream(
-                    "TMDB EP TITLE ERROR: " +
-                    (e.message || String(e))
-                )
-            );
-
-            return null;
-        });
-}
-
+/* =========================================================
+ * ABSOLUTE EPISODE
+ * ========================================================= */
 
 /*
- * Calculate absolute episode.
+ * Convert TMDB SxEy to Anikoto's data-num.
  *
  * Example:
  *
- * S4E8
+ * S1E1 = 1
+ * S1E2 = 2
  *
- * count(S1) + count(S2) + count(S3) + 8
+ * If S1 has 220 episodes:
+ *
+ * S2E1 = 221
+ * S2E2 = 222
+ *
+ * If S2 has 24 episodes:
+ *
+ * S3E1 = 245
+ *
+ * We deliberately DO NOT use episode titles.
+ *
+ * Season 0 is ignored because Anikoto's normal episode
+ * numbering does not include TMDB specials.
  */
 function getAbsoluteEpisode(
     tmdbId,
@@ -290,13 +213,43 @@ function getAbsoluteEpisode(
     season = int(season, 1);
     episode = int(episode, 1);
 
-    if (season <= 1) {
-        return Promise.resolve(episode);
+    if (season < 1) {
+        season = 1;
     }
 
+    if (episode < 1) {
+        episode = 1;
+    }
+
+    /*
+     * S1 requires no offset.
+     */
+    if (season === 1) {
+        debug.push(
+            debugStream(
+                "ABSOLUTE: S1E" +
+                episode +
+                " = " +
+                episode
+            )
+        );
+
+        return Promise.resolve(
+            episode
+        );
+    }
+
+
+    /*
+     * Get all previous seasons.
+     */
     var requests = [];
 
-    for (var s = 1; s < season; s++) {
+    for (
+        var s = 1;
+        s < season;
+        s++
+    ) {
         requests.push(
             tmdbRequest(
                 "/tv/" +
@@ -309,27 +262,57 @@ function getAbsoluteEpisode(
         );
     }
 
+
     return Promise.all(requests)
         .then(function(list) {
+
             var offset = 0;
 
-            for (var i = 0; i < list.length; i++) {
+            for (
+                var i = 0;
+                i < list.length;
+                i++
+            ) {
+                var seasonNumber =
+                    i + 1;
+
+                var data =
+                    list[i];
+
                 if (
-                    !list[i] ||
-                    !list[i].episodes
+                    !data ||
+                    !data.episodes
                 ) {
                     debug.push(
                         debugStream(
-                            "ABSOLUTE FAILED S" +
-                            (i + 1)
+                            "TMDB SEASON " +
+                            seasonNumber +
+                            " FAILED"
                         )
                     );
 
-                    return episode;
+                    /*
+                     * Do NOT silently title-match.
+                     *
+                     * Returning null means we don't know
+                     * the correct absolute episode.
+                     */
+                    return null;
                 }
 
-                offset +=
-                    list[i].episodes.length;
+                var count =
+                    data.episodes.length;
+
+                debug.push(
+                    debugStream(
+                        "TMDB S" +
+                        seasonNumber +
+                        " EPISODES: " +
+                        count
+                    )
+                );
+
+                offset += count;
             }
 
             var absolute =
@@ -337,7 +320,7 @@ function getAbsoluteEpisode(
 
             debug.push(
                 debugStream(
-                    "ABSOLUTE EPISODE: S" +
+                    "ABSOLUTE: S" +
                     season +
                     "E" +
                     episode +
@@ -375,6 +358,7 @@ function searchAnikoto(
             return r.ok ? r.text() : null;
         })
         .then(function(html) {
+
             if (!html) {
                 debug.push(
                     debugStream(
@@ -385,16 +369,16 @@ function searchAnikoto(
                 return null;
             }
 
-            var $ = cheerio.load(html);
+            var $ =
+                cheerio.load(html);
 
             var results = [];
 
-            /*
-             * Current Anikoto pages use div.item.
-             */
             $("div.item").each(
                 function(i, el) {
-                    var $item = $(el);
+
+                    var $item =
+                        $(el);
 
                     var link =
                         $item.find(
@@ -422,10 +406,6 @@ function searchAnikoto(
                             ""
                         ).trim();
 
-                    /*
-                     * Sometimes the title is not on
-                     * the first link.
-                     */
                     if (!name) {
                         name =
                             (
@@ -472,8 +452,23 @@ function searchAnikoto(
                 return null;
             }
 
+
+            /*
+             * Search matching is ONLY for finding
+             * the Anikoto series page.
+             */
             var wanted =
-                normalize(title);
+                String(title)
+                    .toLowerCase()
+                    .replace(
+                        /[^a-z0-9\s]/g,
+                        ""
+                    )
+                    .replace(
+                        /\s+/g,
+                        " "
+                    )
+                    .trim();
 
             var best = null;
             var bestScore = -999;
@@ -483,36 +478,74 @@ function searchAnikoto(
                 i < results.length;
                 i++
             ) {
-                var r = results[i];
+                var r =
+                    results[i];
 
-                var score =
-                    titleScore(
-                        r.title,
-                        title
-                    );
+                var candidate =
+                    String(r.title)
+                        .toLowerCase()
+                        .replace(
+                            /[^a-z0-9\s]/g,
+                            ""
+                        )
+                        .replace(
+                            /\s+/g,
+                            " "
+                        )
+                        .trim();
 
-                /*
-                 * Media type preference.
-                 */
+                var score = 0;
+
+                if (
+                    candidate === wanted
+                ) {
+                    score = 1000;
+                } else if (
+                    candidate.indexOf(wanted) !== -1 ||
+                    wanted.indexOf(candidate) !== -1
+                ) {
+                    score = 500;
+                } else {
+                    var aa =
+                        wanted.split(" ");
+
+                    var bb =
+                        candidate.split(" ");
+
+                    var hits = 0;
+
+                    for (
+                        var j = 0;
+                        j < aa.length;
+                        j++
+                    ) {
+                        if (
+                            bb.indexOf(
+                                aa[j]
+                            ) !== -1
+                        ) {
+                            hits++;
+                        }
+                    }
+
+                    score =
+                        Math.round(
+                            (
+                                hits /
+                                Math.max(
+                                    aa.length,
+                                    bb.length
+                                )
+                            ) * 100
+                        );
+                }
+
                 if (mediaType === "tv") {
                     if (r.movie) {
-                        score -= 50;
+                        score -= 100;
                     } else {
                         score += 25;
                     }
-                } else {
-                    if (r.movie) {
-                        score += 30;
-                    }
-                }
-
-                /*
-                 * Exact match wins.
-                 */
-                if (
-                    normalize(r.title) === wanted
-                ) {
-                    score += 100;
                 }
 
                 if (score > bestScore) {
@@ -527,7 +560,7 @@ function searchAnikoto(
 
             debug.push(
                 debugStream(
-                    "ANIKOTO BEST: " +
+                    "ANIKOTO SERIES: " +
                     best.title +
                     " SCORE=" +
                     bestScore
@@ -537,6 +570,7 @@ function searchAnikoto(
             return best;
         })
         .catch(function(e) {
+
             debug.push(
                 debugStream(
                     "ANIKOTO SEARCH ERROR: " +
@@ -567,6 +601,7 @@ function getEpisodes(
             return r.ok ? r.text() : null;
         })
         .then(function(html) {
+
             if (!html) {
                 debug.push(
                     debugStream(
@@ -577,7 +612,8 @@ function getEpisodes(
                 return null;
             }
 
-            var $ = cheerio.load(html);
+            var $ =
+                cheerio.load(html);
 
             var animeId =
                 $("[data-id]")
@@ -597,7 +633,7 @@ function getEpisodes(
 
             debug.push(
                 debugStream(
-                    "ANIME ID: " +
+                    "ANIKOTO ANIME ID: " +
                     (
                         animeId ||
                         "NOT FOUND"
@@ -630,6 +666,7 @@ function getEpisodes(
                         : null;
                 })
                 .then(function(text) {
+
                     if (!text) {
                         debug.push(
                             debugStream(
@@ -669,15 +706,18 @@ function getEpisodes(
 
                     /*
                      * IMPORTANT:
-                     * Do not require a title here.
                      *
-                     * data-num + data-ids are the
-                     * important fields.
+                     * data-num = absolute episode
+                     * data-id  = Anikoto episode ID
+                     * data-ids = server token
+                     *
+                     * No title matching.
                      */
                     $ep(
                         "a[data-ids]"
                     ).each(
                         function(i, el) {
+
                             var $el =
                                 $ep(el);
 
@@ -694,6 +734,11 @@ function getEpisodes(
                                     0
                                 );
 
+                            var anikotoEpisodeId =
+                                $el.attr(
+                                    "data-id"
+                                );
+
                             var sub =
                                 $el.attr(
                                     "data-sub"
@@ -704,24 +749,19 @@ function getEpisodes(
                                     "data-dub"
                                 ) === "1";
 
+                            if (!ids) {
+                                return;
+                            }
+
+                            /*
+                             * Keep title only as metadata/debug.
+                             * It is NEVER used for matching.
+                             */
                             var title =
                                 (
                                     $el.attr(
                                         "title"
                                     ) ||
-                                    $el.attr(
-                                        "data-title"
-                                    ) ||
-                                    $el.attr(
-                                        "data-name"
-                                    ) ||
-                                    $el.find(
-                                        ".d-title"
-                                    ).first().text() ||
-                                    $el.find(
-                                        ".title"
-                                    ).first().text() ||
-                                    $el.text() ||
                                     ""
                                 )
                                     .replace(
@@ -730,31 +770,54 @@ function getEpisodes(
                                     )
                                     .trim();
 
-                            if (!ids) {
-                                return;
-                            }
 
                             if (sub) {
                                 episodes.push({
-                                    number: number,
-                                    title: title,
-                                    type: "sub",
-                                    ids: ids,
-                                    referer: animeUrl
+                                    number:
+                                        number,
+
+                                    anikotoId:
+                                        anikotoEpisodeId,
+
+                                    title:
+                                        title,
+
+                                    type:
+                                        "sub",
+
+                                    ids:
+                                        ids,
+
+                                    referer:
+                                        animeUrl
                                 });
                             }
 
+
                             if (dub) {
                                 episodes.push({
-                                    number: number,
-                                    title: title,
-                                    type: "dub",
-                                    ids: ids,
-                                    referer: animeUrl
+                                    number:
+                                        number,
+
+                                    anikotoId:
+                                        anikotoEpisodeId,
+
+                                    title:
+                                        title,
+
+                                    type:
+                                        "dub",
+
+                                    ids:
+                                        ids,
+
+                                    referer:
+                                        animeUrl
                                 });
                             }
                         }
                     );
+
 
                     debug.push(
                         debugStream(
@@ -763,49 +826,11 @@ function getEpisodes(
                         )
                     );
 
-                    if (episodes.length) {
-                        var min =
-                            episodes[0].number;
-
-                        var max =
-                            episodes[0].number;
-
-                        for (
-                            var i = 1;
-                            i < episodes.length;
-                            i++
-                        ) {
-                            if (
-                                episodes[i].number <
-                                min
-                            ) {
-                                min =
-                                    episodes[i].number;
-                            }
-
-                            if (
-                                episodes[i].number >
-                                max
-                            ) {
-                                max =
-                                    episodes[i].number;
-                            }
-                        }
-
-                        debug.push(
-                            debugStream(
-                                "EP RANGE: " +
-                                min +
-                                "-" +
-                                max
-                            )
-                        );
-                    }
-
                     return episodes;
                 });
         })
         .catch(function(e) {
+
             debug.push(
                 debugStream(
                     "EPISODE LIST ERROR: " +
@@ -822,132 +847,140 @@ function getEpisodes(
  * FIND TARGET
  * ========================================================= */
 
+/*
+ * THIS IS THE IMPORTANT PART.
+ *
+ * There is NO title matching here.
+ *
+ * TMDB:
+ *
+ *     S5E12
+ *
+ * becomes:
+ *
+ *     absolute episode N
+ *
+ * and we simply find:
+ *
+ *     <a data-num="N">
+ *
+ * on Anikoto.
+ */
 function findTarget(
     episodes,
     mediaType,
     rawEpisode,
     absoluteEpisode,
-    tmdbTitle,
     debug
 ) {
+
     /*
-     * TV absolute number FIRST.
+     * TV:
      *
-     * This is more reliable than fuzzy title matching.
+     * Absolute TMDB episode is authoritative.
      */
-    if (mediaType === "tv") {
-        var absolute =
+    if (
+        mediaType === "tv" &&
+        absoluteEpisode !== null &&
+        absoluteEpisode !== undefined
+    ) {
+
+        var target =
+            int(
+                absoluteEpisode,
+                0
+            );
+
+        debug.push(
+            debugStream(
+                "LOOKING FOR ANIKOTO data-num=" +
+                target
+            )
+        );
+
+        var matches =
             episodes.filter(
-                function(e) {
+                function(ep) {
                     return (
-                        e.number ===
-                        absoluteEpisode
+                        ep.number ===
+                        target
                     );
                 }
             );
 
-        if (absolute.length) {
-            debug.push(
-                debugStream(
-                    "TARGET ABSOLUTE: " +
-                    absoluteEpisode
-                )
-            );
+        if (matches.length) {
 
-            return absolute;
+            for (
+                var i = 0;
+                i < matches.length;
+                i++
+            ) {
+                debug.push(
+                    debugStream(
+                        "MATCH: data-num=" +
+                        matches[i].number +
+                        " data-id=" +
+                        matches[i].anikotoId +
+                        " type=" +
+                        matches[i].type
+                    )
+                );
+            }
+
+            return matches;
         }
 
 
         /*
-         * If absolute failed, title matching.
+         * DO NOT title-match if absolute lookup fails.
+         *
+         * This prevents incorrect episodes when Anikoto
+         * and TMDB use different episode titles.
          */
-        if (tmdbTitle) {
-            var bestNumber = null;
-            var bestScore = 0;
-            var bestName = "";
-
-            for (
-                var i = 0;
-                i < episodes.length;
-                i++
-            ) {
-                if (!episodes[i].title) {
-                    continue;
-                }
-
-                var score =
-                    titleScore(
-                        episodes[i].title,
-                        tmdbTitle
-                    );
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestNumber =
-                        episodes[i].number;
-                    bestName =
-                        episodes[i].title;
-                }
-            }
-
-            if (
-                bestNumber !== null &&
-                bestScore >= 55
-            ) {
-                debug.push(
-                    debugStream(
-                        "TARGET TITLE: " +
-                        bestNumber +
-                        " \"" +
-                        bestName +
-                        "\" SCORE=" +
-                        bestScore
-                    )
-                );
-
-                return episodes.filter(
-                    function(e) {
-                        return (
-                            e.number ===
-                            bestNumber
-                        );
-                    }
-                );
-            }
-        }
-    }
-
-
-    /*
-     * RAW FALLBACK.
-     *
-     * Also used for movies.
-     */
-    var raw =
-        episodes.filter(
-            function(e) {
-                return (
-                    e.number ===
-                    rawEpisode
-                );
-            }
-        );
-
-    if (raw.length) {
         debug.push(
             debugStream(
-                "TARGET RAW: " +
-                rawEpisode
+                "NO ABSOLUTE MATCH: data-num=" +
+                target
             )
         );
 
-        return raw;
+        return [];
     }
 
 
     /*
-     * Movie fallback:
-     * some movie pages don't expose data-num.
+     * Movie / non-TV.
+     */
+    var raw =
+        int(
+            rawEpisode,
+            1
+        );
+
+    var movieMatches =
+        episodes.filter(
+            function(ep) {
+                return (
+                    ep.number ===
+                    raw
+                );
+            }
+        );
+
+    if (movieMatches.length) {
+        debug.push(
+            debugStream(
+                "MOVIE MATCH data-num=" +
+                raw
+            )
+        );
+
+        return movieMatches;
+    }
+
+
+    /*
+     * Some movie pages may only expose one episode.
      */
     if (
         mediaType !== "tv" &&
@@ -955,24 +988,19 @@ function findTarget(
     ) {
         debug.push(
             debugStream(
-                "TARGET MOVIE FIRST: " +
-                episodes[0].number
+                "MOVIE FIRST EPISODE"
             )
         );
 
-        return episodes.filter(
-            function(e) {
-                return (
-                    e.number ===
-                    episodes[0].number
-                );
-            }
-        );
+        return [
+            episodes[0]
+        ];
     }
+
 
     debug.push(
         debugStream(
-            "TARGET: NONE"
+            "TARGET NONE"
         )
     );
 
@@ -1010,6 +1038,7 @@ function resolveOne(
                 : null;
         })
         .then(function(text) {
+
             if (!text) {
                 debug.push(
                     debugStream(
@@ -1059,9 +1088,7 @@ function resolveOne(
                 }
             );
 
-            /*
-             * Generic fallback.
-             */
+
             if (!linkId) {
                 $("li[data-link-id]").each(
                     function(i, el) {
@@ -1075,6 +1102,7 @@ function resolveOne(
                 );
             }
 
+
             if (!linkId) {
                 debug.push(
                     debugStream(
@@ -1086,6 +1114,7 @@ function resolveOne(
                 return null;
             }
 
+
             debug.push(
                 debugStream(
                     ep.type.toUpperCase() +
@@ -1093,6 +1122,7 @@ function resolveOne(
                     linkId
                 )
             );
+
 
             return fetch(
                 CONFIG.BASE_URL +
@@ -1114,6 +1144,7 @@ function resolveOne(
                 });
         })
         .then(function(text) {
+
             if (!text) {
                 return null;
             }
@@ -1147,15 +1178,9 @@ function resolveOne(
             }
 
             if (!embed) {
-                debug.push(
-                    debugStream(
-                        ep.type.toUpperCase() +
-                        ": NO EMBED"
-                    )
-                );
-
                 return null;
             }
+
 
             debug.push(
                 debugStream(
@@ -1165,9 +1190,7 @@ function resolveOne(
                 )
             );
 
-            /*
-             * Keep existing Megaplay logic.
-             */
+
             if (
                 embed.indexOf(
                     "megaplay"
@@ -1183,6 +1206,7 @@ function resolveOne(
                 return null;
             }
 
+
             if (
                 embed.indexOf(
                     "autostart"
@@ -1197,6 +1221,7 @@ function resolveOne(
                     "autostart=true";
             }
 
+
             return fetch(
                 embed,
                 {
@@ -1204,6 +1229,7 @@ function resolveOne(
                         headers({
                             "Referer":
                                 CONFIG.BASE_URL,
+
                             "Origin":
                                 CONFIG.BASE_URL
                         })
@@ -1212,351 +1238,3 @@ function resolveOne(
                 .then(function(r) {
                     return r.ok
                         ? r.text()
-                        : null;
-                })
-                .then(function(html) {
-                    if (!html) {
-                        return null;
-                    }
-
-                    var m =
-                        html.match(
-                            /data-id=["'](\d+)["']/
-                        );
-
-                    if (!m) {
-                        debug.push(
-                            debugStream(
-                                ep.type.toUpperCase() +
-                                ": MEGAPLAY ID NOT FOUND"
-                            )
-                        );
-
-                        return null;
-                    }
-
-                    var sourceUrl =
-                        "https://megaplay.buzz/stream/getSources?id=" +
-                        m[1];
-
-                    return fetch(
-                        sourceUrl,
-                        {
-                            headers: {
-                                "User-Agent":
-                                    CONFIG.USER_AGENT,
-
-                                "X-Requested-With":
-                                    "XMLHttpRequest",
-
-                                "Referer":
-                                    embed,
-
-                                "Accept":
-                                    "application/json"
-                            }
-                        }
-                    )
-                        .then(function(r) {
-                            return r.ok
-                                ? r.json()
-                                : null;
-                        })
-                        .then(function(sources) {
-                            if (
-                                !sources ||
-                                !sources.sources
-                            ) {
-                                return null;
-                            }
-
-                            var file =
-                                sources.sources.file ||
-                                (
-                                    sources.sources[0] &&
-                                    sources.sources[0].file
-                                );
-
-                            if (!file) {
-                                return null;
-                            }
-
-                            debug.push(
-                                debugStream(
-                                    ep.type.toUpperCase() +
-                                    ": SUCCESS"
-                                )
-                            );
-
-                            return {
-                                url: file,
-                                quality: "1080p",
-                                headers: {
-                                    "Referer":
-                                        "https://megaplay.buzz/",
-                                    "Origin":
-                                        "https://megaplay.buzz"
-                                }
-                            };
-                        });
-                });
-        })
-        .catch(function(e) {
-            debug.push(
-                debugStream(
-                    ep.type.toUpperCase() +
-                    ": RESOLVE ERROR " +
-                    (e.message || String(e))
-                )
-            );
-
-            return null;
-        });
-}
-
-
-/* =========================================================
- * MAIN
- * ========================================================= */
-
-function getStreams(
-    tmdbId,
-    mediaType,
-    season,
-    episode
-) {
-    var debug = [];
-    var streams = [];
-
-    var isTV =
-        mediaType === "tv";
-
-    var s =
-        int(season, 1);
-
-    var e =
-        int(episode, 1);
-
-    /*
-     * Movies don't have seasons.
-     */
-    if (!isTV) {
-        s = 1;
-        e = 1;
-    }
-
-    debug.push(
-        debugStream(
-            "START " +
-            tmdbId +
-            " " +
-            mediaType +
-            " S" +
-            s +
-            "E" +
-            e
-        )
-    );
-
-
-    /*
-     * -------------------------------------------------------
-     * GET TMDB TITLE
-     * -------------------------------------------------------
-     */
-
-    return getTmdbTitle(
-        tmdbId,
-        mediaType,
-        debug
-    )
-        .then(function(title) {
-
-            /*
-             * ---------------------------------------------------
-             * SEARCH ANIKOTO
-             * ---------------------------------------------------
-             */
-
-            return searchAnikoto(
-                title,
-                mediaType,
-                debug
-            )
-                .then(function(best) {
-                    if (!best) {
-                        debug.push(
-                            debugStream(
-                                "NO ANIKOTO RESULT"
-                            )
-                        );
-
-                        return null;
-                    }
-
-                    /*
-                     * ------------------------------------------------
-                     * Get episode information ONLY for TV.
-                     * ------------------------------------------------
-                     */
-
-                    var titlePromise =
-                        isTV
-                            ? getEpisodeTitle(
-                                tmdbId,
-                                s,
-                                e,
-                                debug
-                            )
-                            : Promise.resolve(
-                                null
-                            );
-
-                    var absolutePromise =
-                        isTV
-                            ? getAbsoluteEpisode(
-                                tmdbId,
-                                s,
-                                e,
-                                debug
-                            )
-                            : Promise.resolve(
-                                1
-                            );
-
-                    return Promise.all([
-                        titlePromise,
-                        absolutePromise
-                    ])
-                        .then(function(values) {
-
-                            var tmdbEpTitle =
-                                values[0];
-
-                            var absolute =
-                                values[1];
-
-                            return getEpisodes(
-                                best.url,
-                                debug
-                            )
-                                .then(function(episodes) {
-                                    if (
-                                        !episodes ||
-                                        !episodes.length
-                                    ) {
-                                        debug.push(
-                                            debugStream(
-                                                "NO EPISODES"
-                                            )
-                                        );
-
-                                        return null;
-                                    }
-
-                                    var targets =
-                                        findTarget(
-                                            episodes,
-                                            mediaType,
-                                            e,
-                                            absolute,
-                                            tmdbEpTitle,
-                                            debug
-                                        );
-
-                                    if (
-                                        !targets.length
-                                    ) {
-                                        return null;
-                                    }
-
-                                    var chain =
-                                        Promise.resolve();
-
-                                    targets.forEach(
-                                        function(ep) {
-                                            chain =
-                                                chain.then(
-                                                    function() {
-                                                        return resolveOne(
-                                                            ep,
-                                                            debug
-                                                        )
-                                                            .then(
-                                                                function(link) {
-                                                                    if (
-                                                                        link
-                                                                    ) {
-                                                                        streams.push({
-                                                                            name:
-                                                                                "AnikotoTV",
-
-                                                                            title:
-                                                                                (
-                                                                                    link.quality ||
-                                                                                    "1080p"
-                                                                                ) +
-                                                                                " " +
-                                                                                ep.type.toUpperCase(),
-
-                                                                            url:
-                                                                                link.url,
-
-                                                                            quality:
-                                                                                link.quality ||
-                                                                                "1080p",
-
-                                                                            headers:
-                                                                                link.headers ||
-                                                                                {}
-                                                                        });
-                                                                    }
-                                                                }
-                                                            );
-                                                    }
-                                                );
-                                        }
-                                    );
-
-                                    return chain;
-                                });
-                        });
-                });
-        })
-        .then(function() {
-
-            debug.push(
-                debugStream(
-                    "FINAL STREAMS: " +
-                    streams.length
-                )
-            );
-
-            return debug.concat(
-                streams
-            );
-        })
-        .catch(function(e) {
-
-            debug.push(
-                debugStream(
-                    "FATAL: " +
-                    (
-                        e &&
-                        e.message
-                            ? e.message
-                            : String(e)
-                    )
-                )
-            );
-
-            return debug.concat(
-                streams
-            );
-        });
-}
-
-
-module.exports = {
-    getStreams: getStreams
-};
