@@ -4,16 +4,15 @@ var cheerio = require("cheerio-without-node-native");
 
 var BASE = "https://anikoto.cz";
 var TMDB = "https://api.themoviedb.org/3";
-
-var API_KEY = "439c478a771f35c05022f9feabcca01c";
+var KEY = "YOUR_API_KEY";
 
 function debug(lines) {
     var out = [];
 
     for (var i = 0; i < lines.length; i++) {
         out.push({
-            name: "DEBUG: " + (i + 1),
-            title: lines[i],
+            name: "DEBUG " + (i + 1) + ": " + lines[i],
+            title: "DEBUG",
             url: "https://cdn.watching.onl/test",
             quality: "DEBUG",
             headers: {}
@@ -27,10 +26,13 @@ function tmdb(path) {
     return fetch(
         TMDB + path +
         (path.indexOf("?") >= 0 ? "&" : "?") +
-        "api_key=" + API_KEY
+        "api_key=" + KEY
     )
     .then(function(r) {
         return r.ok ? r.json() : null;
+    })
+    .catch(function() {
+        return null;
     });
 }
 
@@ -38,12 +40,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     var lines = [];
 
-    lines.push("Provider running");
+    lines.push("START");
     lines.push("ID=" + tmdbId);
     lines.push("S" + season + "E" + episode);
 
     return tmdb("/tv/" + tmdbId)
-
     .then(function(show) {
 
         if (!show) {
@@ -51,20 +52,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return debug(lines);
         }
 
-        var title =
-            show.name ||
-            show.original_name ||
-            "";
+        var title = show.name || show.original_name || "";
 
         lines.push("TMDB=" + title);
 
         return tmdb(
-            "/tv/" +
-            tmdbId +
-            "/season/" +
-            season
+            "/tv/" + tmdbId +
+            "/season/" + season
         )
-
         .then(function(data) {
 
             if (!data || !data.episodes) {
@@ -73,50 +68,38 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
 
             lines.push(
-                "Season episodes=" +
-                data.episodes.length
+                "SEASON EPS=" + data.episodes.length
             );
 
-            var found = null;
+            var ep = null;
 
             for (var i = 0; i < data.episodes.length; i++) {
-
                 if (
                     parseInt(
                         data.episodes[i].episode_number,
                         10
                     ) === parseInt(episode, 10)
                 ) {
-                    found = data.episodes[i];
+                    ep = data.episodes[i];
                     break;
                 }
             }
 
-            if (!found) {
+            if (!ep) {
                 lines.push("TMDB EP NOT FOUND");
                 return debug(lines);
             }
 
-            lines.push(
-                "TMDB EP=" +
-                found.episode_number
-            );
-
-            lines.push(
-                "TITLE=" +
-                (found.name || "NO TITLE")
-            );
+            lines.push("TMDB TITLE=" + (ep.name || ""));
 
             return fetch(
                 BASE +
                 "/filter?keyword=" +
                 encodeURIComponent(title)
             )
-
             .then(function(r) {
                 return r.ok ? r.text() : null;
             })
-
             .then(function(html) {
 
                 if (!html) {
@@ -125,7 +108,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
 
                 var $ = cheerio.load(html);
-
                 var anime = null;
 
                 $("div.item").each(function(i, el) {
@@ -133,22 +115,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (anime) return;
 
                     var a = $(el)
-                        .find(
-                            "a.name.d-title, a[data-jp]"
-                        )
+                        .find("a.name.d-title, a[data-jp]")
                         .first();
 
                     if (!a.length) return;
 
-                    var t =
-                        (
-                            a.attr("data-jp") ||
-                            a.text() ||
-                            ""
-                        ).trim();
+                    var t = (
+                        a.attr("data-jp") ||
+                        a.text() ||
+                        ""
+                    ).trim();
 
-                    var href =
-                        a.attr("href");
+                    var href = a.attr("href");
 
                     if (!t || !href) return;
 
@@ -158,32 +136,24 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     ) {
                         anime = {
                             title: t,
-                            url:
-                                href.indexOf("http") === 0
-                                    ? href
-                                    : BASE + href
+                            url: href.indexOf("http") === 0
+                                ? href
+                                : BASE + href
                         };
                     }
                 });
 
                 if (!anime) {
-                    lines.push("ANIKOTO ANIME NOT FOUND");
+                    lines.push("ANIKOTO NOT FOUND");
                     return debug(lines);
                 }
 
-                lines.push(
-                    "ANIKOTO=" +
-                    anime.title
-                );
+                lines.push("ANIKOTO=" + anime.title);
 
-                return fetch(
-                    anime.url
-                )
-
+                return fetch(anime.url)
                 .then(function(r) {
                     return r.ok ? r.text() : null;
                 })
-
                 .then(function(page) {
 
                     if (!page) {
@@ -193,30 +163,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     var $p = cheerio.load(page);
 
-                    var id =
-                        $p("[data-id]")
+                    var id = $p("[data-id]")
                         .first()
                         .attr("data-id");
 
                     if (!id) {
-
-                        var m =
-                            page.match(
-                                /data-id=["'](\d+)["']/
-                            );
-
-                        id =
-                            m ? m[1] : null;
+                        var m = page.match(
+                            /data-id=["'](\d+)["']/
+                        );
+                        id = m ? m[1] : null;
                     }
 
                     if (!id) {
-                        lines.push("ANIKOTO ID NOT FOUND");
+                        lines.push("ANIKOTO ID FAILED");
                         return debug(lines);
                     }
 
-                    lines.push(
-                        "ANIKOTO ID=" + id
-                    );
+                    lines.push("ANIKOTO ID=" + id);
 
                     return fetch(
                         BASE +
@@ -225,110 +188,64 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         "?vrf=",
                         {
                             headers: {
-                                "User-Agent":
-                                    "Mozilla/5.0",
+                                "User-Agent": "Mozilla/5.0",
                                 "X-Requested-With":
                                     "XMLHttpRequest",
                                 "Accept":
                                     "application/json",
-                                "Referer":
-                                    anime.url
+                                "Referer": anime.url
                             }
                         }
                     )
-
                     .then(function(r) {
                         return r.ok ? r.json() : null;
                     })
+                    .then(function(data) {
 
-                    .then(function(epData) {
-
-                        if (
-                            !epData ||
-                            !epData.result
-                        ) {
-                            lines.push(
-                                "EPISODE API FAILED"
-                            );
+                        if (!data || !data.result) {
+                            lines.push("EPISODE API FAILED");
                             return debug(lines);
                         }
 
-                        var $e =
-                            cheerio.load(
-                                epData.result
-                            );
+                        var $e = cheerio.load(data.result);
 
                         var total = 0;
-                        var dubs = 0;
-                        var requested = null;
+                        var dub = 0;
+                        var direct = false;
 
-                        $e("a[data-ids]").each(
-                            function(i, el) {
+                        $e("a[data-ids]").each(function(i, el) {
 
-                                var a = $e(el);
+                            var a = $e(el);
 
-                                var num =
-                                    parseInt(
-                                        a.attr(
-                                            "data-num"
-                                        ) || "0",
-                                        10
-                                    );
+                            var n = parseInt(
+                                a.attr("data-num") || "0",
+                                10
+                            );
 
-                                if (num > 0) {
-                                    total++;
-                                }
+                            if (n) total++;
 
-                                if (
-                                    a.attr(
-                                        "data-dub"
-                                    ) === "1"
-                                ) {
-                                    dubs++;
-                                }
+                            if (
+                                a.attr("data-dub") === "1"
+                            ) {
+                                dub++;
 
                                 if (
-                                    num ===
-                                    parseInt(
-                                        episode,
-                                        10
-                                    ) &&
-                                    a.attr(
-                                        "data-dub"
-                                    ) === "1"
+                                    n ===
+                                    parseInt(episode, 10)
                                 ) {
-                                    requested = a;
+                                    direct = true;
                                 }
                             }
-                        );
+                        });
 
+                        lines.push("TOTAL=" + total);
+                        lines.push("DUB=" + dub);
                         lines.push(
-                            "ANK TOTAL=" +
-                            total
+                            "DIRECT #" +
+                            episode +
+                            "=" +
+                            (direct ? "YES" : "NO")
                         );
-
-                        lines.push(
-                            "ANK DUB=" +
-                            dubs
-                        );
-
-                        if (requested) {
-
-                            lines.push(
-                                "DIRECT MATCH #" +
-                                episode
-                            );
-
-                            lines.push(
-                                "DATA-IDS FOUND"
-                            );
-
-                        } else {
-
-                            lines.push(
-                                "DIRECT MATCH NONE"
-                            );
-                        }
 
                         return debug(lines);
                     });
@@ -336,11 +253,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
             });
         });
     })
-
     .catch(function(e) {
-
         return debug([
-            "Provider running",
             "ERROR=" + String(e)
         ]);
     });
