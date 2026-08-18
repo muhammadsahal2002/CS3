@@ -1,15 +1,24 @@
-/**
- * Anikoto Debug Mapper
- * TMDB Season/Episode -> Anikoto Episode
- */
-
 "use strict";
 
 var cheerio = require("cheerio-without-node-native");
 
 var BASE = "https://anikoto.cz";
 var TMDB = "https://api.themoviedb.org/3";
-var KEY = "YOUR_TMDB_API_KEY";
+var KEY = "439c478a771f35c05022f9feabcca01c";
+
+function debug(lines) {
+    var out = [];
+
+    for (var i = 0; i < lines.length; i++) {
+        out.push({
+            name: "DEBUG " + (i + 1),
+            title: lines[i],
+            url: "https://example.com/"
+        });
+    }
+
+    return out;
+}
 
 function norm(s) {
     return String(s || "")
@@ -17,26 +26,6 @@ function norm(s) {
         .replace(/[^a-z0-9\s]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-}
-
-function similarity(a, b) {
-    var A = norm(a).split(" ").filter(function(x) {
-        return x.length > 2;
-    });
-
-    var B = norm(b).split(" ").filter(function(x) {
-        return x.length > 2;
-    });
-
-    if (!A.length || !B.length) return 0;
-
-    var count = 0;
-
-    for (var i = 0; i < A.length; i++) {
-        if (B.indexOf(A[i]) !== -1) count++;
-    }
-
-    return count / Math.max(A.length, B.length);
 }
 
 function tmdb(path) {
@@ -53,8 +42,7 @@ function tmdb(path) {
     });
 }
 
-function getAnikoto(title) {
-
+function searchAnime(title) {
     return fetch(
         BASE + "/filter?keyword=" +
         encodeURIComponent(title)
@@ -67,11 +55,11 @@ function getAnikoto(title) {
         if (!html) return null;
 
         var $ = cheerio.load(html);
-        var best = null;
-        var q = norm(title);
-        var score = 0;
+        var result = null;
 
         $("div.item").each(function(i, el) {
+
+            if (result) return;
 
             var a = $(el)
                 .find("a.name.d-title, a[data-jp]")
@@ -89,24 +77,17 @@ function getAnikoto(title) {
 
             if (!t || !href) return;
 
-            var s = similarity(q, t);
-
-            if (norm(t) === q) s = 1;
-
-            if (s > score) {
-                score = s;
-
-                best = {
+            if (norm(t) === norm(title)) {
+                result = {
                     title: t,
-                    url:
-                        href.indexOf("http") === 0
-                            ? href
-                            : BASE + href
+                    url: href.indexOf("http") === 0
+                        ? href
+                        : BASE + href
                 };
             }
         });
 
-        return best;
+        return result;
     })
     .catch(function() {
         return null;
@@ -114,7 +95,6 @@ function getAnikoto(title) {
 }
 
 function getAnimeId(url) {
-
     return fetch(url)
         .then(function(r) {
             return r.ok ? r.text() : null;
@@ -150,8 +130,7 @@ function getEpisodes(id, referer) {
             headers: {
                 "User-Agent": "Mozilla/5.0",
                 "X-Requested-With": "XMLHttpRequest",
-                "Accept":
-                    "application/json, text/javascript, */*; q=0.01",
+                "Accept": "application/json",
                 "Referer": referer
             }
         }
@@ -173,17 +152,19 @@ function getEpisodes(id, referer) {
             if (a.attr("data-dub") !== "1") return;
 
             var num =
-                parseInt(a.attr("data-num") || "0", 10);
+                parseInt(
+                    a.attr("data-num") || "0",
+                    10
+                );
 
             var title =
                 a.closest("li").attr("title") || "";
 
-            if (!num || !title) return;
+            if (!num) return;
 
             list.push({
                 number: num,
-                title: title,
-                ids: a.attr("data-ids")
+                title: title
             });
         });
 
@@ -194,93 +175,146 @@ function getEpisodes(id, referer) {
     });
 }
 
-function getStreams(tmdbId, mediaType, season, episode) {
+function getStreams(
+    tmdbId,
+    mediaType,
+    season,
+    episode
+) {
 
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
+    var lines = [];
+
+    lines.push("START");
+    lines.push("TMDB ID: " + tmdbId);
+    lines.push("REQUEST: S" + season + "E" + episode);
+
     return tmdb(
-        "/tv/" +
-        tmdbId +
-        "/season/" +
-        season
+        "/tv/" + tmdbId
     )
-    .then(function(seasonData) {
+    .then(function(show) {
 
-        if (!seasonData) {
-            return debug("TMDB season request failed");
-        }
-
-        var tmdbEp = null;
-
-        for (var i = 0; i < seasonData.episodes.length; i++) {
-
-            if (
-                parseInt(
-                    seasonData.episodes[i].episode_number,
-                    10
-                ) === episode
-            ) {
-                tmdbEp = seasonData.episodes[i];
-                break;
-            }
-        }
-
-        if (!tmdbEp) {
+        if (!show) {
             return debug(
-                "TMDB episode not found: S" +
-                season + "E" + episode
+                lines.concat(["TMDB SHOW: FAILED"])
             );
         }
 
-        var tmdbTitle = tmdbEp.name || "";
+        var showTitle =
+            show.name ||
+            show.original_name ||
+            "";
+
+        lines.push(
+            "TMDB SHOW: " + showTitle
+        );
 
         return tmdb(
-            "/tv/" + tmdbId
+            "/tv/" +
+            tmdbId +
+            "/season/" +
+            season
         )
-        .then(function(show) {
+        .then(function(seasonData) {
 
-            if (!show) {
-                return debug("TMDB show failed");
+            if (!seasonData) {
+                return debug(
+                    lines.concat([
+                        "TMDB SEASON: FAILED"
+                    ])
+                );
             }
 
-            var title =
-                show.name ||
-                show.original_name;
+            lines.push(
+                "TMDB SEASON: OK"
+            );
 
-            return getAnikoto(title)
+            var tmdbEp = null;
+
+            for (
+                var i = 0;
+                i < seasonData.episodes.length;
+                i++
+            ) {
+                if (
+                    parseInt(
+                        seasonData.episodes[i]
+                            .episode_number,
+                        10
+                    ) === episode
+                ) {
+                    tmdbEp =
+                        seasonData.episodes[i];
+                    break;
+                }
+            }
+
+            if (!tmdbEp) {
+                return debug(
+                    lines.concat([
+                        "TMDB EPISODE: NOT FOUND"
+                    ])
+                );
+            }
+
+            lines.push(
+                "TMDB EP: " +
+                (tmdbEp.name || "NO TITLE")
+            );
+
+            return searchAnime(showTitle)
                 .then(function(anime) {
 
                     if (!anime) {
                         return debug(
-                            "Anikoto search failed for: " +
-                            title
+                            lines.concat([
+                                "ANIKOTO SEARCH: FAILED"
+                            ])
                         );
                     }
 
-                    return getAnimeId(anime.url)
-                        .then(function(animeId) {
+                    lines.push(
+                        "ANIKOTO: " +
+                        anime.title
+                    );
 
-                            if (!animeId) {
+                    return getAnimeId(anime.url)
+                        .then(function(id) {
+
+                            if (!id) {
                                 return debug(
-                                    "Anikoto ID not found"
+                                    lines.concat([
+                                        "ANIKOTO ID: FAILED"
+                                    ])
                                 );
                             }
 
+                            lines.push(
+                                "ANIKOTO ID: " + id
+                            );
+
                             return getEpisodes(
-                                animeId,
+                                id,
                                 anime.url
                             )
                             .then(function(eps) {
 
+                                lines.push(
+                                    "DUB EPISODES: " +
+                                    eps.length
+                                );
+
                                 if (!eps.length) {
-                                    return debug(
-                                        "Anikoto episodes: 0"
-                                    );
+                                    return debug(lines);
                                 }
 
                                 var best = null;
                                 var bestScore = 0;
+
+                                var tmdbTitle =
+                                    tmdbEp.name || "";
 
                                 for (
                                     var i = 0;
@@ -288,58 +322,94 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                     i++
                                 ) {
 
-                                    var s =
-                                        similarity(
-                                            tmdbTitle,
+                                    var a =
+                                        norm(
+                                            tmdbTitle
+                                        );
+
+                                    var b =
+                                        norm(
                                             eps[i].title
                                         );
 
-                                    if (s > bestScore) {
-                                        bestScore = s;
+                                    var aw =
+                                        a.split(" ");
+
+                                    var bw =
+                                        b.split(" ");
+
+                                    var matches = 0;
+
+                                    for (
+                                        var x = 0;
+                                        x < aw.length;
+                                        x++
+                                    ) {
+                                        if (
+                                            aw[x].length > 2 &&
+                                            bw.indexOf(
+                                                aw[x]
+                                            ) !== -1
+                                        ) {
+                                            matches++;
+                                        }
+                                    }
+
+                                    var score =
+                                        matches /
+                                        Math.max(
+                                            aw.length,
+                                            bw.length,
+                                            1
+                                        );
+
+                                    if (
+                                        score > bestScore
+                                    ) {
+                                        bestScore =
+                                            score;
                                         best = eps[i];
                                     }
                                 }
 
                                 if (!best) {
-                                    return debug(
-                                        "No title match"
+                                    lines.push(
+                                        "MATCH: NONE"
+                                    );
+                                } else {
+                                    lines.push(
+                                        "MATCH: #" +
+                                        best.number
+                                    );
+
+                                    lines.push(
+                                        "ANIKOTO TITLE: " +
+                                        best.title
+                                    );
+
+                                    lines.push(
+                                        "SCORE: " +
+                                        Math.round(
+                                            bestScore * 100
+                                        ) +
+                                        "%"
                                     );
                                 }
 
-                                return debug(
-                                    "S" + season +
-                                    "E" + episode +
-                                    " | TMDB: " +
-                                    tmdbTitle +
-                                    " | Anikoto #" +
-                                    best.number +
-                                    " | " +
-                                    best.title +
-                                    " | Score " +
-                                    Math.round(
-                                        bestScore * 100
-                                    ) + "%"
-                                );
+                                return debug(lines);
                             });
                         });
                 });
         });
     })
     .catch(function(e) {
-        return debug(
-            "ERROR: " +
+
+        return debug([
+            "START",
+            "ERROR",
             String(e)
-        );
+        ]);
     });
-}
-
-function debug(message) {
-
-    return [{
-        name: "DEBUG",
-        title: message,
-        url: "https://example.com/debug"
-    }];
 }
 
 module.exports = {
