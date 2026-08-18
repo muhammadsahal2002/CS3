@@ -44,48 +44,59 @@ function normalizeTitle(title) {
 }
 
 function findEpisodeByTitle(targetTitle, episodes) {
-    var targetWords = normalizeTitle(targetTitle)
-        .split(" ")
-        .filter(function(w) { return w.length >= 3; });
+    var target = normalizeTitle(targetTitle);
+    var targetWords = target.split(" ").filter(function(w) {
+        return w.length >= 3;
+    });
 
     if (targetWords.length === 0) return null;
 
-    var targetSet = {};
-    for (var i = 0; i < targetWords.length; i++) {
-        targetSet[targetWords[i]] = true;
-    }
-
     var bestMatch = null;
     var bestScore = 0;
-    var bestMatches = 0;
 
     for (var i = 0; i < episodes.length; i++) {
         var ep = episodes[i];
-        var episodeWords = normalizeTitle(ep.title)
-            .split(" ")
-            .filter(function(w) { return w.length >= 3; });
+        var epTitle = normalizeTitle(ep.title);
+        var epWords = epTitle.split(" ").filter(function(w) {
+            return w.length >= 3;
+        });
 
+        // Count matching words
         var matches = 0;
-        for (var j = 0; j < episodeWords.length; j++) {
-            if (targetSet[episodeWords[j]]) matches++;
+        for (var j = 0; j < targetWords.length; j++) {
+            for (var k = 0; k < epWords.length; k++) {
+                if (targetWords[j] === epWords[k] ||
+                    targetWords[j].indexOf(epWords[k]) !== -1 ||
+                    epWords[k].indexOf(targetWords[j]) !== -1) {
+                    matches++;
+                    break;
+                }
+            }
         }
 
-        var score = matches / Math.max(targetWords.length, episodeWords.length);
+        var score = matches / Math.max(targetWords.length, 1);
 
-        if (score > bestScore || (score === bestScore && matches > bestMatches)) {
+        // Also give bonus if important numbers match (100, 100000000, etc.)
+        if (target.indexOf("100") !== -1 && epTitle.indexOf("100") !== -1) {
+            score += 0.3;
+        }
+        if (target.indexOf("zeni") !== -1 && epTitle.indexOf("zeni") !== -1) {
+            score += 0.3;
+        }
+
+        if (score > bestScore) {
             bestScore = score;
-            bestMatches = matches;
             bestMatch = ep;
         }
     }
 
-    if (bestMatch && (bestMatches >= 2 || bestScore >= 0.75)) {
+    // Lower threshold so similar titles can match
+    if (bestMatch && bestScore >= 0.4) {
         return bestMatch;
     }
 
     return null;
 }
-
 function tmdb(path) {
     var url = CONFIG.TMDB_BASE + path +
         (path.indexOf("?") >= 0 ? "&" : "?") +
