@@ -1,3 +1,8 @@
+/**
+ * AnikotoTV - Debug version
+ * Returns error messages as streams so you can see them in Nuvio
+ */
+
 "use strict";
 
 var cheerio = require("cheerio-without-node-native");
@@ -6,538 +11,275 @@ var CONFIG = {
     BASE_URL: "https://anikoto.cz",
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
-
-    USER_AGENT:
-        "Mozilla/5.0 (Linux; Android 12; SM-M025F) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/150.0.7871.181 Mobile Safari/537.36"
+    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
 
-function headers(extra) {
+function getHeaders(extra) {
     var h = {
         "User-Agent": CONFIG.USER_AGENT,
-        "Accept":
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9"
     };
-
-    if (extra) {
-        for (var k in extra)
-            h[k] = extra[k];
-    }
-
+    if (extra) for (var k in extra) h[k] = extra[k];
     return h;
 }
 
-function ajaxHeaders(referer) {
+function getAjaxHeaders(referer) {
     return {
         "User-Agent": CONFIG.USER_AGENT,
         "X-Requested-With": "XMLHttpRequest",
-        "Accept":
-            "application/json, text/javascript, */*; q=0.01",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
         "Referer": referer || CONFIG.BASE_URL
     };
 }
 
-function normalize(str) {
-    return String(str || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
+function makeDebugStream(msg) {
+    return {
+        name: "DEBUG: " + msg,
+        title: msg,
+        url: "https://test.com/error",
+        quality: "DEBUG",
+        headers: {}
+    };
+
 }
 
-function tmdb(path) {
-    return fetch(
-        CONFIG.TMDB_BASE +
-        path +
-        (path.indexOf("?") >= 0 ? "&" : "?") +
-        "api_key=" +
-        encodeURIComponent(CONFIG.TMDB_API_KEY)
-    ).then(function(r) {
-        return r.ok ? r.json() : null;
-    });
-}
+function getStreams(tmdbId, mediaType, season, episode) {
+    var debug = [];
+    var epNum = episode || 1;
 
+    debug.push(makeDebugStream("START: " + tmdbId + " " + mediaType + " S" + season + "E" + epNum));
 
-/* Convert S2E1 -> absolute episode number */
-function absoluteEpisode(id, season, episode) {
-    season = parseInt(season, 10) || 1;
-    episode = parseInt(episode, 10) || 1;
+    // Step 1: TMDB
+    var tmdbUrl = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
 
-    if (season <= 1)
-        return Promise.resolve(episode);
-
-    var requests = [];
-
-    for (var s = 1; s < season; s++) {
-        requests.push(
-            tmdb(
-                "/tv/" +
-                encodeURIComponent(id) +
-                "/season/" +
-                s
-            )
-        );
-    }
-
-    return Promise.all(requests).then(function(list) {
-        var offset = 0;
-
-        for (var i = 0; i < list.length; i++) {
-            if (!list[i] || !list[i].episodes)
-                return null;
-
-            offset += list[i].episodes.length;
-        }
-
-        return offset + episode;
-    });
-}
-
-
-/* Search Anikoto */
-function search(title) {
-    return fetch(
-        CONFIG.BASE_URL +
-        "/filter?keyword=" +
-        encodeURIComponent(title),
-        {
-            headers: headers()
-        }
-    )
-    .then(function(r) {
-        return r.ok ? r.text() : null;
-    })
-    .then(function(html) {
-        if (!html)
-            return null;
-
-        var $ = cheerio.load(html);
-        var results = [];
-
-        $("div.item").each(function(i, el) {
-            var item = $(el);
-
-            var a = item.find(
-                "a.name.d-title, a[data-jp]"
-            ).first();
-
-            if (!a.length)
-                return;
-
-            var href = a.attr("href");
-            var title =
-                a.attr("data-jp") ||
-                a.text() ||
-                "";
-
-            title = title.trim();
-
-            if (!href || !title)
-                return;
-
-            var url =
-                href.indexOf("http") === 0
-                    ? href
-                    : CONFIG.BASE_URL + href;
-
-            results.push({
-                title: title,
-                url: url
-            });
-        });
-
-        if (!results.length)
-            return null;
-
-        var q = normalize(title);
-        var best = null;
-        var bestScore = -999;
-
-        for (var i = 0; i < results.length; i++) {
-            var t = normalize(results[i].title);
-            var score = 0;
-
-            if (t === q)
-                score = 100;
-            else if (t.indexOf(q) !== -1)
-                score = 70;
-            else if (q.indexOf(t) !== -1)
-                score = 50;
-
-            if (score > bestScore) {
-                bestScore = score;
-                best = results[i];
+    return fetch(tmdbUrl)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            var searchTitle = String(tmdbId);
+            if (data) {
+                searchTitle = mediaType === "tv" ? (data.name || searchTitle) : (data.title || searchTitle);
+                debug.push(makeDebugStream("TMDB OK: " + searchTitle));
+            } else {
+                debug.push(makeDebugStream("TMDB FAILED"));
             }
-        }
 
-        return best || results[0];
-    });
-}
+            // Step 2: Search
+            var searchUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
+            return fetch(searchUrl, { headers: getHeaders() })
+                .then(function(r) { return r.ok ? r.text() : null; })
+                .then(function(html) {
+                    if (!html) {
+                        debug.push(makeDebugStream("SEARCH: empty HTML"));
+                        return debug;
+                    }
 
+                    var $ = cheerio.load(html);
+                    var results = [];
 
-/* Get Anikoto anime ID */
-function getAnimeId(url) {
-    return fetch(url, {
-        headers: headers()
-    })
-    .then(function(r) {
-        return r.ok ? r.text() : null;
-    })
-    .then(function(html) {
-        if (!html)
-            return null;
+                    $("div.item").each(function(i, el) {
+                        var $el = $(el);
+                        var titleEl = $el.find("a.name.d-title, a[data-jp]").first();
+                        if (!titleEl.length) return;
+                        var href = titleEl.attr("href");
+                        var title = (titleEl.attr("data-jp") || titleEl.text() || "").trim();
+                        if (!href || !title) return;
+                        results.push({
+                            title: title,
+                            url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href
+                        });
+                    });
 
-        var $ = cheerio.load(html);
+                    debug.push(makeDebugStream("SEARCH: " + results.length + " results"));
 
-        var id = $("[data-id]")
-            .first()
-            .attr("data-id");
+                    if (results.length === 0) return debug;
 
-        if (id)
-            return id;
+                    var best = results[0];
+                    debug.push(makeDebugStream("BEST: " + best.title));
 
-        var m = html.match(
-            /data-id=["'](\d+)["']/
-        );
+                    // Step 3: Load anime page
+                    return fetch(best.url, { headers: getHeaders() })
+                        .then(function(r) { return r.ok ? r.text() : null; })
+                        .then(function(html) {
+                            if (!html) {
+                                debug.push(makeDebugStream("ANIME PAGE: empty"));
+                                return debug;
+                            }
 
-        return m ? m[1] : null;
-    });
-}
+                            var $ = cheerio.load(html);
+                            var animeId = $("[data-id]").first().attr("data-id");
+                            if (!animeId) {
+                                var m = html.match(/data-id=["'](\d+)["']/);
+                                animeId = m ? m[1] : null;
+                            }
 
+                            debug.push(makeDebugStream("ANIME ID: " + (animeId || "NOT FOUND")));
 
-/*
- * Find the requested episode.
- *
- * Important:
- * The JSON response contains escaped HTML such as:
- *
- * data-num=\"72\"
- *
- * JSON.parse() converts that back into:
- *
- * data-num="72"
- *
- * Cheerio therefore sees normal HTML.
- */
-function getDubEpisode(animeId, episode) {
-    return fetch(
-        CONFIG.BASE_URL +
-        "/ajax/episode/list/" +
-        animeId +
-        "?vrf=",
-        {
-            headers: ajaxHeaders()
-        }
-    )
-    .then(function(r) {
-        return r.ok ? r.json() : null;
-    })
-    .then(function(data) {
-        if (!data || !data.result)
-            return null;
+                            if (!animeId) return debug;
 
-        var $ = cheerio.load(data.result);
+                            // Step 4: Episodes
+                            var epUrl = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+                            return fetch(epUrl, { headers: getAjaxHeaders(best.url) })
+                                .then(function(r) { return r.ok ? r.text() : null; })
+                                .then(function(jsonText) {
+                                    if (!jsonText) {
+                                        debug.push(makeDebugStream("EP LIST: empty"));
+                                        return debug;
+                                    }
 
-        var found = null;
+                                    var data = JSON.parse(jsonText);
+                                    if (!data || data.status !== 200 || !data.result) {
+                                        debug.push(makeDebugStream("EP LIST: bad JSON"));
+                                        return debug;
+                                    }
 
-        /*
-         * Only DUB.
-         *
-         * Do NOT require a particular attribute order.
-         * data-num, data-dub and data-ids can appear
-         * in different orders.
-         */
-        $("a[data-ids]").each(function(i, el) {
-            if (found)
-                return;
+                                    var $ep = cheerio.load(data.result);
+                                    var episodes = [];
 
-            var a = $(el);
+                                    $ep("a[data-ids]").each(function(i, el) {
+                                        var $el = $ep(el);
+                                        var ids = $el.attr("data-ids");
+                                        var num = parseInt($el.attr("data-num") || "0", 10);
+                                        var hasSub = $el.attr("data-sub") === "1";
+                                        var hasDub = $el.attr("data-dub") === "1";
 
-            var num = parseInt(
-                a.attr("data-num") || "0",
-                10
-            );
+                                        if (!ids) return;
+                                        if (hasSub) episodes.push({ number: num, type: "sub", ids: ids });
+                                        if (hasDub) episodes.push({ number: num, type: "dub", ids: ids });
+                                    });
 
-            var dub = a.attr("data-dub") === "1";
-            var ids = a.attr("data-ids");
+                                    debug.push(makeDebugStream("EPISODES: " + episodes.length));
 
-            if (
-                num === episode &&
-                dub &&
-                ids
-            ) {
-                found = {
-                    number: num,
-                    ids: ids
-                };
-            }
-        });
+                                    var targets = episodes.filter(function(e) { return e.number === epNum; });
+                                    if (targets.length === 0) {
+                                        debug.push(makeDebugStream("NO EP " + epNum));
+                                        return debug;
+                                    }
 
-        return found;
-    });
-}
+                                    debug.push(makeDebugStream("TARGETS: " + targets.map(function(t){return t.type;}).join(",")));
 
+                                    // Step 5: Try first target only
+                                    var ep = targets[0];
+                                    var listUrl = CONFIG.BASE_URL + "/ajax/server/list?servers=" + ep.ids;
 
-/* Get DUB server */
-function getDubServer(ids, referer) {
-    return fetch(
-        CONFIG.BASE_URL +
-        "/ajax/server/list?servers=" +
-        encodeURIComponent(ids),
-        {
-            headers: ajaxHeaders(referer)
-        }
-    )
-    .then(function(r) {
-        return r.ok ? r.json() : null;
-    })
-    .then(function(data) {
-        if (!data || !data.result)
-            return null;
+                                    return fetch(listUrl, { headers: getAjaxHeaders(best.url) })
+                                        .then(function(r) { return r.ok ? r.text() : null; })
+                                        .then(function(listJson) {
+                                            if (!listJson) {
+                                                debug.push(makeDebugStream("SERVER LIST: empty"));
+                                                return debug;
+                                            }
 
-        var $ = cheerio.load(data.result);
+                                            var listData = JSON.parse(listJson);
+                                            if (!listData || !listData.result) {
+                                                debug.push(makeDebugStream("SERVER LIST: bad"));
+                                                return debug;
+                                            }
 
-        /*
-         * Only:
-         *
-         * <div class="type" data-type="dub">
-         *
-         * Never select SUB here.
-         */
-        var linkId = $(
-            'div.type[data-type="dub"] li[data-link-id]'
-        )
-        .first()
-        .attr("data-link-id");
+                                            var $s = cheerio.load(listData.result);
+                                            var selector = ep.type === "dub"
+                                                ? 'div.type[data-type="dub"] li[data-link-id]'
+                                                : 'div.type[data-type="sub"] li[data-link-id]';
 
-        return linkId || null;
-    });
-}
+                                            var linkId = null;
+                                            $s(selector).each(function(i, el) {
+                                                if (!linkId) linkId = $s(el).attr("data-link-id");
+                                            });
 
+                                            debug.push(makeDebugStream("LINK ID: " + (linkId ? "FOUND" : "NOT FOUND")));
 
-/* Convert server ID to embed URL */
-function getEmbed(linkId, referer) {
-    return fetch(
-        CONFIG.BASE_URL +
-        "/ajax/server?get=" +
-        encodeURIComponent(linkId),
-        {
-            headers: ajaxHeaders(referer)
-        }
-    )
-    .then(function(r) {
-        return r.ok ? r.json() : null;
-    })
-    .then(function(data) {
-        if (!data || !data.result)
-            return null;
+                                            if (!linkId) return debug;
 
-        if (typeof data.result === "string")
-            return data.result;
+                                            var serverUrl = CONFIG.BASE_URL + "/ajax/server?get=" + linkId;
+                                            return fetch(serverUrl, { headers: getAjaxHeaders(best.url) })
+                                                .then(function(r) { return r.ok ? r.text() : null; })
+                                                .then(function(sJson) {
+                                                    if (!sJson) {
+                                                        debug.push(makeDebugStream("SERVER: empty"));
+                                                        return debug;
+                                                    }
 
-        if (data.result.url)
-            return data.result.url;
+                                                    var sData = JSON.parse(sJson);
+                                                    var embed = null;
+                                                    if (sData && sData.result) {
+                                                        embed = typeof sData.result === "string" ? sData.result : sData.result.url;
+                                                    }
 
-        return null;
-    });
-}
+                                                    debug.push(makeDebugStream("EMBED: " + (embed ? embed.substring(0, 40) + "..." : "NONE")));
 
+                                                    if (!embed || embed.indexOf("megaplay") === -1) return debug;
 
-/* Get actual Megaplay source */
-function resolveMegaplay(embed) {
-    if (!embed)
-        return null;
+                                                    // Final step - MegaPlay
+                                                    if (embed.indexOf("autostart") === -1) {
+                                                        embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
+                                                    }
 
-    return fetch(embed, {
-        headers: headers({
-            "Referer": CONFIG.BASE_URL,
-            "Origin": CONFIG.BASE_URL
+                                                    return fetch(embed, {
+                                                        headers: getHeaders({
+                                                            "Referer": CONFIG.BASE_URL,
+                                                            "Origin": CONFIG.BASE_URL
+                                                        })
+                                                    }).then(function(r) { return r.ok ? r.text() : null; })
+                                                    .then(function(html) {
+                                                        if (!html) {
+                                                            debug.push(makeDebugStream("MEGAPLAY: empty page"));
+                                                            return debug;
+                                                        }
+
+                                                        var m = html.match(/data-id=["'](\d+)["']/);
+                                                        if (!m) {
+                                                            debug.push(makeDebugStream("MEGAPLAY: no data-id"));
+                                                            return debug;
+                                                        }
+
+                                                        debug.push(makeDebugStream("DATA-ID: " + m[1]));
+
+                                                        var sourcesUrl = "https://megaplay.buzz/stream/getSources?id=" + m[1];
+                                                        return fetch(sourcesUrl, {
+                                                            headers: {
+                                                                "User-Agent": CONFIG.USER_AGENT,
+                                                                "X-Requested-With": "XMLHttpRequest",
+                                                                "Referer": embed,
+                                                                "Accept": "application/json"
+                                                            }
+                                                        }).then(function(r) { return r.ok ? r.json() : null; })
+                                                        .then(function(sources) {
+                                                            if (!sources || !sources.sources) {
+                                                                debug.push(makeDebugStream("SOURCES: failed"));
+                                                                return debug;
+                                                            }
+
+                                                            var videoUrl = sources.sources.file || (sources.sources[0] && sources.sources[0].file);
+                                                            if (!videoUrl) {
+                                                                debug.push(makeDebugStream("SOURCES: no file"));
+                                                                return debug;
+                                                            }
+
+                                                            // SUCCESS
+                                                            debug.push({
+                                                                name: "AnikotoTV",
+                                                                title: "1080p " + ep.type.toUpperCase(),
+                                                                url: videoUrl,
+                                                                quality: "1080p",
+                                                                headers: {
+                                                                    "Referer": "https://megaplay.buzz/",
+                                                                    "Origin": "https://megaplay.buzz"
+                                                                }
+                                                            });
+
+                                                            return debug;
+                                                        });
+                                                    });
+                                                });
+                                        });
+                                });
+                        });
+                });
         })
-    })
-    .then(function(r) {
-        return r.ok ? r.text() : null;
-    })
-    .then(function(html) {
-        if (!html)
-            return null;
-
-        var $ = cheerio.load(html);
-
-        var id = $("[data-id]")
-            .first()
-            .attr("data-id");
-
-        if (!id) {
-            var m = html.match(
-                /data-id=["'](\d+)["']/
-            );
-
-            id = m ? m[1] : null;
-        }
-
-        if (!id)
-            return null;
-
-        return fetch(
-            "https://megaplay.buzz/stream/getSources?id=" +
-            encodeURIComponent(id),
-            {
-                headers: {
-                    "User-Agent": CONFIG.USER_AGENT,
-                    "X-Requested-With":
-                        "XMLHttpRequest",
-                    "Referer": embed,
-                    "Accept": "application/json"
-                }
-            }
-        )
-        .then(function(r) {
-            return r.ok ? r.json() : null;
+        .catch(function(err) {
+            debug.push(makeDebugStream("FATAL: " + (err.message || "unknown")));
+            return debug;
         });
-    })
-    .then(function(data) {
-        if (!data || !data.sources)
-            return null;
-
-        var source =
-            data.sources.file ||
-            (
-                data.sources[0] &&
-                data.sources[0].file
-            );
-
-        if (!source)
-            return null;
-
-        return {
-            url: source,
-            headers: {
-                "Referer":
-                    "https://megaplay.buzz/",
-                "Origin":
-                    "https://megaplay.buzz"
-            }
-        };
-    });
 }
 
-
-function getStreams(
-    tmdbId,
-    mediaType,
-    season,
-    episode
-) {
-    season = parseInt(season, 10) || 1;
-    episode = parseInt(episode, 10) || 1;
-
-    return tmdb(
-        "/" +
-        (mediaType === "tv" ? "tv/" : "movie/") +
-        encodeURIComponent(tmdbId)
-    )
-    .then(function(data) {
-        if (!data)
-            return null;
-
-        var title =
-            mediaType === "tv"
-                ? (
-                    data.name ||
-                    data.original_name
-                )
-                : (
-                    data.title ||
-                    data.original_title
-                );
-
-        if (!title)
-            return null;
-
-        return Promise.all([
-            absoluteEpisode(
-                tmdbId,
-                season,
-                episode
-            ),
-            search(title)
-        ]);
-    })
-    .then(function(x) {
-        if (!x || !x[0] || !x[1])
-            return null;
-
-        return getAnimeId(x[1].url)
-            .then(function(animeId) {
-                if (!animeId)
-                    return null;
-
-                return getDubEpisode(
-                    animeId,
-                    x[0]
-                );
-            })
-            .then(function(ep) {
-                if (!ep)
-                    return null;
-
-                return {
-                    ep: ep,
-                    referer: x[1].url
-                };
-            });
-    })
-    .then(function(data) {
-        if (!data)
-            return null;
-
-        return getDubServer(
-            data.ep.ids,
-            data.referer
-        ).then(function(linkId) {
-            if (!linkId)
-                return null;
-
-            return {
-                linkId: linkId,
-                referer: data.referer
-            };
-        });
-    })
-    .then(function(data) {
-        if (!data)
-            return null;
-
-        return getEmbed(
-            data.linkId,
-            data.referer
-        );
-    })
-    .then(function(embed) {
-        if (!embed)
-            return null;
-
-        return resolveMegaplay(embed);
-    })
-    .then(function(stream) {
-        if (!stream)
-            return [];
-
-        return [{
-            name: "AnikotoTV",
-            title: "DUB",
-            url: stream.url,
-            headers: stream.headers || {}
-        }];
-    })
-    .catch(function() {
-        return [];
-    });
-}
-
-
-module.exports = {
-    getStreams: getStreams
-};
+module.exports = { getStreams };
