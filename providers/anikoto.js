@@ -4,7 +4,7 @@ var cheerio = require("cheerio-without-node-native");
 
 var BASE = "https://anikoto.cz";
 var TMDB = "https://api.themoviedb.org/3";
-var KEY = "YOUR_API_KEY";
+var KEY = "439c478a771f35c05022f9feabcca01c";
 
 function debug(lines) {
     var out = [];
