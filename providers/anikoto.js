@@ -1,5 +1,7 @@
 /**
- * AnikotoTV - Debug version (DUB only + absolute episode)
+ * AnikotoTV - Debug version
+ * DUB only
+ * If TMDB has only 1 season → use episode number as-is
  */
 
 "use strict";
@@ -51,24 +53,43 @@ function tmdb(path) {
     return fetch(url).then(function(r) { return r.ok ? r.json() : null; });
 }
 
+/* 
+ * New logic:
+ * - If TMDB has only 1 season → use episode number as-is
+ * - If TMDB has multiple seasons → calculate absolute episode
+ */
 function getAbsoluteEpisode(tmdbId, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
-    if (season <= 1) return Promise.resolve(episode);
+    return tmdb("/tv/" + tmdbId).then(function(show) {
+        var numberOfSeasons = show && show.number_of_seasons ? show.number_of_seasons : 1;
 
-    var requests = [];
-    for (var s = 1; s < season; s++) {
-        requests.push(tmdb("/tv/" + tmdbId + "/season/" + s));
-    }
-
-    return Promise.all(requests).then(function(seasons) {
-        var offset = 0;
-        for (var i = 0; i < seasons.length; i++) {
-            if (seasons[i] && seasons[i].episodes) offset += seasons[i].episodes.length;
+        // TMDB has only 1 season → use episode as-is
+        if (numberOfSeasons <= 1) {
+            return episode;
         }
-        return offset + episode;
-    }).catch(function() { return episode; });
+
+        // Multiple seasons → calculate absolute
+        if (season <= 1) return episode;
+
+        var requests = [];
+        for (var s = 1; s < season; s++) {
+            requests.push(tmdb("/tv/" + tmdbId + "/season/" + s));
+        }
+
+        return Promise.all(requests).then(function(seasons) {
+            var offset = 0;
+            for (var i = 0; i < seasons.length; i++) {
+                if (seasons[i] && seasons[i].episodes) {
+                    offset += seasons[i].episodes.length;
+                }
+            }
+            return offset + episode;
+        });
+    }).catch(function() {
+        return episode;
+    });
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -87,6 +108,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var title = mediaType === "tv" ? (data.name || data.original_name) : (data.title || data.original_title);
             debug.push(makeDebug("TMDB: " + title));
+            debug.push(makeDebug("TMDB seasons: " + (data.number_of_seasons || "?")));
 
             var searchTitle = title
                 .replace(/ū/g, "uu")
@@ -125,7 +147,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     });
 
                     debug.push(makeDebug("SEARCH: " + results.length + " results"));
-
                     if (results.length === 0) return debug;
 
                     var q = normalize(searchTitle);
