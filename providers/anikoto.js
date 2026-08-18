@@ -883,37 +883,37 @@ function createMapping(tmdbId) {
  *    }
  */
 
-function resolveEpisode(
+return resolveEpisode(
     tmdbId,
     season,
     episode
-) {
+)
+    .then(function(found) {
 
-    season =
-        parseInt(season, 10) || 1;
+        if (!found) {
+            return [{
+                name: "DEBUG",
+                title:
+                    "NO MATCH: S" +
+                    season +
+                    "E" +
+                    episode,
+                url: "https://example.com/"
+            }];
+        }
 
-    episode =
-        parseInt(episode, 10) || 1;
-
-    var key =
-        "S" +
-        season +
-        "E" +
-        episode;
-
-    return createMapping(tmdbId)
-        .then(function(mapping) {
-
-            if (!mapping) {
-                return null;
-            }
-
-            return mapping[key] || null;
-        })
-        .catch(function() {
-            return null;
-        });
-}
+        return [{
+            name: "DEBUG",
+            title:
+                "MATCH: Anikoto #" +
+                found.number +
+                " | " +
+                found.title +
+                " | score=" +
+                found.score,
+            url: "https://example.com/"
+        }];
+    })
 
 /*
  * ---------------------------------------------------------
