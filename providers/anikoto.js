@@ -4,212 +4,59 @@ var cheerio = require("cheerio-without-node-native");
 
 var BASE = "https://anikoto.cz";
 var TMDB = "https://api.themoviedb.org/3";
-var KEY = "439c478a771f35c05022f9feabcca01c";
+
+var API_KEY = "439c478a771f35c05022f9feabcca01c";
 
 function debug(lines) {
     var out = [];
 
     for (var i = 0; i < lines.length; i++) {
         out.push({
-            name: "DEBUG " + (i + 1),
+            name: "DEBUG: " + (i + 1),
             title: lines[i],
-            url: "https://example.com/"
+            url: "https://cdn.watching.onl/test",
+            quality: "DEBUG",
+            headers: {}
         });
     }
 
     return out;
 }
 
-function norm(s) {
-    return String(s || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
 function tmdb(path) {
     return fetch(
         TMDB + path +
         (path.indexOf("?") >= 0 ? "&" : "?") +
-        "api_key=" + KEY
+        "api_key=" + API_KEY
     )
     .then(function(r) {
         return r.ok ? r.json() : null;
-    })
-    .catch(function() {
-        return null;
     });
 }
 
-function searchAnime(title) {
-    return fetch(
-        BASE + "/filter?keyword=" +
-        encodeURIComponent(title)
-    )
-    .then(function(r) {
-        return r.ok ? r.text() : null;
-    })
-    .then(function(html) {
-
-        if (!html) return null;
-
-        var $ = cheerio.load(html);
-        var result = null;
-
-        $("div.item").each(function(i, el) {
-
-            if (result) return;
-
-            var a = $(el)
-                .find("a.name.d-title, a[data-jp]")
-                .first();
-
-            if (!a.length) return;
-
-            var t = (
-                a.attr("data-jp") ||
-                a.text() ||
-                ""
-            ).trim();
-
-            var href = a.attr("href");
-
-            if (!t || !href) return;
-
-            if (norm(t) === norm(title)) {
-                result = {
-                    title: t,
-                    url: href.indexOf("http") === 0
-                        ? href
-                        : BASE + href
-                };
-            }
-        });
-
-        return result;
-    })
-    .catch(function() {
-        return null;
-    });
-}
-
-function getAnimeId(url) {
-    return fetch(url)
-        .then(function(r) {
-            return r.ok ? r.text() : null;
-        })
-        .then(function(html) {
-
-            if (!html) return null;
-
-            var $ = cheerio.load(html);
-
-            var id = $("[data-id]")
-                .first()
-                .attr("data-id");
-
-            if (id) return id;
-
-            var m =
-                html.match(/data-id=["'](\d+)["']/);
-
-            return m ? m[1] : null;
-        })
-        .catch(function() {
-            return null;
-        });
-}
-
-function getEpisodes(id, referer) {
-
-    return fetch(
-        BASE + "/ajax/episode/list/" +
-        id + "?vrf=",
-        {
-            headers: {
-                "User-Agent": "Mozilla/5.0",
-                "X-Requested-With": "XMLHttpRequest",
-                "Accept": "application/json",
-                "Referer": referer
-            }
-        }
-    )
-    .then(function(r) {
-        return r.ok ? r.json() : null;
-    })
-    .then(function(data) {
-
-        if (!data || !data.result) return [];
-
-        var $ = cheerio.load(data.result);
-        var list = [];
-
-        $("a[data-ids]").each(function(i, el) {
-
-            var a = $(el);
-
-            if (a.attr("data-dub") !== "1") return;
-
-            var num =
-                parseInt(
-                    a.attr("data-num") || "0",
-                    10
-                );
-
-            var title =
-                a.closest("li").attr("title") || "";
-
-            if (!num) return;
-
-            list.push({
-                number: num,
-                title: title
-            });
-        });
-
-        return list;
-    })
-    .catch(function() {
-        return [];
-    });
-}
-
-function getStreams(
-    tmdbId,
-    mediaType,
-    season,
-    episode
-) {
-
-    season = parseInt(season, 10) || 1;
-    episode = parseInt(episode, 10) || 1;
+function getStreams(tmdbId, mediaType, season, episode) {
 
     var lines = [];
 
-    lines.push("START");
-    lines.push("TMDB ID: " + tmdbId);
-    lines.push("REQUEST: S" + season + "E" + episode);
+    lines.push("Provider running");
+    lines.push("ID=" + tmdbId);
+    lines.push("S" + season + "E" + episode);
 
-    return tmdb(
-        "/tv/" + tmdbId
-    )
+    return tmdb("/tv/" + tmdbId)
+
     .then(function(show) {
 
         if (!show) {
-            return debug(
-                lines.concat(["TMDB SHOW: FAILED"])
-            );
+            lines.push("TMDB SHOW FAILED");
+            return debug(lines);
         }
 
-        var showTitle =
+        var title =
             show.name ||
             show.original_name ||
             "";
 
-        lines.push(
-            "TMDB SHOW: " + showTitle
-        );
+        lines.push("TMDB=" + title);
 
         return tmdb(
             "/tv/" +
@@ -217,197 +64,284 @@ function getStreams(
             "/season/" +
             season
         )
-        .then(function(seasonData) {
 
-            if (!seasonData) {
-                return debug(
-                    lines.concat([
-                        "TMDB SEASON: FAILED"
-                    ])
-                );
+        .then(function(data) {
+
+            if (!data || !data.episodes) {
+                lines.push("TMDB SEASON FAILED");
+                return debug(lines);
             }
 
             lines.push(
-                "TMDB SEASON: OK"
+                "Season episodes=" +
+                data.episodes.length
             );
 
-            var tmdbEp = null;
+            var found = null;
 
-            for (
-                var i = 0;
-                i < seasonData.episodes.length;
-                i++
-            ) {
+            for (var i = 0; i < data.episodes.length; i++) {
+
                 if (
                     parseInt(
-                        seasonData.episodes[i]
-                            .episode_number,
+                        data.episodes[i].episode_number,
                         10
-                    ) === episode
+                    ) === parseInt(episode, 10)
                 ) {
-                    tmdbEp =
-                        seasonData.episodes[i];
+                    found = data.episodes[i];
                     break;
                 }
             }
 
-            if (!tmdbEp) {
-                return debug(
-                    lines.concat([
-                        "TMDB EPISODE: NOT FOUND"
-                    ])
-                );
+            if (!found) {
+                lines.push("TMDB EP NOT FOUND");
+                return debug(lines);
             }
 
             lines.push(
-                "TMDB EP: " +
-                (tmdbEp.name || "NO TITLE")
+                "TMDB EP=" +
+                found.episode_number
             );
 
-            return searchAnime(showTitle)
-                .then(function(anime) {
+            lines.push(
+                "TITLE=" +
+                (found.name || "NO TITLE")
+            );
 
-                    if (!anime) {
-                        return debug(
-                            lines.concat([
-                                "ANIKOTO SEARCH: FAILED"
-                            ])
-                        );
+            return fetch(
+                BASE +
+                "/filter?keyword=" +
+                encodeURIComponent(title)
+            )
+
+            .then(function(r) {
+                return r.ok ? r.text() : null;
+            })
+
+            .then(function(html) {
+
+                if (!html) {
+                    lines.push("ANIKOTO SEARCH FAILED");
+                    return debug(lines);
+                }
+
+                var $ = cheerio.load(html);
+
+                var anime = null;
+
+                $("div.item").each(function(i, el) {
+
+                    if (anime) return;
+
+                    var a = $(el)
+                        .find(
+                            "a.name.d-title, a[data-jp]"
+                        )
+                        .first();
+
+                    if (!a.length) return;
+
+                    var t =
+                        (
+                            a.attr("data-jp") ||
+                            a.text() ||
+                            ""
+                        ).trim();
+
+                    var href =
+                        a.attr("href");
+
+                    if (!t || !href) return;
+
+                    if (
+                        t.toLowerCase() ===
+                        title.toLowerCase()
+                    ) {
+                        anime = {
+                            title: t,
+                            url:
+                                href.indexOf("http") === 0
+                                    ? href
+                                    : BASE + href
+                        };
+                    }
+                });
+
+                if (!anime) {
+                    lines.push("ANIKOTO ANIME NOT FOUND");
+                    return debug(lines);
+                }
+
+                lines.push(
+                    "ANIKOTO=" +
+                    anime.title
+                );
+
+                return fetch(
+                    anime.url
+                )
+
+                .then(function(r) {
+                    return r.ok ? r.text() : null;
+                })
+
+                .then(function(page) {
+
+                    if (!page) {
+                        lines.push("ANIME PAGE FAILED");
+                        return debug(lines);
+                    }
+
+                    var $p = cheerio.load(page);
+
+                    var id =
+                        $p("[data-id]")
+                        .first()
+                        .attr("data-id");
+
+                    if (!id) {
+
+                        var m =
+                            page.match(
+                                /data-id=["'](\d+)["']/
+                            );
+
+                        id =
+                            m ? m[1] : null;
+                    }
+
+                    if (!id) {
+                        lines.push("ANIKOTO ID NOT FOUND");
+                        return debug(lines);
                     }
 
                     lines.push(
-                        "ANIKOTO: " +
-                        anime.title
+                        "ANIKOTO ID=" + id
                     );
 
-                    return getAnimeId(anime.url)
-                        .then(function(id) {
-
-                            if (!id) {
-                                return debug(
-                                    lines.concat([
-                                        "ANIKOTO ID: FAILED"
-                                    ])
-                                );
+                    return fetch(
+                        BASE +
+                        "/ajax/episode/list/" +
+                        id +
+                        "?vrf=",
+                        {
+                            headers: {
+                                "User-Agent":
+                                    "Mozilla/5.0",
+                                "X-Requested-With":
+                                    "XMLHttpRequest",
+                                "Accept":
+                                    "application/json",
+                                "Referer":
+                                    anime.url
                             }
+                        }
+                    )
 
+                    .then(function(r) {
+                        return r.ok ? r.json() : null;
+                    })
+
+                    .then(function(epData) {
+
+                        if (
+                            !epData ||
+                            !epData.result
+                        ) {
                             lines.push(
-                                "ANIKOTO ID: " + id
+                                "EPISODE API FAILED"
+                            );
+                            return debug(lines);
+                        }
+
+                        var $e =
+                            cheerio.load(
+                                epData.result
                             );
 
-                            return getEpisodes(
-                                id,
-                                anime.url
-                            )
-                            .then(function(eps) {
+                        var total = 0;
+                        var dubs = 0;
+                        var requested = null;
 
-                                lines.push(
-                                    "DUB EPISODES: " +
-                                    eps.length
-                                );
+                        $e("a[data-ids]").each(
+                            function(i, el) {
 
-                                if (!eps.length) {
-                                    return debug(lines);
+                                var a = $e(el);
+
+                                var num =
+                                    parseInt(
+                                        a.attr(
+                                            "data-num"
+                                        ) || "0",
+                                        10
+                                    );
+
+                                if (num > 0) {
+                                    total++;
                                 }
 
-                                var best = null;
-                                var bestScore = 0;
-
-                                var tmdbTitle =
-                                    tmdbEp.name || "";
-
-                                for (
-                                    var i = 0;
-                                    i < eps.length;
-                                    i++
+                                if (
+                                    a.attr(
+                                        "data-dub"
+                                    ) === "1"
                                 ) {
-
-                                    var a =
-                                        norm(
-                                            tmdbTitle
-                                        );
-
-                                    var b =
-                                        norm(
-                                            eps[i].title
-                                        );
-
-                                    var aw =
-                                        a.split(" ");
-
-                                    var bw =
-                                        b.split(" ");
-
-                                    var matches = 0;
-
-                                    for (
-                                        var x = 0;
-                                        x < aw.length;
-                                        x++
-                                    ) {
-                                        if (
-                                            aw[x].length > 2 &&
-                                            bw.indexOf(
-                                                aw[x]
-                                            ) !== -1
-                                        ) {
-                                            matches++;
-                                        }
-                                    }
-
-                                    var score =
-                                        matches /
-                                        Math.max(
-                                            aw.length,
-                                            bw.length,
-                                            1
-                                        );
-
-                                    if (
-                                        score > bestScore
-                                    ) {
-                                        bestScore =
-                                            score;
-                                        best = eps[i];
-                                    }
+                                    dubs++;
                                 }
 
-                                if (!best) {
-                                    lines.push(
-                                        "MATCH: NONE"
-                                    );
-                                } else {
-                                    lines.push(
-                                        "MATCH: #" +
-                                        best.number
-                                    );
-
-                                    lines.push(
-                                        "ANIKOTO TITLE: " +
-                                        best.title
-                                    );
-
-                                    lines.push(
-                                        "SCORE: " +
-                                        Math.round(
-                                            bestScore * 100
-                                        ) +
-                                        "%"
-                                    );
+                                if (
+                                    num ===
+                                    parseInt(
+                                        episode,
+                                        10
+                                    ) &&
+                                    a.attr(
+                                        "data-dub"
+                                    ) === "1"
+                                ) {
+                                    requested = a;
                                 }
+                            }
+                        );
 
-                                return debug(lines);
-                            });
-                        });
+                        lines.push(
+                            "ANK TOTAL=" +
+                            total
+                        );
+
+                        lines.push(
+                            "ANK DUB=" +
+                            dubs
+                        );
+
+                        if (requested) {
+
+                            lines.push(
+                                "DIRECT MATCH #" +
+                                episode
+                            );
+
+                            lines.push(
+                                "DATA-IDS FOUND"
+                            );
+
+                        } else {
+
+                            lines.push(
+                                "DIRECT MATCH NONE"
+                            );
+                        }
+
+                        return debug(lines);
+                    });
                 });
+            });
         });
     })
+
     .catch(function(e) {
 
         return debug([
-            "START",
-            "ERROR",
-            String(e)
+            "Provider running",
+            "ERROR=" + String(e)
         ]);
     });
 }
