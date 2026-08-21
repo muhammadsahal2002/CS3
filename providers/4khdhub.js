@@ -1,404 +1,188 @@
-const axios = require('axios');
-const { exec } = require('child_process');
-const cheerio = require('cheerio');
-const bytes = require('bytes');
-const levenshtein = require('fast-levenshtein');
-const rot13Cipher = require('rot13-cipher');
-const { URL } = require('url');
-const path = require('path');
-const fs = require('fs').promises;
-const RedisCache = require('../utils/redisCache');
+// newtv.js – TV API (tv.imgcdn.kim) – Works with movies & TV series
+// =================================================================
+// Update USERTOKEN when it expires (capture from TV app).
 
-// Cache configuration
-const CACHE_ENABLED = process.env.DISABLE_CACHE !== 'true';
-const CACHE_DIR = process.env.VERCEL ? path.join('/tmp', '.4khdhub_cache') : path.join(__dirname, '.cache', '4khdhub');
-const redisCache = new RedisCache('4KHDHub');
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_BASE = "https://api.themoviedb.org/3";
 
-// Helper to ensure cache directory exists
-const ensureCacheDir = async () => {
-    if (!CACHE_ENABLED) return;
-    try {
-        await fs.mkdir(CACHE_DIR, { recursive: true });
-    } catch (error) {
-        console.error(`[4KHDHub] Error creating cache directory: ${error.message}`);
-    }
+var CONFIG = {
+    BASE: "https://tv.imgcdn.kim",
+    REFERER: "https://net52.cc",
+    UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
+    USERTOKEN: "d945e9dc888dc22741a1eeb3abc489a5::9f4baa0702c2486030ff927d1d96dfdc::1787328769::db",
+    OTT: "nf"
 };
-ensureCacheDir();
 
-const BASE_URL = 'https://4khdhub.fans';
-const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+function log(msg) { console.log("[NewTV] " + msg); }
 
-// Polyfill for atob if not available globally
-const atob = (str) => Buffer.from(str, 'base64').toString('binary');
-
-// Helper to fetch text content
-async function fetchText(url, options = {}) {
-    return new Promise((resolve) => {
-        let headersCmd = '';
-        if (options.headers) {
-            for (const [key, value] of Object.entries(options.headers)) {
-                headersCmd += ` -H "${key}: ${value}"`;
-            }
-        }
-        // Default UA if not provided
-        if (!options.headers || !options.headers['User-Agent']) {
-            headersCmd += ` -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"`;
-        }
-        headersCmd += ` -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"`;
-        headersCmd += ` -H "Accept-Language: en-US,en;q=0.9"`;
-        headersCmd += ` -H "Cache-Control: no-cache"`;
-        headersCmd += ` -H "Pragma: no-cache"`;
-        headersCmd += ` -H "Sec-Ch-Ua: ^\^"Chromium^\^";v=^\^"124^\^", ^\^"Google Chrome^\^";v=^\^"124^\^", ^\^"Not-A.Brand^\^";v=^\^"99^\^""`;
-        headersCmd += ` -H "Sec-Ch-Ua-Mobile: ?0"`;
-        headersCmd += ` -H "Sec-Ch-Ua-Platform: ^\^"Windows^\^""`;
-        headersCmd += ` -H "Sec-Fetch-Dest: document"`;
-        headersCmd += ` -H "Sec-Fetch-Mode: navigate"`;
-        headersCmd += ` -H "Sec-Fetch-Site: none"`;
-        headersCmd += ` -H "Sec-Fetch-User: ?1"`;
-        headersCmd += ` -H "Upgrade-Insecure-Requests: 1"`;
-
-        let proxyCmd = '';
-        if (process.env.H_PROXY) {
-            proxyCmd = ` -x "${process.env.H_PROXY}"`;
-        }
-
-        const cmd = `curl -s -L --compressed --max-time 15 ${headersCmd}${proxyCmd} "${url}"`;
-        console.log(`[4KHDHub] Executing: ${cmd}`);
-        exec(cmd, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error(`[4KHDHub] Curl error for ${url}: ${error.message}`);
-                resolve(null);
-            } else {
-                console.log(`[4KHDHub] Curl success for ${url}, length: ${stdout.length}`);
-                if (stdout.length < 500) console.log(`[4KHDHub] Response snippet: ${stdout}`);
-                resolve(stdout);
-            }
-        });
-    });
-}
-
-// Fetch TMDB Details
-async function getTmdbDetails(tmdbId, type) {
-    try {
-        const isSeries = type === 'series' || type === 'tv';
-        const url = `https://api.themoviedb.org/3/${isSeries ? 'tv' : 'movie'}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-        console.log(`[4KHDHub] Fetching TMDB details from: ${url}`);
-        console.log(`[4KHDHub] Fetching TMDB details from: ${url}`);
-        const jsonStr = await fetchText(url);
-        if (!jsonStr) throw new Error('Empty response from TMDB');
-        const data = JSON.parse(jsonStr);
-        // ...
-
-        if (isSeries) {
-            return {
-                title: data.name,
-                year: data.first_air_date ? parseInt(data.first_air_date.split('-')[0]) : 0
-            };
-        } else {
-            return {
-                title: data.title,
-                year: data.release_date ? parseInt(data.release_date.split('-')[0]) : 0
-            };
-        }
-    } catch (error) {
-        console.error(`[4KHDHub] TMDB request failed: ${error.message}`);
-        return null;
-    }
-}
-
-// FourKHDHub Logic
-async function fetchPageUrl(name, year, isSeries) {
-    const cacheKey = `search_${name.replace(/[^a-z0-9]/gi, '_')}_${year}`;
-    // [4KHDHub] Checking cache for key: ${cacheKey} (Enabled: ${CACHE_ENABLED})
-
-    if (CACHE_ENABLED) {
-        const cached = await redisCache.getFromCache(cacheKey, '', CACHE_DIR);
-        if (cached) {
-            // [4KHDHub] Cache HIT for search: ${name}
-            return cached.data || cached;
-        } else {
-            // [4KHDHub] Cache MISS for search: ${name}
-        }
-    }
-
-    const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(`${name} ${year}`)}`;
-    const html = await fetchText(searchUrl);
-    if (!html) return null;
-
-    const $ = cheerio.load(html);
-    const targetType = isSeries ? 'Series' : 'Movies';
-
-    // Find cards that contain the correct type
-    const matchingCards = $('.movie-card')
-        .filter((_i, el) => {
-            const hasFormat = $(el).find(`.movie-card-format:contains("${targetType}")`).length > 0;
-            return hasFormat;
-        })
-        .filter((_i, el) => {
-            const metaText = $(el).find('.movie-card-meta').text();
-            const movieCardYear = parseInt(metaText);
-            return !isNaN(movieCardYear) && Math.abs(movieCardYear - year) <= 1;
-        })
-        .filter((_i, el) => {
-            const movieCardTitle = $(el).find('.movie-card-title')
-                .text()
-                .replace(/\[.*?]/g, '')
-                .trim();
-
-            // Allow exact match or close Levenshtein distance
-            // Also user's code used: useCollator: true, but fast-levenshtein is simpler
-            return levenshtein.get(movieCardTitle.toLowerCase(), name.toLowerCase()) < 5;
-        })
-        .map((_i, el) => {
-            let href = $(el).attr('href');
-            if (href && !href.startsWith('http')) {
-                href = BASE_URL + (href.startsWith('/') ? '' : '/') + href;
-            }
-            return href;
-        })
-        .get();
-
-    const result = matchingCards.length > 0 ? matchingCards[0] : null;
-    if (CACHE_ENABLED && result) {
-        await redisCache.saveToCache(cacheKey, { data: result }, '', CACHE_DIR, 86400); // 1 day TTL
-    }
-    return result;
-}
-
-async function resolveRedirectUrl(redirectUrl) {
-    const cacheKey = `redirect_${redirectUrl.replace(/[^a-z0-9]/gi, '')}`;
-    if (CACHE_ENABLED) {
-        const cached = await redisCache.getFromCache(cacheKey, '', CACHE_DIR);
-        if (cached) return cached.data || cached;
-    }
-
-    const redirectHtml = await fetchText(redirectUrl);
-    if (!redirectHtml) return null;
-
-    try {
-        const redirectDataMatch = redirectHtml.match(/'o','(.*?)'/);
-        if (!redirectDataMatch) return null;
-
-        // JSON.parse(atob(rot13Cipher(atob(atob(redirectDataMatch[1] as string)))))
-        const step1 = atob(redirectDataMatch[1]);
-        const step2 = atob(step1);
-        const step3 = rot13Cipher(step2);
-        const step4 = atob(step3);
-        const redirectData = JSON.parse(step4);
-
-        if (redirectData && redirectData.o) {
-            const resolved = atob(redirectData.o);
-            if (CACHE_ENABLED) {
-                await redisCache.saveToCache(cacheKey, { data: resolved }, '', CACHE_DIR, 86400 * 3); // 3 days
-            }
-            return resolved;
-        }
-    } catch (e) {
-        console.error(`[4KHDHub] Error resolving redirect: ${e.message}`);
-    }
-    return null;
-}
-
-async function extractSourceResults($, el) {
-    const localHtml = $(el).html();
-    const sizeMatch = localHtml.match(/([\d.]+ ?[GM]B)/);
-    let heightMatch = localHtml.match(/\d{3,}p/);
-
-    const title = $(el).find('.file-title, .episode-file-title').text().trim();
-
-    // If quality detection failed from HTML, try the title
-    if (!heightMatch) {
-        heightMatch = title.match(/(\d{3,4})p/i);
-    }
-
-    // Fallback for "4K"
-    let height = heightMatch ? parseInt(heightMatch[0]) : 0;
-    if (height === 0 && (title.includes('4K') || title.includes('4k') || localHtml.includes('4K') || localHtml.includes('4k'))) {
-        height = 2160;
-    }
-
-    const meta = {
-        bytes: sizeMatch ? bytes.parse(sizeMatch[1]) : 0,
-        height: height,
-        title: title
+function headers(extra) {
+    var h = {
+        "User-Agent": CONFIG.UA,
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "NetmirrorNewTV v1.0",
+        "ott": CONFIG.OTT,
+        "usertoken": CONFIG.USERTOKEN
     };
+    if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) h[k] = extra[k];
+    return h;
+}
 
-    // Check for HubCloud link
-    let hubCloudLink = $(el).find('a')
-        .filter((_i, a) => $(a).text().includes('HubCloud'))
-        .attr('href');
+function fetchJson(url, options) {
+    options = options || {};
+    return fetch(url, options)
+        .then(function(res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.json();
+        });
+}
 
-    if (hubCloudLink) {
-        const resolved = await resolveRedirectUrl(hubCloudLink);
-        return { url: resolved, meta };
+function getTmdbTitle(tmdbId, mediaType) {
+    var endpoint = mediaType === 'movie' ? 'movie' : 'tv';
+    var url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+    return fetchJson(url)
+        .then(function(data) { return data.title || data.name; });
+}
+
+function searchNewTV(query) {
+    var url = CONFIG.BASE + "/newtv/search.php?s=" + encodeURIComponent(query);
+    return fetchJson(url, { headers: headers() })
+        .then(function(data) {
+            if (!data || !data.searchResult) return [];
+            return data.searchResult;
+        });
+}
+
+function getPost(id) {
+    var url = CONFIG.BASE + "/newtv/post.php?id=" + id;
+    return fetchJson(url, { headers: headers() })
+        .then(function(data) {
+            if (data.status !== "ok") return null;
+            return data;
+        });
+}
+
+function getPlayer(id) {
+    var url = CONFIG.BASE + "/newtv/player.php?id=" + id;
+    return fetchJson(url, { headers: headers() })
+        .then(function(data) {
+            if (data.status !== "ok" || !data.video_link) return null;
+            return data;
+        });
+}
+
+// Fetch episodes for a given season ID, returns array of episode objects.
+function fetchSeasonEpisodes(seasonId) {
+    var allEpisodes = [];
+    var page = 1;
+    var hasNext = true;
+
+    function fetchPage(p) {
+        var url = CONFIG.BASE + "/newtv/episodes.php?id=" + seasonId + "&page=" + p;
+        return fetchJson(url, { headers: headers() })
+            .then(function(data) {
+                if (!data || !data.episodes) return [];
+                var eps = data.episodes.filter(function(e) { return e !== null; });
+                allEpisodes = allEpisodes.concat(eps);
+                if (data.nextPageShow === 1) {
+                    return fetchPage(p + 1);
+                } else {
+                    return allEpisodes;
+                }
+            });
     }
+    return fetchPage(page);
+}
 
-    // Check for HubDrive link
-    let hubDriveLink = $(el).find('a')
-        .filter((_i, a) => $(a).text().includes('HubDrive'))
-        .attr('href');
+function getStreams(tmdbId, mediaType, season, episode) {
+    if (!tmdbId) return Promise.reject(new Error('No TMDB ID provided'));
 
-    if (hubDriveLink) {
-        const resolvedDrive = await resolveRedirectUrl(hubDriveLink);
-        if (resolvedDrive) {
-            const hubDriveHtml = await fetchText(resolvedDrive);
-            if (hubDriveHtml) {
-                const $2 = cheerio.load(hubDriveHtml);
-                const innerCloudLink = $2('a:contains("HubCloud")').attr('href');
-                if (innerCloudLink) {
-                    return { url: innerCloudLink, meta };
+    var title;
+
+    return getTmdbTitle(tmdbId, mediaType)
+        .then(function(t) {
+            title = t;
+            log("Title: " + title);
+            return searchNewTV(title);
+        })
+        .then(function(results) {
+            if (!results.length) throw new Error('No results found for "' + title + '"');
+            var item = results[0];
+            log("Selected: " + item.t + " (ID: " + item.id + ")");
+            return getPost(item.id);
+        })
+        .then(function(post) {
+            if (!post) throw new Error('Failed to get post info');
+
+            // If it's a movie or we don't have season/episode, just play the main content
+            if (post.type === "m" || season === undefined || episode === undefined) {
+                var contentId = post.main_id || post.id;
+                log("Movie or no season/episode, using ID: " + contentId);
+                return getPlayer(contentId);
+            }
+
+            // It's a TV series
+            log("TV series detected, looking for S" + season + "E" + episode);
+
+            // Find the season ID from the season list
+            var seasonList = post.season || [];
+            var targetSeasonId = null;
+            for (var i = 0; i < seasonList.length; i++) {
+                var sObj = seasonList[i];
+                // Extract season number from string like "Season 1 (13 EP)"
+                var match = sObj.s.match(/Season (\d+)/);
+                if (match) {
+                    var num = parseInt(match[1], 10);
+                    if (num === season) {
+                        targetSeasonId = sObj.id;
+                        break;
+                    }
                 }
             }
-        }
-    }
 
-    return null;
-}
-
-// HubCloud Extractor Logic
-async function extractHubCloud(hubCloudUrl, baseMeta) {
-    if (!hubCloudUrl) return [];
-
-    const cacheKey = `hubcloud_${hubCloudUrl.replace(/[^a-z0-9]/gi, '')}`;
-    if (CACHE_ENABLED) {
-        const cached = await redisCache.getFromCache(cacheKey, '', CACHE_DIR);
-        if (cached) return cached.data || cached;
-    }
-
-    const headers = { Referer: hubCloudUrl }; // or should it be the previous page? User's code uses meta.referer ?? url.href. HubCloud.ts says Referer: meta.referer ?? url.href.
-    // In extractInternal(ctx, url, meta): const headers = { Referer: meta.referer ?? url.href };
-    // Then fetches redirectHtml.
-
-    // We'll trust the url itself as referer if we don't have the parent page readily passed down, or just no referer.
-    // Let's use the HubCloud URL itself as referer for the first request, that's usually safe or standard.
-
-    const redirectHtml = await fetchText(hubCloudUrl, { headers: { Referer: hubCloudUrl } });
-    if (!redirectHtml) return [];
-
-    const redirectUrlMatch = redirectHtml.match(/var url ?= ?'(.*?)'/);
-    if (!redirectUrlMatch) return [];
-
-    const finalLinksUrl = redirectUrlMatch[1];
-    const linksHtml = await fetchText(finalLinksUrl, { headers: { Referer: hubCloudUrl } });
-    if (!linksHtml) return [];
-
-    const $ = cheerio.load(linksHtml);
-    const results = [];
-    const sizeText = $('#size').text();
-    const titleText = $('title').text().trim();
-
-    // Combine meta from page with baseMeta (user's code does this)
-    const currentMeta = {
-        ...baseMeta,
-        bytes: bytes.parse(sizeText) || baseMeta.bytes,
-        title: titleText || baseMeta.title
-    };
-
-    // FSL Links
-    $('a').each((_i, el) => {
-        const text = $(el).text();
-        const href = $(el).attr('href');
-        if (!href) return;
-
-        if (text.includes('FSL') || text.includes('Download File')) {
-            results.push({
-                source: 'FSL',
-                url: href,
-                meta: currentMeta
-            });
-        }
-        else if (text.includes('PixelServer')) {
-            const pixelUrl = href.replace('/u/', '/api/file/');
-            results.push({
-                source: 'PixelServer',
-                url: pixelUrl,
-                meta: currentMeta
-            });
-        }
-    });
-
-    if (CACHE_ENABLED && results.length > 0) {
-        await redisCache.saveToCache(cacheKey, { data: results }, '', CACHE_DIR, 3600); // 1 hour TTL
-    }
-
-    return results;
-}
-
-async function get4KHDHubStreams(tmdbId, type, season = null, episode = null) {
-    const tmdbDetails = await getTmdbDetails(tmdbId, type);
-    if (!tmdbDetails) return [];
-
-    const { title, year } = tmdbDetails;
-    console.log(`[4KHDHub] Search: ${title} (${year})`);
-
-    const isSeries = type === 'series' || type === 'tv';
-    const pageUrl = await fetchPageUrl(title, year, isSeries);
-    if (!pageUrl) {
-        console.log(`[4KHDHub] Page not found`);
-        return [];
-    }
-    console.log(`[4KHDHub] Found page: ${pageUrl}`);
-
-    const html = await fetchText(pageUrl);
-    if (!html) return [];
-    const $ = cheerio.load(html);
-
-    let itemsToProcess = [];
-
-    if (isSeries && season && episode) { // Use isSeries here
-        // Find specific season and episode
-        const seasonStr = `S${String(season).padStart(2, '0')}`;
-        const episodeStr = `Episode-${String(episode).padStart(2, '0')}`;
-
-        $('.episode-item').each((_i, el) => {
-            if ($('.episode-title', el).text().includes(seasonStr)) {
-                const downloadItems = $('.episode-download-item', el)
-                    .filter((_j, item) => $(item).text().includes(episodeStr));
-
-                downloadItems.each((_k, item) => {
-                    itemsToProcess.push(item);
-                });
+            if (!targetSeasonId) {
+                // Sometimes the season list may not have all seasons; we might need to fetch them differently
+                // As fallback, try to use the first season? But better to throw.
+                throw new Error("Season " + season + " not found in series data.");
             }
-        });
-    } else {
-        // Movies
-        $('.download-item').each((_i, el) => {
-            itemsToProcess.push(el);
-        });
-    }
 
-    console.log(`[4KHDHub] Processing ${itemsToProcess.length} items`);
+            log("Season ID: " + targetSeasonId);
 
-    const streams = [];
+            // Fetch episodes for that season
+            return fetchSeasonEpisodes(targetSeasonId)
+                .then(function(episodes) {
+                    if (!episodes || !episodes.length) {
+                        throw new Error("No episodes found for season " + season);
+                    }
 
-    for (const item of itemsToProcess) {
-        try {
-            const sourceResult = await extractSourceResults($, item);
-            if (sourceResult && sourceResult.url) {
-                console.log(`[4KHDHub] Extracting from HubCloud: ${sourceResult.url}`);
-                const extractedLinks = await extractHubCloud(sourceResult.url, sourceResult.meta);
-
-                for (const link of extractedLinks) {
-                    streams.push({
-                        name: `4KHDHub - ${link.source} ${sourceResult.meta.height ? sourceResult.meta.height + 'p' : ''}`,
-                        title: `${link.meta.title}\n${bytes.format(link.meta.bytes || 0)}`,
-                        url: link.url,
-                        quality: sourceResult.meta.height ? `${sourceResult.meta.height}p` : undefined,
-                        behaviorHints: {
-                            bingeGroup: `4khdhub-${link.source}`
+                    // Find the episode by number
+                    var targetEp = null;
+                    for (var j = 0; j < episodes.length; j++) {
+                        var epObj = episodes[j];
+                        // epObj.ep is the episode number as string (e.g., "1")
+                        if (parseInt(epObj.ep, 10) === episode) {
+                            targetEp = epObj;
+                            break;
                         }
-                    });
-                }
-            }
-        } catch (err) {
-            console.error(`[4KHDHub] Item processing error: ${err.message}`);
-        }
-    }
+                    }
 
-    return streams;
+                    if (!targetEp) {
+                        throw new Error("Episode " + episode + " not found in season " + season);
+                    }
+
+                    log("Found episode: " + targetEp.t + " (ID: " + targetEp.id + ")");
+                    return getPlayer(targetEp.id);
+                });
+        })
+        .then(function(player) {
+            if (!player) throw new Error('Failed to get player info');
+            return [{
+                name: 'NewTV',
+                title: 'Auto',
+                url: player.video_link,
+                quality: 'Auto',
+                headers: { Referer: player.referer || CONFIG.REFERER }
+            }];
+        });
 }
 
-module.exports = {
-    get4KHDHubStreams,
-    getStreams: get4KHDHubStreams
-};
+module.exports = { getStreams: getStreams };
