@@ -1,152 +1,197 @@
-/**
- * Netmirror / imgcdn Provider for Nuvio
- * Netflix mirror streams via tv.imgcdn.kim
- */
+// newtv.js – Ready-to-use plugin for Nuvio (Hermes-compatible)
 
-"use strict";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_BASE = "https://api.themoviedb.org/3";
 
 var CONFIG = {
     BASE: "https://tv.imgcdn.kim",
     REFERER: "https://net52.cc",
-    TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
-    TMDB_BASE: "https://api.themoviedb.org/3",
-    UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0"
+    UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
+    USERTOKEN: "d945e9dc888dc22741a1eeb3abc489a5::9f4baa0702c2486030ff927d1d96dfdc::1787328769::db",
+    OTT: "nf"
 };
 
-function apiHeaders(token) {
-    return {
+// ----- helpers -----
+function headers(extra) {
+    var h = {
         "User-Agent": CONFIG.UA,
         "Accept": "application/json, text/plain, */*",
         "X-Requested-With": "NetmirrorNewTV v1.0",
-        "ott": "nf",
-        "usertoken": token || "",
-        "cache-control": "no-cache, no-store, must-revalidate"
+        "ott": CONFIG.OTT,
+        "usertoken": CONFIG.USERTOKEN
     };
-}
-
-function normalize(str) {
-    return String(str || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-function getToken() {
-    return fetch(CONFIG.BASE + "/newtv/main.php", {
-        headers: {
-            "User-Agent": CONFIG.UA,
-            "Accept": "application/json, text/plain, */*",
-            "X-Requested-With": "NetmirrorNewTV v1.0",
-            "ott": "nf",
-            "page": "all"
+    if (extra) {
+        for (var k in extra) {
+            if (extra.hasOwnProperty(k)) h[k] = extra[k];
         }
-    })
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-        return data && data.usertoken ? data.usertoken : null;
-    })
-    .catch(function() { return null; });
+    }
+    return h;
 }
 
-function getTmdbTitle(tmdbId, mediaType) {
-    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
-        "?api_key=" + CONFIG.TMDB_API_KEY;
-
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            if (!data) return null;
-            return mediaType === "tv"
-                ? (data.name || data.original_name)
-                : (data.title || data.original_title);
-        })
-        .catch(function() { return null; });
-}
-
-function search(title, token) {
-    var url = CONFIG.BASE + "/newtv/search.php?s=" + encodeURIComponent(title);
-
-    return fetch(url, { headers: apiHeaders(token) })
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            if (!data || !data.searchResult || !data.searchResult.length) return null;
-
-            var q = normalize(title);
-            var best = null;
-            var bestScore = -1;
-
-            for (var i = 0; i < data.searchResult.length; i++) {
-                var item = data.searchResult[i];
-                var t = normalize(item.t);
-                var score = 0;
-
-                if (t === q) score = 100;
-                else if (t.indexOf(q) !== -1) score = 70;
-                else if (q.indexOf(t) !== -1) score = 50;
-
-                // Prefer exact language variants less if title is plain
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = item;
-                }
-            }
-
-            return best || data.searchResult[0];
-        })
-        .catch(function() { return null; });
-}
-
-function getPlayer(id, token) {
-    var url = CONFIG.BASE + "/newtv/player.php?id=" + encodeURIComponent(id);
-
-    return fetch(url, { headers: apiHeaders(token) })
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            if (!data || data.status !== "ok" || !data.video_link) return null;
-            return {
-                url: data.video_link,
-                referer: data.referer || CONFIG.REFERER,
-                title: data.title || ""
-            };
-        })
-        .catch(function() { return null; });
-}
-
-function getStreams(tmdbId, mediaType, season, episode) {
-    mediaType = mediaType || "movie";
-
-    return getTmdbTitle(tmdbId, mediaType)
-        .then(function(title) {
-            if (!title) return [];
-
-            return getToken().then(function(token) {
-                if (!token) return [];
-
-                return search(title, token).then(function(match) {
-                    if (!match) return [];
-
-                    return getPlayer(match.id, token).then(function(player) {
-                        if (!player) return [];
-
-                        return [{
-                            name: "Netmirror",
-                            title: "HD",
-                            url: player.url,
-                            quality: "1080p",
-                            headers: {
-                                "Referer": player.referer,
-                                "User-Agent": CONFIG.UA,
-                                "Origin": "https://tv.imgcdn.kim"
-                            }
-                        }];
-                    });
-                });
-            });
-        })
-        .catch(function() {
-            return [];
+function fetchJson(url, options) {
+    options = options || {};
+    return fetch(url, options)
+        .then(function(res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.json();
         });
 }
 
-module.exports = { getStreams };
+function fetchText(url, options) {
+    options = options || {};
+    return fetch(url, options)
+        .then(function(res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.text();
+        });
+}
+
+// ----- TMDB -----
+function getTmdbTitle(tmdbId, mediaType) {
+    var endpoint = mediaType === 'movie' ? 'movie' : 'tv';
+    var url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+    return fetchJson(url)
+        .then(function(data) {
+            return data.title || data.name;
+        });
+}
+
+// ----- NewTV API -----
+function searchNewTV(query) {
+    var url = CONFIG.BASE + "/newtv/search.php?s=" + encodeURIComponent(query);
+    return fetchJson(url, { headers: headers() })
+        .then(function(data) {
+            if (!data || !data.searchResult) return [];
+            return data.searchResult;
+        });
+}
+
+function getPost(id) {
+    var url = CONFIG.BASE + "/newtv/post.php?id=" + id;
+    return fetchJson(url, { headers: headers() })
+        .then(function(data) {
+            if (data.status !== "ok") return null;
+            return data;
+        });
+}
+
+function getPlayer(id) {
+    var url = CONFIG.BASE + "/newtv/player.php?id=" + id;
+    return fetchJson(url, { headers: headers() })
+        .then(function(data) {
+            if (data.status !== "ok" || !data.video_link) return null;
+            return data;
+        });
+}
+
+function getM3U8Content(url, referer) {
+    return fetchText(url, {
+        headers: {
+            "User-Agent": CONFIG.UA,
+            "Referer": referer || CONFIG.REFERER,
+            "X-Requested-With": "NetmirrorNewTV v1.0"
+        }
+    });
+}
+
+// ----- M3U8 Parser -----
+function parseM3U8(content) {
+    var streams = [];
+    var lines = content.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.indexOf('#EXT-X-STREAM-INF:') === 0) {
+            var streamInfo = line;
+            var urlLine = '';
+            var j = i + 1;
+            while (j < lines.length) {
+                var next = lines[j].trim();
+                if (next && next.indexOf('#') !== 0) {
+                    urlLine = next;
+                    break;
+                }
+                j++;
+            }
+            if (urlLine) {
+                var quality = 'Unknown';
+                var resMatch = streamInfo.match(/RESOLUTION=(\d+x\d+)/);
+                if (resMatch) {
+                    var height = parseInt(resMatch[1].split('x')[1], 10);
+                    if (height >= 1080) quality = '1080p';
+                    else if (height >= 720) quality = '720p';
+                    else if (height >= 480) quality = '480p';
+                    else quality = resMatch[1];
+                } else {
+                    var bwMatch = streamInfo.match(/BANDWIDTH=(\d+)/);
+                    if (bwMatch) {
+                        var bw = parseInt(bwMatch[1], 10);
+                        if (bw >= 1000000) quality = '1080p';
+                        else if (bw >= 600000) quality = '720p';
+                        else if (bw >= 400000) quality = '480p';
+                        else quality = Math.round(bw / 1000) + 'k';
+                    }
+                }
+                streams.push({ url: urlLine, quality: quality });
+            }
+        }
+    }
+    return streams;
+}
+
+// ----- Main export -----
+function getStreams(tmdbId, mediaType, season, episode) {
+    if (!tmdbId) {
+        return Promise.reject(new Error('No TMDB ID provided'));
+    }
+
+    var title;
+    var playerData;
+
+    return getTmdbTitle(tmdbId, mediaType)
+        .then(function(t) {
+            title = t;
+            console.log('[NewTV] Title from TMDB: "' + title + '"');
+            return searchNewTV(title);
+        })
+        .then(function(results) {
+            if (!results.length) {
+                throw new Error('No results found for "' + title + '"');
+            }
+            var item = results[0];
+            console.log('[NewTV] Selected: ' + item.t + ' (ID: ' + item.id + ')');
+            return getPost(item.id);
+        })
+        .then(function(post) {
+            if (!post) throw new Error('Failed to get post info');
+            console.log('[NewTV] Type: ' + (post.type === 'm' ? 'Movie' : 'TV Series'));
+            return getPlayer(post.main_id || post.id); // use the ID from post
+        })
+        .then(function(player) {
+            if (!player) throw new Error('Failed to get player info');
+            playerData = player;
+            return getM3U8Content(player.video_link, player.referer || CONFIG.REFERER);
+        })
+        .then(function(m3u8) {
+            var streams = parseM3U8(m3u8);
+            if (!streams.length) {
+                // fallback: return master M3U8
+                return [{
+                    name: 'NewTV',
+                    title: 'Master M3U8',
+                    url: playerData.video_link,
+                    quality: 'Auto'
+                }];
+            }
+            return streams.map(function(s) {
+                return {
+                    name: 'NewTV',
+                    title: s.quality,
+                    url: s.url,
+                    quality: s.quality
+                };
+            });
+        });
+}
+
+// Export for Nuvio
+module.exports = { getStreams: getStreams };
