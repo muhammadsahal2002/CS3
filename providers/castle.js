@@ -1,4 +1,4 @@
-// newtv.js – Ready-to-use plugin for Nuvio (Hermes-compatible)
+// newtv.js – Ready for Nuvio (Hermes‑compatible, no build required)
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
@@ -7,6 +7,7 @@ var CONFIG = {
     BASE: "https://tv.imgcdn.kim",
     REFERER: "https://net52.cc",
     UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
+    // ⚠️ UPDATE THIS TOKEN when it expires (it's the one from your capture)
     USERTOKEN: "d945e9dc888dc22741a1eeb3abc489a5::9f4baa0702c2486030ff927d1d96dfdc::1787328769::db",
     OTT: "nf"
 };
@@ -164,7 +165,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(post) {
             if (!post) throw new Error('Failed to get post info');
             console.log('[NewTV] Type: ' + (post.type === 'm' ? 'Movie' : 'TV Series'));
-            return getPlayer(post.main_id || post.id); // use the ID from post
+            var contentId = post.main_id || post.id;
+            // If TV series, we might need to drill down to episode (simple version picks first)
+            // For now, we just use the main_id (works for movies, may need enhancement for TV)
+            return getPlayer(contentId);
         })
         .then(function(player) {
             if (!player) throw new Error('Failed to get player info');
