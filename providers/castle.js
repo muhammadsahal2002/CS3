@@ -1,18 +1,21 @@
-// newtv.js – Ready for Nuvio (Hermes‑compatible, no build required)
+// newtv.js – Debug version with full logging
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
 
+// ⚠️ REPLACE THIS with a fresh token from the app
 var CONFIG = {
     BASE: "https://tv.imgcdn.kim",
     REFERER: "https://net52.cc",
     UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
-    // ⚠️ UPDATE THIS TOKEN when it expires (it's the one from your capture)
     USERTOKEN: "d945e9dc888dc22741a1eeb3abc489a5::9f4baa0702c2486030ff927d1d96dfdc::1787328769::db",
     OTT: "nf"
 };
 
-// ----- helpers -----
+function log(msg) {
+    console.log("[NewTV] " + msg);
+}
+
 function headers(extra) {
     var h = {
         "User-Agent": CONFIG.UA,
@@ -31,38 +34,47 @@ function headers(extra) {
 
 function fetchJson(url, options) {
     options = options || {};
+    log("fetchJson: " + url);
     return fetch(url, options)
         .then(function(res) {
+            log("  status: " + res.status);
             if (!res.ok) throw new Error("HTTP " + res.status);
             return res.json();
+        })
+        .then(function(data) {
+            log("  response keys: " + Object.keys(data).join(", "));
+            return data;
         });
 }
 
 function fetchText(url, options) {
     options = options || {};
+    log("fetchText: " + url);
     return fetch(url, options)
         .then(function(res) {
+            log("  status: " + res.status);
             if (!res.ok) throw new Error("HTTP " + res.status);
             return res.text();
         });
 }
 
-// ----- TMDB -----
 function getTmdbTitle(tmdbId, mediaType) {
     var endpoint = mediaType === 'movie' ? 'movie' : 'tv';
     var url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
     return fetchJson(url)
         .then(function(data) {
-            return data.title || data.name;
+            var title = data.title || data.name;
+            log("TMDB title: " + title);
+            return title;
         });
 }
 
-// ----- NewTV API -----
 function searchNewTV(query) {
     var url = CONFIG.BASE + "/newtv/search.php?s=" + encodeURIComponent(query);
     return fetchJson(url, { headers: headers() })
         .then(function(data) {
             if (!data || !data.searchResult) return [];
+            log("Search results: " + data.searchResult.length);
             return data.searchResult;
         });
 }
@@ -71,7 +83,11 @@ function getPost(id) {
     var url = CONFIG.BASE + "/newtv/post.php?id=" + id;
     return fetchJson(url, { headers: headers() })
         .then(function(data) {
-            if (data.status !== "ok") return null;
+            if (data.status !== "ok") {
+                log("Post status not ok: " + data.status);
+                return null;
+            }
+            log("Post title: " + data.title);
             return data;
         });
 }
@@ -80,7 +96,12 @@ function getPlayer(id) {
     var url = CONFIG.BASE + "/newtv/player.php?id=" + id;
     return fetchJson(url, { headers: headers() })
         .then(function(data) {
-            if (data.status !== "ok" || !data.video_link) return null;
+            if (data.status !== "ok" || !data.video_link) {
+                log("Player status not ok or missing video_link");
+                log("Player data: " + JSON.stringify(data));
+                return null;
+            }
+            log("Player video_link: " + data.video_link.substring(0, 80) + "...");
             return data;
         });
 }
@@ -95,10 +116,10 @@ function getM3U8Content(url, referer) {
     });
 }
 
-// ----- M3U8 Parser -----
 function parseM3U8(content) {
     var streams = [];
     var lines = content.split('\n');
+    log("Parsing M3U8, lines: " + lines.length);
     for (var i = 0; i < lines.length; i++) {
         var line = lines[i].trim();
         if (line.indexOf('#EXT-X-STREAM-INF:') === 0) {
@@ -133,69 +154,71 @@ function parseM3U8(content) {
                     }
                 }
                 streams.push({ url: urlLine, quality: quality });
+                log("  Found stream: " + quality);
             }
         }
     }
     return streams;
 }
 
-// ----- Main export -----
 function getStreams(tmdbId, mediaType, season, episode) {
     if (!tmdbId) {
         return Promise.reject(new Error('No TMDB ID provided'));
     }
+    log("START: " + tmdbId + " (" + mediaType + ")");
 
-    var title;
-    var playerData;
+    var title, playerData, contentId;
 
     return getTmdbTitle(tmdbId, mediaType)
         .then(function(t) {
             title = t;
-            console.log('[NewTV] Title from TMDB: "' + title + '"');
             return searchNewTV(title);
         })
         .then(function(results) {
-            if (!results.length) {
-                throw new Error('No results found for "' + title + '"');
-            }
+            if (!results.length) throw new Error('No results found for "' + title + '"');
             var item = results[0];
-            console.log('[NewTV] Selected: ' + item.t + ' (ID: ' + item.id + ')');
+            log("Selected: " + item.t + " (ID: " + item.id + ")");
             return getPost(item.id);
         })
         .then(function(post) {
             if (!post) throw new Error('Failed to get post info');
-            console.log('[NewTV] Type: ' + (post.type === 'm' ? 'Movie' : 'TV Series'));
-            var contentId = post.main_id || post.id;
-            // If TV series, we might need to drill down to episode (simple version picks first)
-            // For now, we just use the main_id (works for movies, may need enhancement for TV)
+            contentId = post.main_id || post.id;
+            log("Content ID for player: " + contentId);
             return getPlayer(contentId);
         })
         .then(function(player) {
             if (!player) throw new Error('Failed to get player info');
             playerData = player;
+            log("Fetching M3U8...");
             return getM3U8Content(player.video_link, player.referer || CONFIG.REFERER);
         })
         .then(function(m3u8) {
             var streams = parseM3U8(m3u8);
             if (!streams.length) {
-                // fallback: return master M3U8
+                log("No streams parsed, returning master M3U8");
                 return [{
                     name: 'NewTV',
                     title: 'Master M3U8',
                     url: playerData.video_link,
-                    quality: 'Auto'
+                    quality: 'Auto',
+                    headers: { Referer: playerData.referer || CONFIG.REFERER }
                 }];
             }
+            log("Returning " + streams.length + " streams");
             return streams.map(function(s) {
                 return {
                     name: 'NewTV',
                     title: s.quality,
                     url: s.url,
-                    quality: s.quality
+                    quality: s.quality,
+                    headers: { Referer: playerData.referer || CONFIG.REFERER }
                 };
             });
+        })
+        .catch(function(err) {
+            log("ERROR: " + err.message);
+            throw err;
         });
 }
 
-// Export for Nuvio
 module.exports = { getStreams: getStreams };
