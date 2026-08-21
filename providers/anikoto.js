@@ -1,6 +1,6 @@
 /**
  * AnikotoTV Provider for Nuvio
- * DUB only
+ * DUB only - simple
  */
 
 "use strict";
@@ -96,6 +96,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     if (results.length === 0) return [];
 
+                    // Simple best match (no special cases)
                     var q = normalize(searchTitle);
                     var best = null;
                     var bestScore = -999;
@@ -105,17 +106,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         var t = normalize(r.title);
                         var score = 0;
 
-                        if (t === q) score = 300;
-                        else if (t.indexOf(q) !== -1) score = 150;
+                        if (t === q) score = 100;
+                        else if (t.indexOf(q) !== -1) score = 70;
                         else if (q.indexOf(t) !== -1) score = 40;
 
-                        if (q.indexOf("shippuden") !== -1 || q.indexOf("shippuuden") !== -1) {
-                            if (t.indexOf("shippuden") !== -1 || t.indexOf("shippuuden") !== -1) score += 200;
-                            else score -= 150;
-                        }
-
-                        if (!r.isMovie) score += 40;
-                        if (r.isMovie) score -= 60;
+                        if (!r.isMovie) score += 20;
+                        if (r.isMovie) score -= 30;
 
                         if (score > bestScore) {
                             bestScore = score;
