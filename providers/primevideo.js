@@ -9,19 +9,48 @@ var CONFIG = {
     BASE: "https://tv.imgcdn.kim",
     REFERER: "https://net52.cc",
     UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
-    USERTOKEN: "d945e9dc888dc22741a1eeb3abc489a5::9f4baa0702c2486030ff927d1d96dfdc::1787328769::db",
-    OTT: "pv"
+    USERTOKEN: "",
+    OTT: "nf"
 };
+
+// Add this after your CONFIG definition
+function onSettings() {
+    return [
+        {
+            type: "header",
+            label: "NewTV Authentication"
+        },
+        {
+            type: "text",
+            key: "USERTOKEN",
+            label: "User Token",
+            defaultValue: CONFIG.USERTOKEN,
+            placeholder: "Paste your token here (e.g., hash1::hash2::timestamp::db)",
+            help: "Get a fresh token: visit https://netmirror.gg/tv, copy the OTP, then visit https://tv.imgcdn.kim/newtv/otp.php?otp=XXXXXX and copy the usertoken from the response."
+        }
+    ];
+}
+
+// Add this after onSettings()
+function getUserToken() {
+    var settings = globalThis.SCRAPER_SETTINGS || {};
+    var token = settings.USERTOKEN;
+    if (token && token.trim().length > 0) {
+        return token.trim();
+    }
+    return CONFIG.USERTOKEN;
+}
 
 function log(msg) { console.log("[NewTV] " + msg); }
 
 function headers(extra) {
+    var token = getUserToken(); // <-- changed line
     var h = {
         "User-Agent": CONFIG.UA,
         "Accept": "application/json, text/plain, */*",
         "X-Requested-With": "NetmirrorNewTV v1.0",
         "ott": CONFIG.OTT,
-        "usertoken": CONFIG.USERTOKEN
+        "usertoken": token  // <-- now uses the token from settings
     };
     if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) h[k] = extra[k];
     return h;
@@ -185,4 +214,4 @@ function getStreams(tmdbId, mediaType, season, episode) {
         });
 }
 
-module.exports = { getStreams: getStreams };
+module.exports = { getStreams: getStreams, onSettings: onSettings };
