@@ -179,7 +179,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 name: 'HOTSTAR',
                 title: 'Auto',
                 url: player.video_link,
-                quality: '1080p',
+                quality: 'Hotstar-1080p',
                 headers: { Referer: player.referer || CONFIG.REFERER }
             }];
         });
