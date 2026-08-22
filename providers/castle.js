@@ -450,7 +450,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const tracks = episode?.tracks || [];
 
       const allStreams = [];
-      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
+      const resolutions = [2]; // 1080p, 720p, 480p
       const seen = new Set(); // Track unique streams
 
       // Try each track individually
