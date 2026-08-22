@@ -343,6 +343,42 @@ function resolutionToQuality(resolution) {
 }
 
 // ====================== PROCESS VIDEO ======================
+
+
+// ====================== HELPERS ======================
+function resolutionToQuality(resolution) {
+  const map = {
+    1: "480p",
+    2: "720p",
+    3: "1080p",
+    4: "2160p",   // 4K
+    5: "1440p",
+    6: "360p",
+    7: "240p"
+  };
+  return map[resolution] || `${resolution}p`;
+}
+
+function getQualityValue(quality) {
+  if (!quality) return 0;
+  const clean = quality.toString().toLowerCase()
+    .replace(/^(sd|hd|fhd|uhd|4k)\s*/i, "")
+    .replace(/p$/, "")
+    .trim();
+  const map = {
+    "4k": 2160, "2160": 2160,
+    "1440": 1440,
+    "1080": 1080,
+    "720": 720,
+    "480": 480,
+    "360": 360,
+    "240": 240
+  };
+  if (map[clean]) return map[clean];
+  const num = parseInt(clean);
+  return isNaN(num) ? 0 : num;
+}
+
 function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
   const data = extractDataBlock(videoData);
@@ -364,21 +400,31 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
 
   let mediaTitle = mediaInfo.title || "Unknown";
-  if (mediaInfo.year) mediaTitle += " (" + mediaInfo.year + ")";
+  if (mediaInfo.year) mediaTitle += ` (${mediaInfo.year})`;
   if (seasonNum && episodeNum) {
-    mediaTitle = mediaInfo.title + " S" + String(seasonNum).padStart(2, "0") + "E" + String(episodeNum).padStart(2, "0");
+    mediaTitle = `\( {mediaInfo.title} S \){String(seasonNum).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
   }
 
-  const quality = resolutionToQuality(resolution);
+  const fallbackQuality = resolutionToQuality(resolution);
   const langLabel = (languageInfo || "Unknown").trim();
 
-  if (data.videos && Array.isArray(data.videos)) {
+  // Prefer the videos array (this is where multiple resolutions usually appear)
+  if (data.videos && Array.isArray(data.videos) && data.videos.length > 0) {
     for (const video of data.videos) {
-      let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
-      videoQuality = videoQuality.replace(/^(SD|HD|FHD|UHD|4K)\s+/i, "").trim();
-      
+      let videoQuality = (
+        video.resolutionDescription ||
+        video.resolution ||
+        video.quality ||
+        fallbackQuality
+      ).toString();
+
+      // Clean common prefixes
+      videoQuality = videoQuality
+        .replace(/^(SD|HD|FHD|UHD|4K)\s+/i, "")
+        .trim();
+
       const streamName = `Castle [${langLabel}] ${videoQuality}`;
-      
+
       streams.push({
         name: streamName,
         title: mediaTitle,
@@ -389,25 +435,26 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
         audio: langLabel,
         headers: PLAYBACK_HEADERS,
         provider: "castle",
-        subtitles: subtitles
+        subtitles
       });
     }
   } else {
-    const streamName = `Castle [${langLabel}] ${quality}`;
-    
+    // Single stream fallback
+    const streamName = `Castle [${langLabel}] ${fallbackQuality}`;
     streams.push({
       name: streamName,
       title: mediaTitle,
       url: videoUrl,
-      quality: quality,
+      quality: fallbackQuality,
       size: formatSize(data.size),
       language: langLabel,
       audio: langLabel,
       headers: PLAYBACK_HEADERS,
       provider: "castle",
-      subtitles: subtitles
+      subtitles
     });
   }
+
   return streams;
 }
 
@@ -456,7 +503,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const tracks = episode?.tracks || [];
 
       const allStreams = [];
-      const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
+      const resolutions = [ 2]; // 1080p, 720p, 480p
 
       let fetchedAny = false;
 
