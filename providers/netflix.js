@@ -179,7 +179,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 name: 'Netflix',
                 title: 'Auto',
                 url: player.video_link,
-                quality: 'Auto',
+                quality: '1080p',
                 headers: { Referer: player.referer || CONFIG.REFERER }
             }];
         });
