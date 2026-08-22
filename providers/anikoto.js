@@ -106,8 +106,7 @@ function searchAnime(title) {
             var results = [];
 
             $("div.item").each(function(i, el) {
-                var $el = $(el);
-                var a = $el.find("a.name.d-title, a[data-jp]").first();
+                var a = $(el).find("a.name.d-title, a[data-jp]").first();
                 if (!a.length) return;
 
                 var href = a.attr("href");
@@ -116,15 +115,14 @@ function searchAnime(title) {
 
                 results.push({
                     title: t,
-                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href
+                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
+                    isMovie: /movie|film|special|ova/i.test(t)
                 });
             });
 
-            if (results.length === 0) return null;
+            if (!results.length) return null;
 
             var q = normalize(searchTitle);
-            var qWords = q.split(" ").filter(function(w) { return w.length >= 3; });
-
             var best = null;
             var bestScore = 0;
 
@@ -133,20 +131,17 @@ function searchAnime(title) {
                 var t = normalize(r.title);
                 var score = 0;
 
-                // Exact match only strong accept
                 if (t === q) {
                     score = 100;
                 } else if (t.indexOf(q) !== -1 && q.length >= 5) {
-                    // Query fully inside title (e.g. "naruto" inside "naruto shippuuden")
                     score = 80;
-                } else if (qWords.length > 0) {
-                    // Word overlap
-                    var matches = 0;
-                    for (var w = 0; w < qWords.length; w++) {
-                        if (t.indexOf(qWords[w]) !== -1) matches++;
-                    }
-                    score = Math.round((matches / qWords.length) * 70);
+                } else if (q.indexOf(t) !== -1 && t.length >= 5) {
+                    score = 50;
                 }
+
+                // Prefer TV series over movies
+                if (r.isMovie) score -= 25;
+                else score += 10;
 
                 if (score > bestScore) {
                     bestScore = score;
@@ -154,16 +149,13 @@ function searchAnime(title) {
                 }
             }
 
-            // STRICT: only accept strong matches
-            if (!best || bestScore < 70) {
-                return null;
-            }
+            // Need a real match
+            if (!best || bestScore < 70) return null;
 
             return best;
         })
         .catch(function() { return null; });
 }
-
 function getAnimeId(url) {
     return fetch(url, { headers: headers() })
         .then(function(r) { return r.ok ? r.text() : null; })
