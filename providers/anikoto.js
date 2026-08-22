@@ -1,6 +1,6 @@
 /**
  * AnikotoTV Provider for Nuvio
- * DUB only – Exact title match with year & type
+ * DUB only – Clean version based on working debug approach
  */
 
 "use strict";
@@ -11,7 +11,6 @@ var CONFIG = {
     BASE_URL: "https://anikoto.cz",
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
-    MAPPING_API: "https://id-mapping-api-malid.hf.space/api/resolve",
     USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
 
@@ -35,53 +34,20 @@ function ajaxHeaders(referer) {
     };
 }
 
-function normalize(str) {
-    return String(str || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-function getImdbId(tmdbId, mediaType) {
+function getTitle(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
-        "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) { return data && data.imdb_id ? data.imdb_id : null; })
-        .catch(function() { return null; });
-}
-
-// Get title AND year from TMDB
-function getTmdbInfo(tmdbId, mediaType) {
-    var endpoint = mediaType === "tv" ? "tv" : "movie";
-    var url = CONFIG.TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
+        "?api_key=" + CONFIG.TMDB_API_KEY;
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
             if (!data) return null;
-            var title = mediaType === "tv" ? (data.name || data.original_name) : (data.title || data.original_title);
-            var year = null;
-            var date = mediaType === "tv" ? data.first_air_date : data.release_date;
-            if (date) year = parseInt(date.split("-")[0], 10);
-            return { title: title, year: year };
+            return mediaType === "tv" ? (data.name || data.original_name) : (data.title || data.original_title);
         })
         .catch(function() { return null; });
 }
 
-function resolveMapping(imdbId, season, episode) {
-    var url = CONFIG.MAPPING_API +
-        "?id=" + encodeURIComponent(imdbId) +
-        "&s=" + season +
-        "&e=" + episode;
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) { return (data && !data.error) ? data : null; })
-        .catch(function() { return null; });
-}
-
-// Search Anikoto – extract title, URL, year, and type
-function searchAnime(title, year, mediaType) {
+// Search: use filter page (returns all results), take first result
+function searchAnime(title) {
     var searchTitle = String(title || "")
         .replace(/ū/g, "uu")
         .replace(/ō/g, "ou")
@@ -91,7 +57,7 @@ function searchAnime(title, year, mediaType) {
 
     var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
 
-    console.log("[AnikotoTV] Searching: " + searchTitle + " (year: " + year + ", type: " + mediaType + ")");
+    console.log("[AnikotoTV] Searching: " + searchTitle);
 
     return fetch(url, { headers: headers() })
         .then(function(r) { return r.ok ? r.text() : null; })
@@ -99,112 +65,26 @@ function searchAnime(title, year, mediaType) {
             if (!html) return null;
 
             var $ = cheerio.load(html);
-            var results = [];
+            var firstResult = null;
 
+            // Take the first item with a title and URL
             $("div.item").each(function(i, el) {
+                if (firstResult) return;
                 var $el = $(el);
                 var a = $el.find("a.name.d-title, a[data-jp]").first();
                 if (!a.length) return;
-
                 var href = a.attr("href");
-                var titleText = (a.attr("data-jp") || a.text() || "").trim();
-                if (!href || !titleText) return;
-
-                // Extract year and type from meta
-                var meta = $el.find(".meta").text() || "";
-                var yearMatch = meta.match(/\b(19|20)\d{2}\b/);
-                var itemYear = yearMatch ? parseInt(yearMatch[0], 10) : null;
-                var isMovie = /movie/i.test(meta) || /film/i.test(titleText) || (href && href.indexOf("/movie/") !== -1);
-
-                results.push({
-                    title: titleText,
-                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
-                    year: itemYear,
-                    isMovie: isMovie,
-                    meta: meta
-                });
+                var t = (a.attr("data-jp") || a.text() || "").trim();
+                if (href && t) {
+                    firstResult = {
+                        title: t,
+                        url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href
+                    };
+                }
             });
 
-            if (results.length === 0) return null;
-
-            var q = normalize(title);
-            var best = null;
-            var bestScore = -999;
-
-            for (var i = 0; i < results.length; i++) {
-                var r = results[i];
-                var t = normalize(r.title);
-                var score = 0;
-
-                // ----- Title match -----
-                if (t === q) {
-                    score = 100;
-                } else if (t.indexOf(q) === 0) {
-                    score = 85;
-                } else if (t.indexOf(q) !== -1) {
-                    score = 60;
-                } else if (q.indexOf(t) !== -1) {
-                    score = 30;
-                } else {
-                    var words = q.split(" ");
-                    var matchCount = 0;
-                    for (var w = 0; w < words.length; w++) {
-                        if (words[w] && words[w].length > 2 && t.indexOf(words[w]) !== -1) {
-                            matchCount++;
-                        }
-                    }
-                    if (matchCount > 0) {
-                        score = Math.round((matchCount / words.length) * 40);
-                    }
-                }
-
-                // ----- Year bonus/penalty -----
-                if (year && r.year) {
-                    if (r.year === year) {
-                        score += 50;
-                    } else if (Math.abs(r.year - year) <= 1) {
-                        score += 20;
-                    } else {
-                        score -= 30; // penalize wrong year heavily
-                    }
-                }
-
-                // ----- Type matching -----
-                var isMovieRequest = (mediaType === "movie");
-                if (r.isMovie === isMovieRequest) {
-                    score += 30;
-                } else {
-                    score -= 20;
-                }
-
-                // ----- Special penalty for common mismatches -----
-                // If query is "naruto" and title contains "shippuden", penalize
-                if (q === "naruto" && t.indexOf("shippuden") !== -1) {
-                    score -= 50;
-                }
-                // If query is "naruto shippuden" and title does not contain "shippuden", penalize
-                if (q.indexOf("shippuden") !== -1 && t.indexOf("shippuden") === -1) {
-                    score -= 40;
-                }
-                // If query is "dragon ball super broly" and title missing "broly", penalize
-                if (q.indexOf("broly") !== -1 && t.indexOf("broly") === -1) {
-                    score -= 40;
-                }
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = r;
-                }
-            }
-
-            // If no good match (score < 50), return null
-            if (bestScore < 50) {
-                console.log("[AnikotoTV] No good match (best: " + (best ? best.title : "none") + ", score: " + bestScore + ")");
-                return null;
-            }
-
-            console.log("[AnikotoTV] ✅ Best: " + best.title + " (year: " + best.year + ", movie: " + best.isMovie + ", score: " + bestScore + ")");
-            return best;
+            console.log("[AnikotoTV] Found: " + (firstResult ? firstResult.title : "nothing"));
+            return firstResult;
         })
         .catch(function(err) {
             console.log("[AnikotoTV] Search error: " + err.message);
@@ -228,12 +108,18 @@ function getAnimeId(url) {
 
 function getDubEpisode(animeId, episodeNum, referer) {
     var url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+
+    console.log("[AnikotoTV] Fetching episodes for anime ID: " + animeId + ", episode: " + episodeNum);
+
     return fetch(url, { headers: ajaxHeaders(referer) })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
-            if (!data || !data.result) return null;
+            if (!data || data.status !== 200 || !data.result) return null;
+
             var $ = cheerio.load(data.result);
             var found = null;
+
+            // Try exact DUB match first
             $("a[data-ids]").each(function(i, el) {
                 if (found) return;
                 var a = $(el);
@@ -242,7 +128,8 @@ function getDubEpisode(animeId, episodeNum, referer) {
                     found = { ids: a.attr("data-ids"), number: num };
                 }
             });
-            // If not found, try nearby episodes
+
+            // If not found, try any DUB episode close to the number
             if (!found) {
                 var closest = null;
                 var closestDiff = Infinity;
@@ -257,18 +144,38 @@ function getDubEpisode(animeId, episodeNum, referer) {
                         }
                     }
                 });
-                if (closest && closestDiff <= 3) {
-                    console.log("[AnikotoTV] Using nearby episode " + closest.number + " (requested: " + episodeNum + ")");
+                if (closest && closestDiff <= 5) {
+                    console.log("[AnikotoTV] Using nearby DUB episode " + closest.number + " (requested: " + episodeNum + ")");
                     found = closest;
                 }
             }
+
+            // If still nothing, try any DUB episode at all
+            if (!found) {
+                $("a[data-ids]").each(function(i, el) {
+                    if (found) return;
+                    var a = $(el);
+                    if (a.attr("data-dub") === "1" && a.attr("data-ids")) {
+                        var num = parseInt(a.attr("data-num") || "0", 10);
+                        console.log("[AnikotoTV] Using first available DUB episode: " + num);
+                        found = { ids: a.attr("data-ids"), number: num };
+                    }
+                });
+            }
+
             return found;
         })
-        .catch(function() { return null; });
+        .catch(function(err) {
+            console.log("[AnikotoTV] Episode fetch error: " + err.message);
+            return null;
+        });
 }
 
 function getDubServer(ids, referer) {
     var url = CONFIG.BASE_URL + "/ajax/server/list?servers=" + encodeURIComponent(ids);
+
+    console.log("[AnikotoTV] Getting servers for IDs: " + ids);
+
     return fetch(url, { headers: ajaxHeaders(referer) })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -276,6 +183,7 @@ function getDubServer(ids, referer) {
             var $ = cheerio.load(data.result);
             var linkId = $('div.type[data-type="dub"] li[data-link-id]').first().attr("data-link-id");
             if (!linkId) linkId = $('li[data-link-id]').first().attr("data-link-id");
+            console.log("[AnikotoTV] Server link ID: " + linkId);
             return linkId || null;
         })
         .catch(function() { return null; });
@@ -283,6 +191,9 @@ function getDubServer(ids, referer) {
 
 function getEmbed(linkId, referer) {
     var url = CONFIG.BASE_URL + "/ajax/server?get=" + encodeURIComponent(linkId);
+
+    console.log("[AnikotoTV] Getting embed for link ID: " + linkId);
+
     return fetch(url, { headers: ajaxHeaders(referer) })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -296,9 +207,11 @@ function getEmbed(linkId, referer) {
 
 function resolveMegaplay(embed) {
     if (!embed) return Promise.resolve(null);
+
     if (embed.indexOf("autostart") === -1) {
         embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
     }
+
     return fetch(embed, {
         headers: headers({
             "Referer": CONFIG.BASE_URL,
@@ -341,95 +254,86 @@ function getStreams(tmdbId, mediaType, season, episode) {
     console.log("[AnikotoTV] ========================================");
     console.log("[AnikotoTV] TMDB: " + tmdbId + ", Type: " + mediaType + ", S" + season + "E" + episode);
 
-    return getTmdbInfo(tmdbId, mediaType)
-        .then(function(info) {
-            if (!info) return [];
-            var title = info.title;
-            var year = info.year;
-            console.log("[AnikotoTV] Title: " + title + ", Year: " + year);
+    return getTitle(tmdbId, mediaType)
+        .then(function(title) {
+            if (!title) {
+                console.log("[AnikotoTV] No title found");
+                return [];
+            }
+            console.log("[AnikotoTV] Title: " + title);
 
-            return getImdbId(tmdbId, mediaType)
-                .then(function(imdbId) {
-                    var mappedEpisode = episode;
-                    var mappingPromise = imdbId ? resolveMapping(imdbId, season, episode) : Promise.resolve(null);
-                    return mappingPromise.then(function(mapping) {
-                        if (mapping && mapping.mal_episode) {
-                            mappedEpisode = mapping.mal_episode;
-                            console.log("[AnikotoTV] Mapped episode: " + episode + " → " + mappedEpisode);
-                        }
+            return searchAnime(title).then(function(best) {
+                if (!best) {
+                    console.log("[AnikotoTV] No match found");
+                    return [];
+                }
 
-                        return searchAnime(title, year, mediaType).then(function(best) {
-                            if (!best) {
-                                console.log("[AnikotoTV] No match found");
+                console.log("[AnikotoTV] Using: " + best.title + " (URL: " + best.url + ")");
+
+                return getAnimeId(best.url).then(function(animeId) {
+                    if (!animeId) {
+                        console.log("[AnikotoTV] Could not get anime ID");
+                        return [];
+                    }
+                    console.log("[AnikotoTV] Anime ID: " + animeId);
+
+                    // For movies, try to get stream directly using animeId
+                    if (mediaType === "movie") {
+                        return getDubServer(animeId, best.url)
+                            .then(function(linkId) {
+                                if (!linkId) return [];
+                                return getEmbed(linkId, best.url);
+                            })
+                            .then(function(embed) {
+                                if (!embed || embed.indexOf("megaplay") === -1) return [];
+                                return resolveMegaplay(embed);
+                            })
+                            .then(function(stream) {
+                                if (!stream) return [];
+                                console.log("[AnikotoTV] ✅ Movie stream found!");
+                                return [{
+                                    name: "AnikotoTV",
+                                    title: "1080p",
+                                    url: stream.url,
+                                    quality: "1080p",
+                                    headers: stream.headers
+                                }];
+                            });
+                    }
+
+                    // TV series: get episode
+                    return getDubEpisode(animeId, episode, best.url)
+                        .then(function(ep) {
+                            if (!ep) {
+                                console.log("[AnikotoTV] No DUB episode " + episode);
                                 return [];
                             }
 
-                            console.log("[AnikotoTV] Using: " + best.title + " (URL: " + best.url + ")");
+                            console.log("[AnikotoTV] Found episode: " + ep.number);
 
-                            return getAnimeId(best.url).then(function(animeId) {
-                                if (!animeId) {
-                                    console.log("[AnikotoTV] Could not get anime ID");
-                                    return [];
-                                }
-                                console.log("[AnikotoTV] Anime ID: " + animeId);
-
-                                // If it's a movie, try to get stream directly
-                                if (mediaType === "movie" || best.isMovie) {
-                                    return getDubServer(animeId, best.url)
-                                        .then(function(linkId) {
-                                            if (!linkId) return [];
-                                            return getEmbed(linkId, best.url);
-                                        })
-                                        .then(function(embed) {
-                                            if (!embed || embed.indexOf("megaplay") === -1) return [];
-                                            return resolveMegaplay(embed);
-                                        })
-                                        .then(function(stream) {
-                                            if (!stream) return [];
-                                            console.log("[AnikotoTV] ✅ Movie stream found!");
-                                            return [{
-                                                name: "AnikotoTV",
-                                                title: "1080p",
-                                                url: stream.url,
-                                                quality: "1080p",
-                                                headers: stream.headers
-                                            }];
-                                        });
-                                }
-
-                                // TV series: get episode
-                                return getDubEpisode(animeId, mappedEpisode, best.url)
-                                    .then(function(ep) {
-                                        if (!ep) {
-                                            console.log("[AnikotoTV] No DUB episode " + mappedEpisode);
-                                            return [];
-                                        }
-                                        console.log("[AnikotoTV] Found episode: " + ep.number);
-                                        return getDubServer(ep.ids, best.url)
-                                            .then(function(linkId) {
-                                                if (!linkId) return [];
-                                                return getEmbed(linkId, best.url);
-                                            })
-                                            .then(function(embed) {
-                                                if (!embed || embed.indexOf("megaplay") === -1) return [];
-                                                return resolveMegaplay(embed);
-                                            })
-                                            .then(function(stream) {
-                                                if (!stream) return [];
-                                                console.log("[AnikotoTV] ✅ Stream found!");
-                                                return [{
-                                                    name: "AnikotoTV",
-                                                    title: "1080p DUB",
-                                                    url: stream.url,
-                                                    quality: "1080p",
-                                                    headers: stream.headers
-                                                }];
-                                            });
-                                    });
-                            });
+                            return getDubServer(ep.ids, best.url)
+                                .then(function(linkId) {
+                                    if (!linkId) return [];
+                                    return getEmbed(linkId, best.url);
+                                })
+                                .then(function(embed) {
+                                    if (!embed || embed.indexOf("megaplay") === -1) return [];
+                                    return resolveMegaplay(embed);
+                                })
+                                .then(function(stream) {
+                                    if (!stream) return [];
+                                    console.log("[AnikotoTV] ✅ Stream found!");
+                                    return [{
+                                        name: "AnikotoTV",
+                                        title: "1080p DUB",
+                                        url: stream.url,
+                                        quality: "1080p",
+                                        headers: stream.headers
+                                    }];
+                                });
                         });
-                    });
                 });
+            });
         })
         .catch(function(err) {
             console.log("[AnikotoTV] Error: " + err.message);
