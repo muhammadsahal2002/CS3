@@ -370,31 +370,39 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
 
   const quality = resolutionToQuality(resolution);
+  const langLabel = (languageInfo || "Unknown").trim();
 
   if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
       let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
-      videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
-      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
+      videoQuality = videoQuality.replace(/^(SD|HD|FHD|UHD|4K)\s+/i, "").trim();
+      
+      const streamName = `Castle [${langLabel}] ${videoQuality}`;
+      
       streams.push({
         name: streamName,
         title: mediaTitle,
         url: video.url || videoUrl,
         quality: videoQuality,
         size: formatSize(video.size),
+        language: langLabel,
+        audio: langLabel,
         headers: PLAYBACK_HEADERS,
         provider: "castle",
         subtitles: subtitles
       });
     }
   } else {
-    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
+    const streamName = `Castle [${langLabel}] ${quality}`;
+    
     streams.push({
       name: streamName,
       title: mediaTitle,
       url: videoUrl,
       quality: quality,
       size: formatSize(data.size),
+      language: langLabel,
+      audio: langLabel,
       headers: PLAYBACK_HEADERS,
       provider: "castle",
       subtitles: subtitles
@@ -452,9 +460,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       let fetchedAny = false;
 
-      // Try each track individually
+      // Try each language track individually
       for (const track of tracks) {
-        const langName = track.languageName || track.abbreviate || "Unknown";
+        const langName = track.languageName || track.abbreviate || track.language || "Unknown";
         const langId = track.languageId;
         if (!langId) continue;
 
@@ -467,14 +475,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               fetchedAny = true;
             }
           } catch (e) {
-            // Silently continue
+            console.warn(`[Castle] Failed: ${langName} @ ${resolutionToQuality(resolution)} → ${e.message}`);
           }
         }
       }
 
-      // Fallback to shared method if no per-track streams
-      if (!fetchedAny) {
-        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+      // Fallback: shared method using first available language
+      if (!fetchedAny && tracks.length > 0) {
+        const allLanguageNames = tracks
+          .map(t => t.languageName || t.abbreviate || t.language || "Unknown")
+          .join(", ");
         const firstTrack = tracks[0];
         const languageId = firstTrack ? firstTrack.languageId : null;
 
@@ -491,50 +501,44 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               allStreams.push(...streams);
             }
           } catch (e) {
-            // Silently continue
+            console.warn(`[Castle] Fallback failed @ ${resolutionToQuality(resolution)} → ${e.message}`);
           }
         }
       }
 
-      // Final fallback: try without any language
+      // Final fallback: no language specified
       if (allStreams.length === 0) {
         for (const resolution of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, "Default");
             if (streams.length > 0) allStreams.push(...streams);
           } catch (e) {
-            // Silently continue
+            console.warn(`[Castle] Final fallback failed @ ${resolutionToQuality(resolution)} → ${e.message}`);
           }
         }
       }
 
-      // ================================================================
-      // 🔥 DEDUPLICATION: Remove duplicates by URL + quality + language
-      // ================================================================
+      // Deduplicate by URL + quality + language
       const seen = new Set();
-      const uniqueStreams = [];
+      const uniqueStreams = allStreams.filter(s => {
+        const key = `\( {s.url}_ \){s.quality}_${s.language || "unknown"}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
-      for (const stream of allStreams) {
-        // Extract language from stream name (e.g., "Castle Hindi - 1080P" → "Hindi")
-        const langMatch = stream.name.match(/Castle\s*(.+?)\s*-\s*/);
-        const lang = langMatch ? langMatch[1].trim() : "unknown";
-        const key = stream.url + "|" + stream.quality + "|" + lang;
-        if (!seen.has(key)) {
-          seen.add(key);
-          uniqueStreams.push(stream);
-        }
-      }
+      // Sort: highest quality first, then language name
+      uniqueStreams.sort((a, b) => {
+        const qualityDiff = getQualityValue(b.quality) - getQualityValue(a.quality);
+        if (qualityDiff !== 0) return qualityDiff;
+        return (a.language || "").localeCompare(b.language || "");
+      });
 
-      // Sort by quality (highest first)
-      if (uniqueStreams.length > 0) {
-        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return uniqueStreams;
-      }
-
-      return [];
+      return uniqueStreams;
 
     } catch (error) {
+      console.error("[Castle] getStreams error:", error.message);
       return [];
     }
   });
