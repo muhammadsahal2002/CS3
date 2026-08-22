@@ -176,7 +176,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(player) {
             if (!player) throw new Error('Failed to get player info');
             return [{
-                name: 'NewTV',
+                name: 'HOTSTAR',
                 title: 'Auto',
                 url: player.video_link,
                 quality: 'Auto',
