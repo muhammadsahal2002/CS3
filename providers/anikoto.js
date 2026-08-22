@@ -116,14 +116,15 @@ function searchAnime(title) {
 
                 results.push({
                     title: t,
-                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
-                    isMovie: /movie|film|special|ova/i.test(t)
+                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href
                 });
             });
 
             if (results.length === 0) return null;
 
             var q = normalize(searchTitle);
+            var qWords = q.split(" ").filter(function(w) { return w.length >= 3; });
+
             var best = null;
             var bestScore = 0;
 
@@ -132,16 +133,20 @@ function searchAnime(title) {
                 var t = normalize(r.title);
                 var score = 0;
 
+                // Exact match only strong accept
                 if (t === q) {
                     score = 100;
-                } else if (t.indexOf(q) !== -1 && q.length >= 4) {
-                    score = 70;
-                } else if (q.indexOf(t) !== -1 && t.length >= 4) {
-                    score = 40;
+                } else if (t.indexOf(q) !== -1 && q.length >= 5) {
+                    // Query fully inside title (e.g. "naruto" inside "naruto shippuuden")
+                    score = 80;
+                } else if (qWords.length > 0) {
+                    // Word overlap
+                    var matches = 0;
+                    for (var w = 0; w < qWords.length; w++) {
+                        if (t.indexOf(qWords[w]) !== -1) matches++;
+                    }
+                    score = Math.round((matches / qWords.length) * 70);
                 }
-
-                // Prefer series slightly for anime site
-                if (!r.isMovie) score += 10;
 
                 if (score > bestScore) {
                     bestScore = score;
@@ -149,9 +154,9 @@ function searchAnime(title) {
                 }
             }
 
-            // IMPORTANT: only accept a real match
-            if (!best || bestScore < 40) {
-                return null;   // ← no Titanic → no wrong video
+            // STRICT: only accept strong matches
+            if (!best || bestScore < 70) {
+                return null;
             }
 
             return best;
