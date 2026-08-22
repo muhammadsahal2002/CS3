@@ -6,18 +6,19 @@
       "id": "castle",
       "name": "Castle",
       "description": "Multi Lang provider",
-      "version": "2.0.0",   
+      "version": "2.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/castle.js",
       "enabled": true,
-      "formats": ["mp4", "m3u8"]
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en", "hi", "ta", "te"]
     },
     {
       "id": "anikoto",
       "name": "AnikotoTV",
       "description": "Anime streams from anikoto.cz (SUB + DUB)",
-      "version": "1.0.0",   
+      "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/anikoto.js",
@@ -25,28 +26,40 @@
       "formats": ["m3u8"],
       "contentLanguage": ["en", "ja"]
     },
-{
+    {
       "id": "hotstar",
       "name": "HotStar",
       "description": "Disney+hotstar",
-      "version": "1.0.0",   
+      "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/hotstar.js",
       "enabled": true,
-      "formats": ["mp4, m3u8"],
+      "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     },
-{
+    {
+      "id": "netflix",
+      "name": "Netflix",
+      "description": "Netflix streaming provider",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/netflix.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
+    },
+    {
       "id": "primevideo",
       "name": "PRIME VIDEO",
       "description": "primevideo + cruncyroll",
-      "version": "1.0.0",   
+      "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/primevideo.js",
       "enabled": true,
-      "formats": ["mp4, m3u8"],
+      "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     }
   ]
