@@ -95,7 +95,13 @@ function searchAnime(title) {
         .replace(/ī/g, "ii")
         .replace(/ē/g, "ee");
 
-    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
+    // Use first strong word for search (Alya, Naruto, etc.)
+    var words = searchTitle.split(/\s+/).filter(function(w) {
+        return w.length >= 4 && !/^(the|and|her|his|for|with|from|that|this)$/i.test(w);
+    });
+    var keyword = words.length ? words[0] : searchTitle;
+
+    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(keyword);
 
     return fetch(url, { headers: headers() })
         .then(function(r) { return r.ok ? r.text() : null; })
@@ -106,42 +112,59 @@ function searchAnime(title) {
             var results = [];
 
             $("div.item").each(function(i, el) {
-                var a = $(el).find("a.name.d-title, a[data-jp]").first();
+                var $el = $(el);
+                var a = $el.find("a.name.d-title, a[data-jp], a[href*='/watch/']").first();
                 if (!a.length) return;
 
-                var href = a.attr("href");
-                var t = (a.attr("data-jp") || a.text() || "").trim();
-                if (!href || !t) return;
+                var href = a.attr("href") || "";
+                var jp = (a.attr("data-jp") || "").trim();
+                var en = (a.text() || "").trim();
+                if (!href) return;
 
                 results.push({
-                    title: t,
+                    title: en || jp,
+                    titleEn: en,
+                    titleJp: jp,
                     url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
-                    isMovie: /movie|film|special|ova/i.test(t)
+                    slug: href.toLowerCase(),
+                    isMovie: /movie|film|special|ova/i.test(en + " " + jp + " " + href)
                 });
             });
 
             if (!results.length) return null;
 
             var q = normalize(searchTitle);
+            var qWords = q.split(" ").filter(function(w) { return w.length >= 3; });
             var best = null;
             var bestScore = 0;
 
             for (var i = 0; i < results.length; i++) {
                 var r = results[i];
-                var t = normalize(r.title);
                 var score = 0;
 
-                if (t === q) {
-                    score = 100;
-                } else if (t.indexOf(q) !== -1 && q.length >= 5) {
-                    score = 80;
-                } else if (q.indexOf(t) !== -1 && t.length >= 5) {
-                    score = 50;
+                var en = normalize(r.titleEn || "");
+                var jp = normalize(r.titleJp || "");
+                var slug = (r.slug || "").replace(/[^a-z0-9]+/g, " ");
+
+                // Exact / contains
+                if (en === q || jp === q) score = 100;
+                else if (en.indexOf(q) !== -1 || jp.indexOf(q) !== -1) score = 90;
+                else if (slug.indexOf(q.replace(/\s+/g, "-")) !== -1) score = 90;
+                else if (slug.indexOf(q.replace(/\s+/g, "")) !== -1) score = 85;
+                else {
+                    // Word overlap on EN + JP + slug
+                    var blob = en + " " + jp + " " + slug;
+                    var matches = 0;
+                    for (var w = 0; w < qWords.length; w++) {
+                        if (blob.indexOf(qWords[w]) !== -1) matches++;
+                    }
+                    if (qWords.length) {
+                        score = Math.round((matches / qWords.length) * 100);
+                    }
                 }
 
-                // Prefer TV series over movies
-                if (r.isMovie) score -= 25;
-                else score += 10;
+                if (r.isMovie) score -= 20;
+                else score += 5;
 
                 if (score > bestScore) {
                     bestScore = score;
@@ -149,27 +172,12 @@ function searchAnime(title) {
                 }
             }
 
-            // Need a real match
-            if (!best || bestScore < 70) return null;
-
+            // Alya: "alya" + "russian" / slug match → high enough
+            if (!best || bestScore < 50) return null;
             return best;
         })
         .catch(function() { return null; });
 }
-function getAnimeId(url) {
-    return fetch(url, { headers: headers() })
-        .then(function(r) { return r.ok ? r.text() : null; })
-        .then(function(html) {
-            if (!html) return null;
-            var $ = cheerio.load(html);
-            var id = $("[data-id]").first().attr("data-id");
-            if (id) return id;
-            var m = html.match(/data-id=["'](\d+)["']/);
-            return m ? m[1] : null;
-        })
-        .catch(function() { return null; });
-}
-
 function getDubEpisode(animeId, episodeNum, referer) {
     var url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
 
