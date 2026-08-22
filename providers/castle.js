@@ -403,6 +403,8 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   return streams;
 }
 
+// Fixed plugin with deduplication – Remove duplicate streams
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     try {
@@ -449,8 +451,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
       const allStreams = [];
       const resolutions = [3, 2, 1]; // 1080p, 720p, 480p
-
-      let fetchedAny = false;
+      const seen = new Set(); // Track unique streams
 
       // Try each track individually
       for (const track of tracks) {
@@ -462,9 +463,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution, langId);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, langName);
-            if (streams.length > 0) {
-              allStreams.push(...streams);
-              fetchedAny = true;
+            
+            // Only add if not seen before
+            for (const stream of streams) {
+              const key = stream.url + "|" + stream.quality + "|" + langName;
+              if (!seen.has(key)) {
+                seen.add(key);
+                allStreams.push(stream);
+              }
             }
           } catch (e) {
             // Silently continue
@@ -473,10 +479,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }
 
       // Fallback to shared method if no per-track streams
-      if (!fetchedAny) {
-        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
+      if (allStreams.length === 0) {
         const firstTrack = tracks[0];
         const languageId = firstTrack ? firstTrack.languageId : null;
+        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
 
         for (const resolution of resolutions) {
           try {
@@ -487,8 +493,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             }
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, allLanguageNames);
-            if (streams.length > 0) {
-              allStreams.push(...streams);
+            
+            for (const stream of streams) {
+              const key = stream.url + "|" + stream.quality + "|" + allLanguageNames;
+              if (!seen.has(key)) {
+                seen.add(key);
+                allStreams.push(stream);
+              }
             }
           } catch (e) {
             // Silently continue
@@ -502,30 +513,34 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
             const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
-            if (streams.length > 0) allStreams.push(...streams);
+            
+            for (const stream of streams) {
+              const key = stream.url + "|" + stream.quality + "|unknown";
+              if (!seen.has(key)) {
+                seen.add(key);
+                allStreams.push(stream);
+              }
+            }
           } catch (e) {
             // Silently continue
           }
         }
       }
 
-      // Deduplicate by URL + quality + language
-      const seen = new Set();
-      const uniqueStreams = allStreams.filter(s => {
-        const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
-        const lang = langMatch ? langMatch[1].trim() : "unknown";
-        const key = s.url + "_" + s.quality + "_" + lang;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
+      // Sort by quality (highest first)
+      allStreams.sort((a, b) => {
+        const getQuality = (q) => {
+          if (!q) return 0;
+          if (q.includes("1080")) return 4;
+          if (q.includes("720")) return 3;
+          if (q.includes("480")) return 2;
+          if (q.includes("Auto")) return 1;
+          return 0;
+        };
+        return getQuality(b.quality) - getQuality(a.quality);
       });
 
-      if (uniqueStreams.length > 0) {
-        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
-        return uniqueStreams;
-      }
-
-      return [];
+      return allStreams;
 
     } catch (error) {
       return [];
