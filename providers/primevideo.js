@@ -10,7 +10,7 @@ var CONFIG = {
     REFERER: "https://net52.cc",
     UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
     USERTOKEN: "",
-    OTT: "nf"
+    OTT: "pv"
 };
 
 // Add this after your CONFIG definition
