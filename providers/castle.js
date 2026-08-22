@@ -343,42 +343,6 @@ function resolutionToQuality(resolution) {
 }
 
 // ====================== PROCESS VIDEO ======================
-
-
-// ====================== HELPERS ======================
-function resolutionToQuality(resolution) {
-  const map = {
-    1: "480p",
-    2: "720p",
-    3: "1080p",
-    4: "2160p",   // 4K
-    5: "1440p",
-    6: "360p",
-    7: "240p"
-  };
-  return map[resolution] || `${resolution}p`;
-}
-
-function getQualityValue(quality) {
-  if (!quality) return 0;
-  const clean = quality.toString().toLowerCase()
-    .replace(/^(sd|hd|fhd|uhd|4k)\s*/i, "")
-    .replace(/p$/, "")
-    .trim();
-  const map = {
-    "4k": 2160, "2160": 2160,
-    "1440": 1440,
-    "1080": 1080,
-    "720": 720,
-    "480": 480,
-    "360": 360,
-    "240": 240
-  };
-  if (map[clean]) return map[clean];
-  const num = parseInt(clean);
-  return isNaN(num) ? 0 : num;
-}
-
 function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resolution, languageInfo) {
   const streams = [];
   const data = extractDataBlock(videoData);
@@ -400,61 +364,42 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
   }
 
   let mediaTitle = mediaInfo.title || "Unknown";
-  if (mediaInfo.year) mediaTitle += ` (${mediaInfo.year})`;
+  if (mediaInfo.year) mediaTitle += " (" + mediaInfo.year + ")";
   if (seasonNum && episodeNum) {
-    mediaTitle = `\( {mediaInfo.title} S \){String(seasonNum).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
+    mediaTitle = mediaInfo.title + " S" + String(seasonNum).padStart(2, "0") + "E" + String(episodeNum).padStart(2, "0");
   }
 
-  const fallbackQuality = resolutionToQuality(resolution);
-  const langLabel = (languageInfo || "Unknown").trim();
+  const quality = resolutionToQuality(resolution);
 
-  // Prefer the videos array (this is where multiple resolutions usually appear)
-  if (data.videos && Array.isArray(data.videos) && data.videos.length > 0) {
+  if (data.videos && Array.isArray(data.videos)) {
     for (const video of data.videos) {
-      let videoQuality = (
-        video.resolutionDescription ||
-        video.resolution ||
-        video.quality ||
-        fallbackQuality
-      ).toString();
-
-      // Clean common prefixes
-      videoQuality = videoQuality
-        .replace(/^(SD|HD|FHD|UHD|4K)\s+/i, "")
-        .trim();
-
-      const streamName = `Castle [${langLabel}] ${videoQuality}`;
-
+      let videoQuality = (video.resolutionDescription || video.resolution || quality).toString();
+      videoQuality = videoQuality.replace(/^(SD|HD|FHD)\s+/i, "");
+      const streamName = languageInfo ? "Castle " + languageInfo + " - " + videoQuality : "Castle - " + videoQuality;
       streams.push({
         name: streamName,
         title: mediaTitle,
         url: video.url || videoUrl,
         quality: videoQuality,
         size: formatSize(video.size),
-        language: langLabel,
-        audio: langLabel,
         headers: PLAYBACK_HEADERS,
         provider: "castle",
-        subtitles
+        subtitles: subtitles
       });
     }
   } else {
-    // Single stream fallback
-    const streamName = `Castle [${langLabel}] ${fallbackQuality}`;
+    const streamName = languageInfo ? "Castle " + languageInfo + " - " + quality : "Castle - " + quality;
     streams.push({
       name: streamName,
       title: mediaTitle,
       url: videoUrl,
-      quality: fallbackQuality,
+      quality: quality,
       size: formatSize(data.size),
-      language: langLabel,
-      audio: langLabel,
       headers: PLAYBACK_HEADERS,
       provider: "castle",
-      subtitles
+      subtitles: subtitles
     });
   }
-
   return streams;
 }
 
@@ -503,13 +448,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       const tracks = episode?.tracks || [];
 
       const allStreams = [];
-      const resolutions = [ 2]; // 1080p, 720p, 480p
+      const resolutions = [2]; // 1080p, 720p, 480p
 
       let fetchedAny = false;
 
-      // Try each language track individually
+      // Try each track individually
       for (const track of tracks) {
-        const langName = track.languageName || track.abbreviate || track.language || "Unknown";
+        const langName = track.languageName || track.abbreviate || "Unknown";
         const langId = track.languageId;
         if (!langId) continue;
 
@@ -522,16 +467,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               fetchedAny = true;
             }
           } catch (e) {
-            console.warn(`[Castle] Failed: ${langName} @ ${resolutionToQuality(resolution)} → ${e.message}`);
+            // Silently continue
           }
         }
       }
 
-      // Fallback: shared method using first available language
-      if (!fetchedAny && tracks.length > 0) {
-        const allLanguageNames = tracks
-          .map(t => t.languageName || t.abbreviate || t.language || "Unknown")
-          .join(", ");
+      // Fallback to shared method if no per-track streams
+      if (!fetchedAny) {
+        const allLanguageNames = tracks.map(t => t.languageName || t.abbreviate || "Unknown").join(", ");
         const firstTrack = tracks[0];
         const languageId = firstTrack ? firstTrack.languageId : null;
 
@@ -548,20 +491,20 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               allStreams.push(...streams);
             }
           } catch (e) {
-            console.warn(`[Castle] Fallback failed @ ${resolutionToQuality(resolution)} → ${e.message}`);
+            // Silently continue
           }
         }
       }
 
-      // Final fallback: no language specified
+      // Final fallback: try without any language
       if (allStreams.length === 0) {
         for (const resolution of resolutions) {
           try {
             const videoData = yield getVideo2(securityKey, currentMovieId, episodeId, resolution);
-            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution, "Default");
+            const streams = processVideoResponse(videoData, tmdbInfo, seasonNum, episodeNum, resolution);
             if (streams.length > 0) allStreams.push(...streams);
           } catch (e) {
-            console.warn(`[Castle] Final fallback failed @ ${resolutionToQuality(resolution)} → ${e.message}`);
+            // Silently continue
           }
         }
       }
@@ -569,23 +512,22 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       // Deduplicate by URL + quality + language
       const seen = new Set();
       const uniqueStreams = allStreams.filter(s => {
-        const key = `\( {s.url}_ \){s.quality}_${s.language || "unknown"}`;
+        const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
+        const lang = langMatch ? langMatch[1].trim() : "unknown";
+        const key = s.url + "_" + s.quality + "_" + lang;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
 
-      // Sort: highest quality first, then language name
-      uniqueStreams.sort((a, b) => {
-        const qualityDiff = getQualityValue(b.quality) - getQualityValue(a.quality);
-        if (qualityDiff !== 0) return qualityDiff;
-        return (a.language || "").localeCompare(b.language || "");
-      });
+      if (uniqueStreams.length > 0) {
+        uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
+        return uniqueStreams;
+      }
 
-      return uniqueStreams;
+      return [];
 
     } catch (error) {
-      console.error("[Castle] getStreams error:", error.message);
       return [];
     }
   });
