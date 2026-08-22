@@ -509,17 +509,24 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
       }
 
-      // Deduplicate by URL + quality + language
+      // ================================================================
+      // 🔥 DEDUPLICATION: Remove duplicates by URL + quality + language
+      // ================================================================
       const seen = new Set();
-      const uniqueStreams = allStreams.filter(s => {
-        const langMatch = s.name.match(/Castle\s*(.+?)\s*-\s*/);
-        const lang = langMatch ? langMatch[1].trim() : "unknown";
-        const key = s.url + "_" + s.quality + "_" + lang;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+      const uniqueStreams = [];
 
+      for (const stream of allStreams) {
+        // Extract language from stream name (e.g., "Castle Hindi - 1080P" → "Hindi")
+        const langMatch = stream.name.match(/Castle\s*(.+?)\s*-\s*/);
+        const lang = langMatch ? langMatch[1].trim() : "unknown";
+        const key = stream.url + "|" + stream.quality + "|" + lang;
+        if (!seen.has(key)) {
+          seen.add(key);
+          uniqueStreams.push(stream);
+        }
+      }
+
+      // Sort by quality (highest first)
       if (uniqueStreams.length > 0) {
         uniqueStreams.sort((a, b) => getQualityValue(b.quality) - getQualityValue(a.quality));
         return uniqueStreams;
