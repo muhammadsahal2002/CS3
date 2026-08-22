@@ -366,6 +366,7 @@ function normalizeForMatching(str) {
         .replace(/\s+/g, " ")
         .trim();
 }
+}
 function getDubServer(ids, referer) {
     var url = CONFIG.BASE_URL + "/ajax/server/list?servers=" + encodeURIComponent(ids);
 
