@@ -55,7 +55,6 @@ function normalize(str) {
         .replace(/\s+/g, " ")
         .trim();
 }
-
 function getImdbId(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
         "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
@@ -166,26 +165,12 @@ function searchAnime(title) {
                 }
             }
 
+            // No blind results[0]
             if (!best || bestScore < 50) return null;
             return best;
         })
         .catch(function() { return null; });
 }
-
-function getAnimeId(pageUrl) {
-    return fetch(pageUrl, { headers: headers() })
-        .then(function(r) { return r.ok ? r.text() : null; })
-        .then(function(html) {
-            if (!html) return null;
-            var $ = cheerio.load(html);
-            var id = $("[data-id]").first().attr("data-id");
-            if (id) return id;
-            var m = html.match(/data-id=["'](\d+)["']/);
-            return m ? m[1] : null;
-        })
-        .catch(function() { return null; });
-}
-
 function getDubEpisode(animeId, episodeNum, referer) {
     var url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
     return fetch(url, { headers: ajaxHeaders(referer) })
