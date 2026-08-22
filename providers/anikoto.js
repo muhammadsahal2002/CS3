@@ -1,7 +1,7 @@
 /**
  * AnikotoTV Provider for Nuvio
  * DUB only
- * Fixed: Proper search with minimum score threshold
+ * Fixed: Balanced search with proper matching
  */
 
 "use strict";
@@ -121,11 +121,16 @@ function searchAnime(title) {
                 });
             });
 
-            if (results.length === 0) return null;
+            if (results.length === 0) {
+                console.log("[AnikotoTV] No search results for: " + title);
+                return null;
+            }
 
             var q = normalize(searchTitle);
             var best = null;
             var bestScore = -999;
+            var secondBest = null;
+            var secondScore = -999;
 
             for (var i = 0; i < results.length; i++) {
                 var r = results[i];
@@ -154,38 +159,72 @@ function searchAnime(title) {
                     var matchCount = 0;
                     var totalWords = words.length;
                     for (var w = 0; w < words.length; w++) {
-                        if (words[w] && t.indexOf(words[w]) !== -1) {
+                        if (words[w] && words[w].length > 2 && t.indexOf(words[w]) !== -1) {
                             matchCount++;
                         }
                     }
                     if (matchCount > 0) {
-                        score = Math.round((matchCount / totalWords) * 40);
+                        score = Math.round((matchCount / Math.max(totalWords, 1)) * 35);
                     }
                 }
 
-                // Prefer TV series over movies (unless searching for a movie)
+                // Prefer TV series over movies
                 if (!r.isMovie) score += 5;
                 if (r.isMovie) score -= 10;
 
+                // Track best and second best
                 if (score > bestScore) {
+                    secondBest = best;
+                    secondScore = bestScore;
                     bestScore = score;
                     best = r;
+                } else if (score > secondScore) {
+                    secondScore = score;
+                    secondBest = r;
                 }
             }
 
             // ============================================================
-            // 🚨 CRITICAL: Minimum score threshold
-            // If best score is below 30, it's not a good match
+            // 🎯 Balanced threshold logic
             // ============================================================
-            if (bestScore < 30) {
-                console.log("[AnikotoTV] No good match found for: " + title + " (best score: " + bestScore + ")");
-                return null;
+            
+            // If best score is very high, return it
+            if (bestScore >= 70) {
+                console.log("[AnikotoTV] ✅ Strong match: " + best.title + " (score: " + bestScore + ")");
+                return best;
             }
 
-            console.log("[AnikotoTV] Best match: " + best.title + " (score: " + bestScore + ")");
-            return best;
+            // If best score is moderate and second best is significantly lower
+            if (bestScore >= 40 && (bestScore - secondScore) > 20) {
+                console.log("[AnikotoTV] ✅ Moderate match: " + best.title + " (score: " + bestScore + ")");
+                return best;
+            }
+
+            // If best score is low but there are very few results (1-3)
+            if (results.length <= 3 && bestScore >= 25) {
+                console.log("[AnikotoTV] ⚠️ Limited results, using best: " + best.title + " (score: " + bestScore + ")");
+                return best;
+            }
+
+            // If we have a title that starts with the search query
+            if (bestScore >= 30) {
+                var normalizedBest = normalize(best.title);
+                var normalizedQuery = normalize(searchTitle);
+                if (normalizedBest.indexOf(normalizedQuery) !== -1 || 
+                    normalizedQuery.indexOf(normalizedBest) !== -1) {
+                    console.log("[AnikotoTV] ✅ Partial match: " + best.title + " (score: " + bestScore + ")");
+                    return best;
+                }
+            }
+
+            // If all else fails, return null (no good match)
+            console.log("[AnikotoTV] ❌ No good match found for: " + title + " (best score: " + bestScore + ")");
+            return null;
         })
-        .catch(function() { return null; });
+        .catch(function(err) {
+            console.log("[AnikotoTV] Search error: " + err.message);
+            return null;
+        });
 }
 
 function getAnimeId(url) {
@@ -306,7 +345,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     return getTitle(tmdbId, mediaType)
         .then(function(title) {
-            if (!title) return [];
+            if (!title) {
+                console.log("[AnikotoTV] No title found for TMDB ID: " + tmdbId);
+                return [];
+            }
+            console.log("[AnikotoTV] Searching for: " + title);
 
             return getImdbId(tmdbId, mediaType)
                 .then(function(imdbId) {
@@ -319,32 +362,52 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return mappingPromise.then(function(mapping) {
                         if (mapping && mapping.mal_episode) {
                             mappedEpisode = mapping.mal_episode;
+                            console.log("[AnikotoTV] Mapped episode: " + episode + " → " + mappedEpisode);
                         }
 
                         return searchAnime(title).then(function(best) {
                             if (!best) {
-                                console.log("[AnikotoTV] No matching anime found for: " + title);
+                                console.log("[AnikotoTV] No match found for: " + title);
                                 return [];
                             }
 
+                            console.log("[AnikotoTV] Using: " + best.title + " (URL: " + best.url + ")");
+
                             return getAnimeId(best.url).then(function(animeId) {
-                                if (!animeId) return [];
+                                if (!animeId) {
+                                    console.log("[AnikotoTV] Could not get anime ID");
+                                    return [];
+                                }
+                                console.log("[AnikotoTV] Anime ID: " + animeId);
 
                                 return getDubEpisode(animeId, mappedEpisode, best.url)
                                     .then(function(ep) {
-                                        if (!ep) return [];
+                                        if (!ep) {
+                                            console.log("[AnikotoTV] No DUB episode " + mappedEpisode + " found");
+                                            return [];
+                                        }
 
                                         return getDubServer(ep.ids, best.url)
                                             .then(function(linkId) {
-                                                if (!linkId) return [];
+                                                if (!linkId) {
+                                                    console.log("[AnikotoTV] No DUB server found");
+                                                    return [];
+                                                }
                                                 return getEmbed(linkId, best.url);
                                             })
                                             .then(function(embed) {
-                                                if (!embed || embed.indexOf("megaplay") === -1) return [];
+                                                if (!embed || embed.indexOf("megaplay") === -1) {
+                                                    console.log("[AnikotoTV] No Megaplay embed found");
+                                                    return [];
+                                                }
                                                 return resolveMegaplay(embed);
                                             })
                                             .then(function(stream) {
-                                                if (!stream) return [];
+                                                if (!stream) {
+                                                    console.log("[AnikotoTV] No stream found");
+                                                    return [];
+                                                }
+                                                console.log("[AnikotoTV] ✅ Stream found!");
                                                 return [{
                                                     name: "AnikotoTV",
                                                     title: "1080p DUB",
