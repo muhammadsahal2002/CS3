@@ -1,7 +1,7 @@
 /**
  * AnikotoTV Provider for Nuvio
  * DUB only
- * Fixed: Balanced search with proper matching
+ * Fixed: Uses correct Ajax search API
  */
 
 "use strict";
@@ -13,13 +13,13 @@ var CONFIG = {
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
     MAPPING_API: "https://id-mapping-api-malid.hf.space/api/resolve",
-    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
+    USER_AGENT: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Stargon/6.4.3 Chrome/151.0.7922.85 Mobile Safari/537.36"
 };
 
 function headers(extra) {
     var h = {
         "User-Agent": CONFIG.USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9"
     };
     if (extra) {
@@ -33,7 +33,8 @@ function ajaxHeaders(referer) {
         "User-Agent": CONFIG.USER_AGENT,
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Referer": referer || CONFIG.BASE_URL
+        "Referer": referer || CONFIG.BASE_URL,
+        "Cookie": "country_code=BD"
     };
 }
 
@@ -87,6 +88,9 @@ function resolveMapping(imdbId, season, episode) {
         .catch(function() { return null; });
 }
 
+// ============================================================
+// 🔥 FIXED: Uses the correct Ajax search API
+// ============================================================
 function searchAnime(title) {
     var searchTitle = String(title || "")
         .replace(/ū/g, "uu")
@@ -95,66 +99,73 @@ function searchAnime(title) {
         .replace(/ī/g, "ii")
         .replace(/ē/g, "ee");
 
-    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
+    // ✅ CORRECT API endpoint (from your capture)
+    var url = CONFIG.BASE_URL + "/ajax/anime/search?keyword=" + encodeURIComponent(searchTitle);
 
-    return fetch(url, { headers: headers() })
-        .then(function(r) { return r.ok ? r.text() : null; })
-        .then(function(html) {
-            if (!html) return null;
+    console.log("[AnikotoTV] Searching: " + searchTitle);
+
+    return fetch(url, { headers: ajaxHeaders() })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || data.status !== 200 || !data.result) {
+                console.log("[AnikotoTV] Search API returned no results");
+                return null;
+            }
+
+            // Parse the HTML from result.html
+            var html = data.result.html;
+            if (!html) {
+                console.log("[AnikotoTV] No HTML in search results");
+                return null;
+            }
 
             var $ = cheerio.load(html);
             var results = [];
 
-            $("div.item").each(function(i, el) {
+            $("a.item").each(function(i, el) {
                 var $el = $(el);
-                var a = $el.find("a.name.d-title, a[data-jp]").first();
-                if (!a.length) return;
+                var href = $el.attr("href");
+                var nameEl = $el.find(".name.d-title");
+                var title = nameEl.text().trim();
+                var jpTitle = nameEl.attr("data-jp") || null;
 
-                var href = a.attr("href");
-                var t = (a.attr("data-jp") || a.text() || "").trim();
-                if (!href || !t) return;
-
-                results.push({
-                    title: t,
-                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
-                    isMovie: /movie|film|special|ova/i.test(t)
-                });
+                if (href && title) {
+                    results.push({
+                        title: title,
+                        jpTitle: jpTitle,
+                        url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
+                        isMovie: /movie|film|special|ova/i.test(title)
+                    });
+                }
             });
 
             if (results.length === 0) {
-                console.log("[AnikotoTV] No search results for: " + title);
+                console.log("[AnikotoTV] No results parsed from HTML");
                 return null;
             }
+
+            console.log("[AnikotoTV] Found " + results.length + " results");
 
             var q = normalize(searchTitle);
             var best = null;
             var bestScore = -999;
-            var secondBest = null;
-            var secondScore = -999;
 
             for (var i = 0; i < results.length; i++) {
                 var r = results[i];
                 var t = normalize(r.title);
+                var jp = r.jpTitle ? normalize(r.jpTitle) : null;
                 var score = 0;
 
-                // EXACT MATCH - highest priority
+                // Check title match
                 if (t === q) {
                     score = 100;
-                }
-                // Title STARTS WITH search query
-                else if (t.indexOf(q) === 0) {
+                } else if (t.indexOf(q) === 0) {
                     score = 85;
-                }
-                // Title contains search query
-                else if (t.indexOf(q) !== -1) {
+                } else if (t.indexOf(q) !== -1) {
                     score = 60;
-                }
-                // Search query contains title (partial match)
-                else if (q.indexOf(t) !== -1) {
+                } else if (q.indexOf(t) !== -1) {
                     score = 30;
-                }
-                // Word-by-word matching
-                else {
+                } else {
                     var words = q.split(" ");
                     var matchCount = 0;
                     var totalWords = words.length;
@@ -168,58 +179,26 @@ function searchAnime(title) {
                     }
                 }
 
-                // Prefer TV series over movies
-                if (!r.isMovie) score += 5;
-                if (r.isMovie) score -= 10;
+                // Bonus for Japanese title match
+                if (jp) {
+                    if (jp === q) score = Math.max(score, 90);
+                    else if (jp.indexOf(q) !== -1) score = Math.max(score, 70);
+                }
 
-                // Track best and second best
                 if (score > bestScore) {
-                    secondBest = best;
-                    secondScore = bestScore;
                     bestScore = score;
                     best = r;
-                } else if (score > secondScore) {
-                    secondScore = score;
-                    secondBest = r;
                 }
             }
 
-            // ============================================================
-            // 🎯 Balanced threshold logic
-            // ============================================================
-            
-            // If best score is very high, return it
-            if (bestScore >= 70) {
-                console.log("[AnikotoTV] ✅ Strong match: " + best.title + " (score: " + bestScore + ")");
-                return best;
+            // Minimum score threshold
+            if (bestScore < 25) {
+                console.log("[AnikotoTV] No good match (best score: " + bestScore + ")");
+                return null;
             }
 
-            // If best score is moderate and second best is significantly lower
-            if (bestScore >= 40 && (bestScore - secondScore) > 20) {
-                console.log("[AnikotoTV] ✅ Moderate match: " + best.title + " (score: " + bestScore + ")");
-                return best;
-            }
-
-            // If best score is low but there are very few results (1-3)
-            if (results.length <= 3 && bestScore >= 25) {
-                console.log("[AnikotoTV] ⚠️ Limited results, using best: " + best.title + " (score: " + bestScore + ")");
-                return best;
-            }
-
-            // If we have a title that starts with the search query
-            if (bestScore >= 30) {
-                var normalizedBest = normalize(best.title);
-                var normalizedQuery = normalize(searchTitle);
-                if (normalizedBest.indexOf(normalizedQuery) !== -1 || 
-                    normalizedQuery.indexOf(normalizedBest) !== -1) {
-                    console.log("[AnikotoTV] ✅ Partial match: " + best.title + " (score: " + bestScore + ")");
-                    return best;
-                }
-            }
-
-            // If all else fails, return null (no good match)
-            console.log("[AnikotoTV] ❌ No good match found for: " + title + " (best score: " + bestScore + ")");
-            return null;
+            console.log("[AnikotoTV] Best match: " + best.title + " (score: " + bestScore + ")");
+            return best;
         })
         .catch(function(err) {
             console.log("[AnikotoTV] Search error: " + err.message);
@@ -228,6 +207,9 @@ function searchAnime(title) {
 }
 
 function getAnimeId(url) {
+    // If we already have the URL, we need to extract the anime ID from it
+    // The URL format is: https://anikoto.cz/watch/anime-name-xxxxx
+    // We can either fetch the page or extract from URL pattern
     return fetch(url, { headers: headers() })
         .then(function(r) { return r.ok ? r.text() : null; })
         .then(function(html) {
@@ -349,7 +331,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 console.log("[AnikotoTV] No title found for TMDB ID: " + tmdbId);
                 return [];
             }
-            console.log("[AnikotoTV] Searching for: " + title);
+            console.log("[AnikotoTV] Title: " + title);
 
             return getImdbId(tmdbId, mediaType)
                 .then(function(imdbId) {
