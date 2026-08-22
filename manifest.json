@@ -35,6 +35,7 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/hotstar.js",
       "enabled": true,
+      "hasSettings": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     },
@@ -60,6 +61,7 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/primevideo.js",
       "enabled": true,
+      "hasSettings": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     }
