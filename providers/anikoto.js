@@ -1,7 +1,7 @@
 /**
  * AnikotoTV Provider for Nuvio
  * DUB only
- * Uses MAL mapping API for correct episode numbers
+ * Fixed search: short keyword + EN/JP/slug scoring
  */
 
 "use strict";
@@ -40,7 +40,18 @@ function ajaxHeaders(referer) {
 function normalize(str) {
     return String(str || "")
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/ū/g, "u")
+        .replace(/ō/g, "o")
+        .replace(/ā/g, "a")
+        .replace(/ī/g, "i")
+        .replace(/ē/g, "e")
+        .replace(/uu/g, "u")
+        .replace(/ou/g, "o")
+        .replace(/aa/g, "a")
+        .replace(/ii/g, "i")
+        .replace(/ee/g, "e")
+        .replace(/-/g, " ")
+        .replace(/[^a-z0-9\s]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
 }
@@ -48,19 +59,15 @@ function normalize(str) {
 function getImdbId(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
         "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
-
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            return data && data.imdb_id ? data.imdb_id : null;
-        })
+        .then(function(data) { return data && data.imdb_id ? data.imdb_id : null; })
         .catch(function() { return null; });
 }
 
 function getTitle(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
         "?api_key=" + CONFIG.TMDB_API_KEY;
-
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -77,7 +84,6 @@ function resolveMapping(imdbId, season, episode) {
         "?id=" + encodeURIComponent(imdbId) +
         "&s=" + season +
         "&e=" + episode;
-
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -87,61 +93,16 @@ function resolveMapping(imdbId, season, episode) {
         .catch(function() { return null; });
 }
 
-function searchAnime(title, year) {
-    // Step 1: Normalize the search title
-    var searchTitle = String(title || "")
-        // Replace common separators with space
-        .replace(/[:\-–—]/g, " ")
-        // Remove parenthetical content (like (TV), (movie), etc.)
-        .replace(/\([^)]*\)/g, "")
-        // Remove special characters but keep letters, numbers, and spaces
-        .replace(/[^a-zA-Z0-9\s]/g, "")
-        // Normalize multiple spaces
-        .replace(/\s+/g, " ")
-        .trim();
-    
-    // If title is empty after normalization, use original
-    if (!searchTitle) searchTitle = String(title || "").trim();
-    
-    // Create search variations
-    var searchQueries = [searchTitle];
-    
-    // If title has multiple words, try first 3 words (removes extra descriptors)
-    var words = searchTitle.split(/\s+/);
-    if (words.length > 3) {
-        searchQueries.push(words.slice(0, 3).join(" "));
-    }
-    
-    // Try without common suffixes
-    var suffixes = ["the", "anime", "series", "show", "tv", "movie"];
-    var titleNoSuffix = searchTitle;
-    for (var i = 0; i < suffixes.length; i++) {
-        var suffix = suffixes[i];
-        if (titleNoSuffix.toLowerCase().endsWith(" " + suffix)) {
-            titleNoSuffix = titleNoSuffix.substring(0, titleNoSuffix.length - suffix.length - 1).trim();
-            break;
-        }
-    }
-    if (titleNoSuffix !== searchTitle && titleNoSuffix.length > 3) {
-        searchQueries.push(titleNoSuffix);
-    }
-    
-    // Remove duplicates
-    searchQueries = searchQueries.filter(function(q, i) { 
-        return q && searchQueries.indexOf(q) === i; 
+function searchAnime(title) {
+    var searchTitle = String(title || "");
+    var words = searchTitle.split(/\s+/).filter(function(w) {
+        return w.length >= 4 &&
+            !/^(the|and|her|his|for|with|from|that|this|hides|feelings)$/i.test(w);
     });
-    
-    // If year is provided, try searching with year
-    if (year) {
-        searchQueries.push(searchTitle + " " + year);
-        if (titleNoSuffix !== searchTitle) {
-            searchQueries.push(titleNoSuffix + " " + year);
-        }
-    }
-    
-    // Try first query
-    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchQueries[0]);
-    
+    var keyword = words[0] || searchTitle;
+
+    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(keyword);
+
     return fetch(url, { headers: headers() })
         .then(function(r) { return r.ok ? r.text() : null; })
         .then(function(html) {
@@ -151,225 +112,103 @@ function searchAnime(title, year) {
             var results = [];
 
             $("div.item").each(function(i, el) {
-                var $el = $(el);
-                var a = $el.find("a.name.d-title, a[data-jp]").first();
+                var a = $(el).find("a.name.d-title, a[data-jp], a[href*='/watch/']").first();
                 if (!a.length) return;
-
-                var href = a.attr("href");
-                var t = (a.attr("data-jp") || a.text() || "").trim();
-                var type = $el.find(".type").text().trim() || "";
-                
-                if (!href || !t) return;
-
+                var href = a.attr("href") || "";
+                var jp = (a.attr("data-jp") || "").trim();
+                var en = (a.text() || "").trim();
+                if (!href) return;
                 results.push({
-                    title: t,
-                    titleNormalized: normalizeForMatching(t),
+                    title: en || jp,
+                    en: en,
+                    jp: jp,
                     url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
-                    isMovie: /movie|film|special|ova/i.test(t) || /movie|film|special|ova/i.test(type),
-                    type: type
+                    slug: href.toLowerCase()
                 });
             });
 
-            if (results.length === 0) return null;
+            if (!results.length) return null;
 
-            // Normalize search title for matching
-            var searchNormalized = normalizeForMatching(searchTitle);
-            
-            // First pass: Try exact title match (case insensitive, normalized)
-            var exactMatch = null;
+            var q = normalize(searchTitle);
+            var qWords = q.split(" ").filter(function(w) { return w.length >= 3; });
+            var best = null;
+            var bestScore = 0;
+
             for (var i = 0; i < results.length; i++) {
                 var r = results[i];
-                if (r.titleNormalized === searchNormalized) {
-                    exactMatch = r;
-                    break;
-                }
-            }
-            
-            if (exactMatch) return exactMatch;
-
-            // Second pass: Try contains match with scoring
-            var bestMatch = null;
-            var bestScore = -999;
-            
-            for (var i = 0; i < results.length; i++) {
-                var r = results[i];
+                var en = normalize(r.en);
+                var jp = normalize(r.jp);
+                var slug = (r.slug || "").replace(/[^a-z0-9]+/g, " ");
+                var blob = en + " " + jp + " " + slug;
                 var score = 0;
-                
-                // Check if search term is in result or vice versa
-                if (r.titleNormalized.indexOf(searchNormalized) !== -1) {
-                    score = 50;
-                } else if (searchNormalized.indexOf(r.titleNormalized) !== -1) {
-                    score = 40;
-                }
-                
-                // Check word overlap
-                if (score === 0) {
-                    var searchWords = searchNormalized.split(/\s+/);
-                    var resultWords = r.titleNormalized.split(/\s+/);
-                    var overlap = 0;
-                    
-                    for (var wi = 0; wi < searchWords.length; wi++) {
-                        var word = searchWords[wi];
-                        if (word.length > 2 && resultWords.indexOf(word) !== -1) {
-                            overlap++;
-                        }
+
+                if (en === q || jp === q) {
+                    score = 100;
+                } else if (q.length >= 5 && (en.indexOf(q) !== -1 || jp.indexOf(q) !== -1)) {
+                    score = 90;
+                } else {
+                    var matches = 0;
+                    for (var w = 0; w < qWords.length; w++) {
+                        if (blob.indexOf(qWords[w]) !== -1) matches++;
                     }
-                    
-                    if (overlap > 0) {
-                        score = overlap * 10 + Math.min(searchWords.length, resultWords.length) * 5;
+                    if (qWords.length) {
+                        score = Math.round((matches / qWords.length) * 100);
                     }
                 }
-                
-                // Bonus for matching length
-                if (score > 0) {
-                    var lengthDiff = Math.abs(r.titleNormalized.length - searchNormalized.length);
-                    score += Math.max(0, 15 - lengthDiff);
-                    
-                    // Bonus if title length is similar
-                    var wordDiff = Math.abs(r.titleNormalized.split(/\s+/).length - searchNormalized.split(/\s+/).length);
-                    score += Math.max(0, 10 - wordDiff * 2);
-                    
-                    // Bonus if year matches
-                    if (year && r.title.indexOf(year) !== -1) {
-                        score += 30;
-                    }
-                    
-                    // Bonus for TV shows (not movies)
-                    if (!r.isMovie) score += 15;
-                    if (r.isMovie) score -= 25;
+
+                if (normalize(keyword) && blob.indexOf(normalize(keyword)) !== -1) {
+                    score += 15;
                 }
-                
+
                 if (score > bestScore) {
                     bestScore = score;
-                    bestMatch = r;
+                    best = r;
                 }
             }
-            
-            // Return match if score is high enough
-            if (bestMatch && bestScore >= 15) {
-                return bestMatch;
-            }
-            
-            // Third pass: Try alternative search queries
-            var fallbackPromise = null;
-            for (var qIdx = 1; qIdx < searchQueries.length && qIdx < 3; qIdx++) {
-                var altQuery = searchQueries[qIdx];
-                if (!altQuery || altQuery === searchQueries[0]) continue;
-                
-                var altUrl = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(altQuery);
-                
-                (function(altQ, altUrl) {
-                    if (!fallbackPromise) {
-                        fallbackPromise = fetch(altUrl, { headers: headers() })
-                            .then(function(r) { return r.ok ? r.text() : null; })
-                            .then(function(html) {
-                                if (!html) return null;
-                                
-                                var $alt = cheerio.load(html);
-                                var altResults = [];
-                                
-                                $alt("div.item").each(function(i, el) {
-                                    var $el = $(el);
-                                    var a = $el.find("a.name.d-title, a[data-jp]").first();
-                                    if (!a.length) return;
-                                    
-                                    var href = a.attr("href");
-                                    var t = (a.attr("data-jp") || a.text() || "").trim();
-                                    if (!href || !t) return;
-                                    
-                                    altResults.push({
-                                        title: t,
-                                        titleNormalized: normalizeForMatching(t),
-                                        url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
-                                        isMovie: /movie|film|special|ova/i.test(t)
-                                    });
-                                });
-                                
-                                if (altResults.length === 0) return null;
-                                
-                                var altNormalized = normalizeForMatching(altQ);
-                                var altBest = null;
-                                var altBestScore = -999;
-                                
-                                for (var ai = 0; ai < altResults.length; ai++) {
-                                    var ar = altResults[ai];
-                                    var score = 0;
-                                    
-                                    if (ar.titleNormalized === altNormalized) {
-                                        score = 60;
-                                    } else if (ar.titleNormalized.indexOf(altNormalized) !== -1) {
-                                        score = 40;
-                                    }
-                                    
-                                    if (score > altBestScore) {
-                                        altBestScore = score;
-                                        altBest = ar;
-                                    }
-                                }
-                                
-                                return altBest || altResults[0];
-                            });
-                    }
-                })(altQuery, altUrl);
-            }
-            
-            // Wait for fallback if available
-            if (fallbackPromise) {
-                return fallbackPromise.then(function(fallbackResult) {
-                    if (fallbackResult) {
-                        // Verify the fallback result is reasonable
-                        var fbNormalized = normalizeForMatching(fallbackResult.title);
-                        var searchNorm = normalizeForMatching(searchTitle);
-                        if (fbNormalized.indexOf(searchNorm) !== -1 || searchNorm.indexOf(fbNormalized) !== -1) {
-                            return fallbackResult;
-                        }
-                    }
-                    // Return the first result as last resort
-                    return results[0];
-                });
-            }
-            
-            // Final fallback: return first result that has at least one common word
-            var fallback = null;
-            var fallbackScore = -999;
-            var searchWords = searchNormalized.split(/\s+/);
-            
-            for (var i = 0; i < results.length; i++) {
-                var r = results[i];
-                var rWords = r.titleNormalized.split(/\s+/);
-                var score = 0;
-                
-                for (var wi = 0; wi < searchWords.length; wi++) {
-                    if (searchWords[wi].length > 2 && rWords.indexOf(searchWords[wi]) !== -1) {
-                        score += 10;
-                    }
-                }
-                
-                if (score > fallbackScore) {
-                    fallbackScore = score;
-                    fallback = r;
-                }
-            }
-            
-            return fallback || results[0];
+
+            if (!best || bestScore < 50) return null;
+            return best;
         })
         .catch(function() { return null; });
 }
 
-// Helper function for normalized matching
-function normalizeForMatching(str) {
-    return String(str || "")
-        .toLowerCase()
-        // Remove special characters but keep letters, numbers, and spaces
-        .replace(/[^a-z0-9\s]/g, "")
-        // Normalize spaces
-        .replace(/\s+/g, " ")
-        .trim();
+function getAnimeId(pageUrl) {
+    return fetch(pageUrl, { headers: headers() })
+        .then(function(r) { return r.ok ? r.text() : null; })
+        .then(function(html) {
+            if (!html) return null;
+            var $ = cheerio.load(html);
+            var id = $("[data-id]").first().attr("data-id");
+            if (id) return id;
+            var m = html.match(/data-id=["'](\d+)["']/);
+            return m ? m[1] : null;
+        })
+        .catch(function() { return null; });
 }
+
+function getDubEpisode(animeId, episodeNum, referer) {
+    var url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+    return fetch(url, { headers: ajaxHeaders(referer) })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || !data.result) return null;
+            var $ = cheerio.load(data.result);
+            var found = null;
+            $("a[data-ids]").each(function(i, el) {
+                if (found) return;
+                var a = $(el);
+                var num = parseInt(a.attr("data-num") || "0", 10);
+                if (num === episodeNum && a.attr("data-dub") === "1" && a.attr("data-ids")) {
+                    found = { ids: a.attr("data-ids"), number: num };
+                }
+            });
+            return found;
+        })
+        .catch(function() { return null; });
 }
+
 function getDubServer(ids, referer) {
     var url = CONFIG.BASE_URL + "/ajax/server/list?servers=" + encodeURIComponent(ids);
-
     return fetch(url, { headers: ajaxHeaders(referer) })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -382,7 +221,6 @@ function getDubServer(ids, referer) {
 
 function getEmbed(linkId, referer) {
     var url = CONFIG.BASE_URL + "/ajax/server?get=" + encodeURIComponent(linkId);
-
     return fetch(url, { headers: ajaxHeaders(referer) })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -396,24 +234,17 @@ function getEmbed(linkId, referer) {
 
 function resolveMegaplay(embed) {
     if (!embed) return Promise.resolve(null);
-
     if (embed.indexOf("autostart") === -1) {
         embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
     }
-
     return fetch(embed, {
-        headers: headers({
-            "Referer": CONFIG.BASE_URL,
-            "Origin": CONFIG.BASE_URL
-        })
+        headers: headers({ "Referer": CONFIG.BASE_URL, "Origin": CONFIG.BASE_URL })
     })
     .then(function(r) { return r.ok ? r.text() : null; })
     .then(function(html) {
         if (!html) return null;
-
         var m = html.match(/data-id=["'](\d+)["']/);
         if (!m) return null;
-
         return fetch("https://megaplay.buzz/stream/getSources?id=" + m[1], {
             headers: {
                 "User-Agent": CONFIG.USER_AGENT,
@@ -425,10 +256,8 @@ function resolveMegaplay(embed) {
     })
     .then(function(data) {
         if (!data || !data.sources) return null;
-
         var file = data.sources.file || (data.sources[0] && data.sources[0].file);
         if (!file) return null;
-
         return {
             url: file,
             headers: {
@@ -448,53 +277,51 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(title) {
             if (!title) return [];
 
-            return getImdbId(tmdbId, mediaType)
-                .then(function(imdbId) {
-                    var mappedEpisode = episode;
+            return getImdbId(tmdbId, mediaType).then(function(imdbId) {
+                var mappedEpisode = episode;
+                var mappingPromise = imdbId
+                    ? resolveMapping(imdbId, season, episode)
+                    : Promise.resolve(null);
 
-                    var mappingPromise = imdbId
-                        ? resolveMapping(imdbId, season, episode)
-                        : Promise.resolve(null);
+                return mappingPromise.then(function(mapping) {
+                    if (mapping && mapping.mal_episode) {
+                        mappedEpisode = mapping.mal_episode;
+                    }
 
-                    return mappingPromise.then(function(mapping) {
-                        if (mapping && mapping.mal_episode) {
-                            mappedEpisode = mapping.mal_episode;
-                        }
+                    return searchAnime(title).then(function(best) {
+                        if (!best) return [];
 
-                        return searchAnime(title).then(function(best) {
-                            if (!best) return [];
+                        return getAnimeId(best.url).then(function(animeId) {
+                            if (!animeId) return [];
 
-                            return getAnimeId(best.url).then(function(animeId) {
-                                if (!animeId) return [];
+                            return getDubEpisode(animeId, mappedEpisode, best.url)
+                                .then(function(ep) {
+                                    if (!ep) return [];
 
-                                return getDubEpisode(animeId, mappedEpisode, best.url)
-                                    .then(function(ep) {
-                                        if (!ep) return [];
-
-                                        return getDubServer(ep.ids, best.url)
-                                            .then(function(linkId) {
-                                                if (!linkId) return [];
-                                                return getEmbed(linkId, best.url);
-                                            })
-                                            .then(function(embed) {
-                                                if (!embed || embed.indexOf("megaplay") === -1) return [];
-                                                return resolveMegaplay(embed);
-                                            })
-                                            .then(function(stream) {
-                                                if (!stream) return [];
-                                                return [{
-                                                    name: "AnikotoTV",
-                                                    title: "1080p DUB",
-                                                    url: stream.url,
-                                                    quality: "1080p",
-                                                    headers: stream.headers
-                                                }];
-                                            });
-                                    });
-                            });
+                                    return getDubServer(ep.ids, best.url)
+                                        .then(function(linkId) {
+                                            if (!linkId) return [];
+                                            return getEmbed(linkId, best.url);
+                                        })
+                                        .then(function(embed) {
+                                            if (!embed || embed.indexOf("megaplay") === -1) return [];
+                                            return resolveMegaplay(embed);
+                                        })
+                                        .then(function(stream) {
+                                            if (!stream) return [];
+                                            return [{
+                                                name: "AnikotoTV",
+                                                title: "1080p DUB",
+                                                url: stream.url,
+                                                quality: "1080p",
+                                                headers: stream.headers
+                                            }];
+                                        });
+                                });
                         });
                     });
                 });
+            });
         })
         .catch(function() {
             return [];
