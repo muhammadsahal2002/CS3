@@ -125,19 +125,23 @@ function searchAnime(title) {
 
             var q = normalize(searchTitle);
             var best = null;
-            var bestScore = -999;
+            var bestScore = 0;
 
             for (var i = 0; i < results.length; i++) {
                 var r = results[i];
                 var t = normalize(r.title);
                 var score = 0;
 
-                if (t === q) score = 100;
-                else if (t.indexOf(q) !== -1) score = 70;
-                else if (q.indexOf(t) !== -1) score = 40;
+                if (t === q) {
+                    score = 100;
+                } else if (t.indexOf(q) !== -1 && q.length >= 4) {
+                    score = 70;
+                } else if (q.indexOf(t) !== -1 && t.length >= 4) {
+                    score = 40;
+                }
 
-                if (!r.isMovie) score += 20;
-                if (r.isMovie) score -= 30;
+                // Prefer series slightly for anime site
+                if (!r.isMovie) score += 10;
 
                 if (score > bestScore) {
                     bestScore = score;
@@ -145,7 +149,12 @@ function searchAnime(title) {
                 }
             }
 
-            return best || results[0];
+            // IMPORTANT: only accept a real match
+            if (!best || bestScore < 40) {
+                return null;   // ← no Titanic → no wrong video
+            }
+
+            return best;
         })
         .catch(function() { return null; });
 }
