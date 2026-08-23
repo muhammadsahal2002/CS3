@@ -1,4 +1,4 @@
-// mobile_newtv.js – Fixed for series
+// primevideo.js – Prime Video API (net52.cc/mobile/pv)
 // =================================================================
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -7,7 +7,7 @@ const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/re
 const BASE_URL = "https://net52.cc/mobile/pv";
 
 const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 17; SM-S928B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.139 Mobile Safari/537.36",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
   "Accept": "*/*",
   "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
   "Sec-Fetch-Site": "same-origin",
@@ -19,31 +19,35 @@ const DEFAULT_HEADERS = {
 
 let tokenCache = null;
 let cookieHeader = null;
+let ottValue = "pv";
 
-function log(msg) { console.log("[MobileNewTV] " + msg); }
-
-function getTimestamp() {
-  return Math.floor(Date.now() / 1000);
-}
+function log(msg) { console.log("[PrimeVideo] " + msg); }
+function getTimestamp() { return Math.floor(Date.now() / 1000); }
 
 async function fetchToken() {
   if (tokenCache) return tokenCache;
   const resp = await fetch(TOKEN_URL);
   if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
   const json = await resp.json();
-  if (!json.t_hash_t || !json.addhash) {
-    throw new Error("Token JSON missing t_hash_t or addhash");
-  }
+  if (!json.t_hash_t || !json.addhash) throw new Error("Missing token fields");
   tokenCache = json;
-  cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded");
+  // Add ott=pv to cookie
+  cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on; ott=${ottValue}`;
+  log("Token loaded with ott=pv");
   return json;
 }
 
-function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
+function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest", includeUserHash = false) {
   const h = { ...DEFAULT_HEADERS };
   if (cookieHeader) h["Cookie"] = cookieHeader;
   if (requestedWith) h["X-Requested-With"] = requestedWith;
+  if (includeUserHash && tokenCache) {
+    // userhash format: token without the last ::db::m? Actually it's the t_hash_t decoded
+    // From logs: userhash=6883be69cb19c7f43902d3d431358651::c37276461e5e391f7e9cd1bfe68d138e::1787447664::db::m
+    // Which is exactly the token without URL encoding
+    const userHash = tokenCache.token || tokenCache.t_hash_t.replace(/%3A/g, ':');
+    h["userhash"] = userHash;
+  }
   if (extra) Object.assign(h, extra);
   return h;
 }
@@ -54,12 +58,13 @@ async function fetchJson(url, options = {}) {
   return resp.json();
 }
 
-// ---------- API calls ----------
+// ---------- PV API calls ----------
 async function search(query) {
-  const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
+  // PV uses same search endpoint but with ott=pv in cookies
+  const url = `https://net52.cc/mobile/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
+  if (data.status !== "y") throw new Error("Search failed");
   return data.searchResult || [];
 }
 
@@ -67,40 +72,36 @@ async function getPost(id) {
   const url = `${BASE_URL}/post.php?id=${id}&t=${getTimestamp()}`;
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Post failed: " + (data.error || "unknown"));
+  if (data.status !== "y") throw new Error("Post failed");
   return data;
 }
 
 async function getEpisodes(seasonId, seriesId) {
-  let allEpisodes = [];
-  let page = 1;
-  let hasNext = true;
-
+  // PV uses same episodes endpoint but with ott=pv
+  let all = [], page = 1, hasNext = true;
   while (hasNext) {
-    let url = `${BASE_URL}/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
+    let url = `https://net52.cc/mobile/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
     if (page > 1) url += `&page=${page}`;
     const headers = buildHeaders({}, "XMLHttpRequest");
     const data = await fetchJson(url, { headers });
     if (!data.episodes) break;
-    allEpisodes = allEpisodes.concat(data.episodes);
-    if (data.nextPageShow === 1 && data.nextPage) {
-      page = data.nextPage;
-    } else {
-      hasNext = false;
-    }
+    all = all.concat(data.episodes);
+    hasNext = (data.nextPageShow === 1 && data.nextPage);
+    if (hasNext) page = data.nextPage;
   }
-  return allEpisodes;
+  return all;
 }
 
-async function getPlaylist(id, title) {
-  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
-  const headers = buildHeaders({}, "app.netmirror.nmv2");
+async function getPlaylist(id, title, lang = "hin") {
+  // PV playlist with language parameter
+  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=${lang}&hd=on`;
+  const headers = buildHeaders({}, "app.netmirror.nmv2", true);
   const data = await fetchJson(url, { headers });
-  if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
+  if (!Array.isArray(data) || !data.length) throw new Error("Empty playlist");
   return data[0];
 }
 
-// ---------- TMDB helpers ----------
+// ---------- TMDB helper ----------
 async function getTmdbTitle(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
@@ -109,69 +110,54 @@ async function getTmdbTitle(tmdbId, mediaType) {
 }
 
 // ---------- Main exported function ----------
-async function getStreams(tmdbId, mediaType, season, episode) {
+async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
   await fetchToken();
 
   const title = await getTmdbTitle(tmdbId, mediaType);
-  log(`Title: ${title}`);
+  log(`TMDB title: ${title}`);
 
   const results = await search(title);
   if (!results.length) throw new Error(`No results for "${title}"`);
-  const selected = results[0];
+  
+  // For PV, we need to find the right result - sometimes multiple versions
+  // Try to find one that looks like a PV ID (alphanumeric, longer)
+  let selected = results[0];
+  for (const r of results) {
+    // PV IDs are typically longer alphanumeric strings
+    if (r.id && r.id.length > 8 && /^[0-9A-Z]+$/.test(r.id)) {
+      selected = r;
+      break;
+    }
+  }
   log(`Selected: ${selected.t} (ID: ${selected.id})`);
 
   const post = await getPost(selected.id);
-  log(`Type: ${post.type}, title: ${post.title}`);
-
   let contentId;
 
   if (post.type === "m" || season === undefined || episode === undefined) {
-    // Movie or no episode requested – use main_id if present
+    // Movie - use main_id if available, otherwise the selected ID
     contentId = post.main_id || selected.id;
-    log(`Movie / no episode, using ID: ${contentId}`);
+    log(`Movie, using ID: ${contentId}`);
   } else {
-    // ---------- TV SERIES ----------
+    // TV series
     const seasonList = post.season || [];
     let targetSeasonId = null;
-
-    // Find the season ID by matching the number directly
     for (const s of seasonList) {
-      // s.s is the season number as a string, e.g., "1", "2", ...
       if (parseInt(s.s, 10) === season) {
         targetSeasonId = s.id;
         break;
       }
     }
+    if (!targetSeasonId) throw new Error(`Season ${season} not found`);
 
-    if (!targetSeasonId) {
-      throw new Error(`Season ${season} not found in series data`);
-    }
-    log(`Season ID: ${targetSeasonId}`);
-
-    // Fetch all episodes for this season (handles pagination)
     const episodes = await getEpisodes(targetSeasonId, selected.id);
-    if (!episodes.length) throw new Error(`No episodes for season ${season}`);
-
-    // Find the target episode by matching the number after "E"
-    let targetEp = null;
-    for (const ep of episodes) {
-      // ep.ep is like "E1", "E2", ...
-      const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
-      if (epNum === episode) {
-        targetEp = ep;
-        break;
-      }
-    }
-
-    if (!targetEp) {
-      throw new Error(`Episode ${episode} not found in season ${season}`);
-    }
-    log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
+    const targetEp = episodes.find(ep => parseInt(ep.ep.replace(/^E/i, ''), 10) === episode);
+    if (!targetEp) throw new Error(`Episode ${episode} not found`);
     contentId = targetEp.id;
+    log(`Episode: ${targetEp.t} (ID: ${contentId})`);
   }
 
-  // Get playlist (sources) for the content
-  const playlist = await getPlaylist(contentId, title);
+  const playlist = await getPlaylist(contentId, title, lang);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
@@ -180,7 +166,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const streams = playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
-      name: "Primevideo",
+      name: "Prime Video",
       title: src.label || "Auto",
       url: fileUrl,
       quality: src.label || "Auto",
@@ -193,6 +179,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     };
   });
 
+  log(`Returning ${streams.length} streams for Prime Video`);
   return streams;
 }
 
