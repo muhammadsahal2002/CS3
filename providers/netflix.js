@@ -27,19 +27,16 @@ function getTimestamp() {
 }
 
 async function fetchToken() {
-  if (tokenCache) return tokenCache;
-  const resp = await fetch(TOKEN_URL);
-  if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
-  const json = await resp.json();
-  if (!json.t_hash_t || !json.addhash) {
-    throw new Error("Token JSON missing t_hash_t or addhash");
-  }
+  // Skip token fetching – use hardcoded values
+  const json = {
+    t_hash_t: "a21b06b4df10012c78886c0c803ebf28%3A%3A7a8bc82d362ecc56d36eae7649b0a4b6%3A%3A1787524263%3A%3Adb%3A%3Am",
+    addhash: "a21b06b4df10012c78886c0c803ebf28%3A%3A7a8bc82d362ecc56d36eae7649b0a4b6%3A%3A1787524263%3A%3Adb"
+  };
   tokenCache = json;
   cookieHeader = `t_hash_t=${json.t_hash_t}; ott=nf; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded");
+  log("Token loaded from hardcoded values");
   return json;
 }
-
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   const h = { ...DEFAULT_HEADERS };
   if (cookieHeader) h["Cookie"] = cookieHeader;
