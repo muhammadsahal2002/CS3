@@ -1,8 +1,5 @@
-// mobile_newtv.js – Mobile API (net52.cc) with token from GitHub
+// mobile_newtv.js – Fixed for series
 // =================================================================
-// Uses: token, t_hash_t, addhash from https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json
-// Cookies: t_hash_t=...; t_hash=... (addhash)
-
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
@@ -20,8 +17,8 @@ const DEFAULT_HEADERS = {
   "Connection": "keep-alive"
 };
 
-let tokenCache = null;        // stores the full JSON
-let cookieHeader = null;      // built from t_hash_t and addhash
+let tokenCache = null;
+let cookieHeader = null;
 
 function log(msg) { console.log("[MobileNewTV] " + msg); }
 
@@ -29,7 +26,6 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
-// Fetch token from GitHub (cached)
 async function fetchToken() {
   if (tokenCache) return tokenCache;
   const resp = await fetch(TOKEN_URL);
@@ -39,13 +35,11 @@ async function fetchToken() {
     throw new Error("Token JSON missing t_hash_t or addhash");
   }
   tokenCache = json;
-  // Build cookie exactly as in the captured requests
   cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded, cookies built");
+  log("Token loaded");
   return json;
 }
 
-// Build headers for a request
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   const h = { ...DEFAULT_HEADERS };
   if (cookieHeader) h["Cookie"] = cookieHeader;
@@ -116,7 +110,7 @@ async function getTmdbTitle(tmdbId, mediaType) {
 
 // ---------- Main exported function ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
-  await fetchToken();   // ensure token is loaded
+  await fetchToken();
 
   const title = await getTmdbTitle(tmdbId, mediaType);
   log(`Title: ${title}`);
@@ -130,35 +124,59 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
+
   if (post.type === "m" || season === undefined || episode === undefined) {
+    // Movie or no episode requested – use main_id if present
     contentId = post.main_id || selected.id;
     log(`Movie / no episode, using ID: ${contentId}`);
   } else {
+    // ---------- TV SERIES ----------
     const seasonList = post.season || [];
     let targetSeasonId = null;
+
+    // Find the season ID by matching the number directly
     for (const s of seasonList) {
-      const match = s.s.match(/Season (\d+)/);
-      if (match && parseInt(match[1], 10) === season) {
+      // s.s is the season number as a string, e.g., "1", "2", ...
+      if (parseInt(s.s, 10) === season) {
         targetSeasonId = s.id;
         break;
       }
     }
-    if (!targetSeasonId) throw new Error(`Season ${season} not found`);
+
+    if (!targetSeasonId) {
+      throw new Error(`Season ${season} not found in series data`);
+    }
     log(`Season ID: ${targetSeasonId}`);
 
+    // Fetch all episodes for this season (handles pagination)
     const episodes = await getEpisodes(targetSeasonId, selected.id);
-    const targetEp = episodes.find(ep => parseInt(ep.ep, 10) === episode);
-    if (!targetEp) throw new Error(`Episode ${episode} not found`);
+    if (!episodes.length) throw new Error(`No episodes for season ${season}`);
+
+    // Find the target episode by matching the number after "E"
+    let targetEp = null;
+    for (const ep of episodes) {
+      // ep.ep is like "E1", "E2", ...
+      const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
+      if (epNum === episode) {
+        targetEp = ep;
+        break;
+      }
+    }
+
+    if (!targetEp) {
+      throw new Error(`Episode ${episode} not found in season ${season}`);
+    }
     log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
     contentId = targetEp.id;
   }
 
+  // Get playlist (sources) for the content
   const playlist = await getPlaylist(contentId, title);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
 
-  // Build stream objects with full URLs and required headers
+  // Build stream objects
   const streams = playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
