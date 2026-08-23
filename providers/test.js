@@ -23,15 +23,18 @@ function log(msg) { console.log("[MobileNewTV] " + msg); }
 function getTimestamp() { return Math.floor(Date.now() / 1000); }
 
 async function fetchToken() {
-  if (tokenCache) return tokenCache;
+  // Always fetch fresh – no cache
   const resp = await fetch(TOKEN_URL);
   if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
   const json = await resp.json();
-  if (!json.t_hash_t || !json.addhash) throw new Error("Missing token fields");
+  if (!json.t_hash_t || !json.addhash) {
+    throw new Error("Token JSON missing t_hash_t or addhash");
+  }
   tokenCache = json;
   cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded");
+  log("Token loaded fresh");
   return json;
+}
 }
 
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
