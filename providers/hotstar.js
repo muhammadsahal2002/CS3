@@ -1,4 +1,4 @@
-// mobile_newtv.js – Fixed for series
+.// mobile_newtv.js – Fixed for series
 // =================================================================
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -35,7 +35,7 @@ async function fetchToken() {
     throw new Error("Token JSON missing t_hash_t or addhash");
   }
   tokenCache = json;
-  cookieHeader = `t_hash_t=\( {json.t_hash_t}; ott=hs; t_hash= \){json.addhash}; hd=on`;
+  cookieHeader = `t_hash_t=${json.t_hash_t}; ott=hs; t_hash=${json.addhash}; hd=on`;
   log("Token loaded");
   return json;
 }
