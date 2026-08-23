@@ -1,217 +1,199 @@
-// newtv.js – TV API (tv.imgcdn.kim) – Works with movies & TV series
+// mobile_newtv.js – Fixed for series
 // =================================================================
-// Update USERTOKEN when it expires (capture from TV app).
+const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const TMDB_BASE = "https://api.themoviedb.org/3";
 
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var TMDB_BASE = "https://api.themoviedb.org/3";
+const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
+const BASE_URL = "https://net52.cc/mobile";
 
-var CONFIG = {
-    BASE: "https://tv.imgcdn.kim",
-    REFERER: "https://net52.cc",
-    UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0 /OS.GatuNewTV v1.0",
-    USERTOKEN: "",
-    OTT: "nf"
+const DEFAULT_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Linux; Android 17; SM-S928B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.139 Mobile Safari/537.36",
+  "Accept": "*/*",
+  "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+  "Sec-Fetch-Site": "same-origin",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Dest": "empty",
+  "Referer": "https://net52.cc/mobile/home?app=1",
+  "Connection": "keep-alive"
 };
 
-// Add this after your CONFIG definition
-function onSettings() {
-    return [
-        {
-            type: "header",
-            label: "NewTV Authentication"
-        },
-        {
-            type: "text",
-            key: "USERTOKEN",
-            label: "User Token",
-            defaultValue: CONFIG.USERTOKEN,
-            placeholder: "Paste your token here (e.g., hash1::hash2::timestamp::db)",
-            help: "Get a fresh token: visit https://netmirror.gg/tv, copy the OTP, then visit https://tv.imgcdn.kim/newtv/otp.php?otp=XXXXXX and copy the usertoken from the response."
-        }
-    ];
+let tokenCache = null;
+let cookieHeader = null;
+
+function log(msg) { console.log("[MobileNewTV] " + msg); }
+
+function getTimestamp() {
+  return Math.floor(Date.now() / 1000);
 }
 
-// Add this after onSettings()
-function getUserToken() {
-    var settings = globalThis.SCRAPER_SETTINGS || {};
-    var token = settings.USERTOKEN;
-    if (token && token.trim().length > 0) {
-        return token.trim();
+async function fetchToken() {
+  if (tokenCache) return tokenCache;
+  const resp = await fetch(TOKEN_URL);
+  if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
+  const json = await resp.json();
+  if (!json.t_hash_t || !json.addhash) {
+    throw new Error("Token JSON missing t_hash_t or addhash");
+  }
+  tokenCache = json;
+  cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on`;
+  log("Token loaded");
+  return json;
+}
+
+function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
+  const h = { ...DEFAULT_HEADERS };
+  if (cookieHeader) h["Cookie"] = cookieHeader;
+  if (requestedWith) h["X-Requested-With"] = requestedWith;
+  if (extra) Object.assign(h, extra);
+  return h;
+}
+
+async function fetchJson(url, options = {}) {
+  const resp = await fetch(url, options);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
+  return resp.json();
+}
+
+// ---------- API calls ----------
+async function search(query) {
+  const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
+  const headers = buildHeaders({}, "XMLHttpRequest");
+  const data = await fetchJson(url, { headers });
+  if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
+  return data.searchResult || [];
+}
+
+async function getPost(id) {
+  const url = `${BASE_URL}/post.php?id=${id}&t=${getTimestamp()}`;
+  const headers = buildHeaders({}, "XMLHttpRequest");
+  const data = await fetchJson(url, { headers });
+  if (data.status !== "y") throw new Error("Post failed: " + (data.error || "unknown"));
+  return data;
+}
+
+async function getEpisodes(seasonId, seriesId) {
+  let allEpisodes = [];
+  let page = 1;
+  let hasNext = true;
+
+  while (hasNext) {
+    let url = `${BASE_URL}/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
+    if (page > 1) url += `&page=${page}`;
+    const headers = buildHeaders({}, "XMLHttpRequest");
+    const data = await fetchJson(url, { headers });
+    if (!data.episodes) break;
+    allEpisodes = allEpisodes.concat(data.episodes);
+    if (data.nextPageShow === 1 && data.nextPage) {
+      page = data.nextPage;
+    } else {
+      hasNext = false;
     }
-    return CONFIG.USERTOKEN;
+  }
+  return allEpisodes;
 }
 
-function log(msg) { console.log("[NewTV] " + msg); }
+async function getPlaylist(id, title) {
+  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
+  const headers = buildHeaders({}, "app.netmirror.nmv2");
+  const data = await fetchJson(url, { headers });
+  if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
+  return data[0];
+}
 
-function headers(extra) {
-    var token = getUserToken(); // <-- changed line
-    var h = {
-        "User-Agent": CONFIG.UA,
-        "Accept": "application/json, text/plain, */*",
-        "X-Requested-With": "NetmirrorNewTV v1.0",
-        "ott": CONFIG.OTT,
-        "usertoken": token  // <-- now uses the token from settings
+// ---------- TMDB helpers ----------
+async function getTmdbTitle(tmdbId, mediaType) {
+  const endpoint = mediaType === "movie" ? "movie" : "tv";
+  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  const data = await fetchJson(url);
+  return data.title || data.name;
+}
+
+// ---------- Main exported function ----------
+async function getStreams(tmdbId, mediaType, season, episode) {
+  await fetchToken();
+
+  const title = await getTmdbTitle(tmdbId, mediaType);
+  log(`Title: ${title}`);
+
+  const results = await search(title);
+  if (!results.length) throw new Error(`No results for "${title}"`);
+  const selected = results[0];
+  log(`Selected: ${selected.t} (ID: ${selected.id})`);
+
+  const post = await getPost(selected.id);
+  log(`Type: ${post.type}, title: ${post.title}`);
+
+  let contentId;
+
+  if (post.type === "m" || season === undefined || episode === undefined) {
+    // Movie or no episode requested – use main_id if present
+    contentId = post.main_id || selected.id;
+    log(`Movie / no episode, using ID: ${contentId}`);
+  } else {
+    // ---------- TV SERIES ----------
+    const seasonList = post.season || [];
+    let targetSeasonId = null;
+
+    // Find the season ID by matching the number directly
+    for (const s of seasonList) {
+      // s.s is the season number as a string, e.g., "1", "2", ...
+      if (parseInt(s.s, 10) === season) {
+        targetSeasonId = s.id;
+        break;
+      }
+    }
+
+    if (!targetSeasonId) {
+      throw new Error(`Season ${season} not found in series data`);
+    }
+    log(`Season ID: ${targetSeasonId}`);
+
+    // Fetch all episodes for this season (handles pagination)
+    const episodes = await getEpisodes(targetSeasonId, selected.id);
+    if (!episodes.length) throw new Error(`No episodes for season ${season}`);
+
+    // Find the target episode by matching the number after "E"
+    let targetEp = null;
+    for (const ep of episodes) {
+      // ep.ep is like "E1", "E2", ...
+      const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
+      if (epNum === episode) {
+        targetEp = ep;
+        break;
+      }
+    }
+
+    if (!targetEp) {
+      throw new Error(`Episode ${episode} not found in season ${season}`);
+    }
+    log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
+    contentId = targetEp.id;
+  }
+
+  // Get playlist (sources) for the content
+  const playlist = await getPlaylist(contentId, title);
+  if (!playlist.sources || !playlist.sources.length) {
+    throw new Error("No sources in playlist");
+  }
+
+  // Build stream objects
+  const streams = playlist.sources.map(src => {
+    const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
+    return {
+      name: "Netflix",
+      title: src.label || "Auto",
+      url: fileUrl,
+      quality: src.label || "Auto",
+      headers: {
+        Referer: "https://net52.cc/",
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Cookie": cookieHeader,
+        "Origin": "https://net52.cc"
+      }
     };
-    if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) h[k] = extra[k];
-    return h;
+  });
+
+  return streams;
 }
 
-function fetchJson(url, options) {
-    options = options || {};
-    return fetch(url, options)
-        .then(function(res) {
-            if (!res.ok) throw new Error("HTTP " + res.status);
-            return res.json();
-        });
-}
-
-function getTmdbTitle(tmdbId, mediaType) {
-    var endpoint = mediaType === 'movie' ? 'movie' : 'tv';
-    var url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
-    return fetchJson(url)
-        .then(function(data) { return data.title || data.name; });
-}
-
-function searchNewTV(query) {
-    var url = CONFIG.BASE + "/newtv/search.php?s=" + encodeURIComponent(query);
-    return fetchJson(url, { headers: headers() })
-        .then(function(data) {
-            if (!data || !data.searchResult) return [];
-            return data.searchResult;
-        });
-}
-
-function getPost(id) {
-    var url = CONFIG.BASE + "/newtv/post.php?id=" + id;
-    return fetchJson(url, { headers: headers() })
-        .then(function(data) {
-            if (data.status !== "ok") return null;
-            return data;
-        });
-}
-
-function getPlayer(id) {
-    var url = CONFIG.BASE + "/newtv/player.php?id=" + id;
-    return fetchJson(url, { headers: headers() })
-        .then(function(data) {
-            if (data.status !== "ok" || !data.video_link) return null;
-            return data;
-        });
-}
-
-// Fetch episodes for a given season ID, returns array of episode objects.
-function fetchSeasonEpisodes(seasonId) {
-    var allEpisodes = [];
-    var page = 1;
-    var hasNext = true;
-
-    function fetchPage(p) {
-        var url = CONFIG.BASE + "/newtv/episodes.php?id=" + seasonId + "&page=" + p;
-        return fetchJson(url, { headers: headers() })
-            .then(function(data) {
-                if (!data || !data.episodes) return [];
-                var eps = data.episodes.filter(function(e) { return e !== null; });
-                allEpisodes = allEpisodes.concat(eps);
-                if (data.nextPageShow === 1) {
-                    return fetchPage(p + 1);
-                } else {
-                    return allEpisodes;
-                }
-            });
-    }
-    return fetchPage(page);
-}
-
-function getStreams(tmdbId, mediaType, season, episode) {
-    if (!tmdbId) return Promise.reject(new Error('No TMDB ID provided'));
-
-    var title;
-
-    return getTmdbTitle(tmdbId, mediaType)
-        .then(function(t) {
-            title = t;
-            log("Title: " + title);
-            return searchNewTV(title);
-        })
-        .then(function(results) {
-            if (!results.length) throw new Error('No results found for "' + title + '"');
-            var item = results[0];
-            log("Selected: " + item.t + " (ID: " + item.id + ")");
-            return getPost(item.id);
-        })
-        .then(function(post) {
-            if (!post) throw new Error('Failed to get post info');
-
-            // If it's a movie or we don't have season/episode, just play the main content
-            if (post.type === "m" || season === undefined || episode === undefined) {
-                var contentId = post.main_id || post.id;
-                log("Movie or no season/episode, using ID: " + contentId);
-                return getPlayer(contentId);
-            }
-
-            // It's a TV series
-            log("TV series detected, looking for S" + season + "E" + episode);
-
-            // Find the season ID from the season list
-            var seasonList = post.season || [];
-            var targetSeasonId = null;
-            for (var i = 0; i < seasonList.length; i++) {
-                var sObj = seasonList[i];
-                // Extract season number from string like "Season 1 (13 EP)"
-                var match = sObj.s.match(/Season (\d+)/);
-                if (match) {
-                    var num = parseInt(match[1], 10);
-                    if (num === season) {
-                        targetSeasonId = sObj.id;
-                        break;
-                    }
-                }
-            }
-
-            if (!targetSeasonId) {
-                // Sometimes the season list may not have all seasons; we might need to fetch them differently
-                // As fallback, try to use the first season? But better to throw.
-                throw new Error("Season " + season + " not found in series data.");
-            }
-
-            log("Season ID: " + targetSeasonId);
-
-            // Fetch episodes for that season
-            return fetchSeasonEpisodes(targetSeasonId)
-                .then(function(episodes) {
-                    if (!episodes || !episodes.length) {
-                        throw new Error("No episodes found for season " + season);
-                    }
-
-                    // Find the episode by number
-                    var targetEp = null;
-                    for (var j = 0; j < episodes.length; j++) {
-                        var epObj = episodes[j];
-                        // epObj.ep is the episode number as string (e.g., "1")
-                        if (parseInt(epObj.ep, 10) === episode) {
-                            targetEp = epObj;
-                            break;
-                        }
-                    }
-
-                    if (!targetEp) {
-                        throw new Error("Episode " + episode + " not found in season " + season);
-                    }
-
-                    log("Found episode: " + targetEp.t + " (ID: " + targetEp.id + ")");
-                    return getPlayer(targetEp.id);
-                });
-        })
-        .then(function(player) {
-            if (!player) throw new Error('Failed to get player info');
-            return [{
-                name: 'Netflix',
-                title: 'Auto',
-                url: player.video_link,
-                quality: 'Netflix-1080p',
-                headers: { Referer: player.referer || CONFIG.REFERER }
-            }];
-        });
-}
-
-module.exports = { getStreams: getStreams, onSettings: onSettings };
+module.exports = { getStreams };
