@@ -1,4 +1,4 @@
-// mobile_newtv.js – Fixed for series
+// mobile_newtv.js – Full debug for series
 // =================================================================
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -49,6 +49,7 @@ function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
 }
 
 async function fetchJson(url, options = {}) {
+  log(`Fetching: ${url}`);
   const resp = await fetch(url, options);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
   return resp.json();
@@ -60,6 +61,7 @@ async function search(query) {
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
+  log(`Search results: ${data.searchResult ? data.searchResult.length : 0} items`);
   return data.searchResult || [];
 }
 
@@ -68,6 +70,7 @@ async function getPost(id) {
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Post failed: " + (data.error || "unknown"));
+  log(`Post type: ${data.type}, title: ${data.title}`);
   return data;
 }
 
@@ -82,6 +85,7 @@ async function getEpisodes(seasonId, seriesId) {
     const headers = buildHeaders({}, "XMLHttpRequest");
     const data = await fetchJson(url, { headers });
     if (!data.episodes) break;
+    log(`Fetched ${data.episodes.length} episodes for season (page ${page})`);
     allEpisodes = allEpisodes.concat(data.episodes);
     if (data.nextPageShow === 1 && data.nextPage) {
       page = data.nextPage;
@@ -89,6 +93,7 @@ async function getEpisodes(seasonId, seriesId) {
       hasNext = false;
     }
   }
+  log(`Total episodes for season: ${allEpisodes.length}`);
   return allEpisodes;
 }
 
@@ -96,7 +101,11 @@ async function getPlaylist(id, title) {
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
-  if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
+  if (!Array.isArray(data) || data.length === 0) {
+    log("Playlist response is not an array or empty");
+    throw new Error("Empty playlist response");
+  }
+  log(`Playlist received for ID ${id}, sources: ${data[0].sources ? data[0].sources.length : 0}`);
   return data[0];
 }
 
@@ -113,7 +122,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
   const title = await getTmdbTitle(tmdbId, mediaType);
-  log(`Title: ${title}`);
+  log(`TMDB title: ${title}`);
 
   const results = await search(title);
   if (!results.length) throw new Error(`No results for "${title}"`);
@@ -121,24 +130,25 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   log(`Selected: ${selected.t} (ID: ${selected.id})`);
 
   const post = await getPost(selected.id);
-  log(`Type: ${post.type}, title: ${post.title}`);
+  log(`Post object keys: ${Object.keys(post).join(', ')}`);
 
   let contentId;
 
   if (post.type === "m" || season === undefined || episode === undefined) {
-    // Movie or no episode requested – use main_id if present
     contentId = post.main_id || selected.id;
     log(`Movie / no episode, using ID: ${contentId}`);
   } else {
     // ---------- TV SERIES ----------
     const seasonList = post.season || [];
+    log(`Season list: ${JSON.stringify(seasonList)}`);
     let targetSeasonId = null;
 
     // Find the season ID by matching the number directly
     for (const s of seasonList) {
-      // s.s is the season number as a string, e.g., "1", "2", ...
+      log(`Checking season: s.s = "${s.s}", s.id = "${s.id}"`);
       if (parseInt(s.s, 10) === season) {
         targetSeasonId = s.id;
+        log(`Found season ${season} with ID ${targetSeasonId}`);
         break;
       }
     }
@@ -146,19 +156,19 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     if (!targetSeasonId) {
       throw new Error(`Season ${season} not found in series data`);
     }
-    log(`Season ID: ${targetSeasonId}`);
 
-    // Fetch all episodes for this season (handles pagination)
+    // Fetch episodes
     const episodes = await getEpisodes(targetSeasonId, selected.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
 
-    // Find the target episode by matching the number after "E"
+    // Find target episode
     let targetEp = null;
     for (const ep of episodes) {
-      // ep.ep is like "E1", "E2", ...
       const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
+      log(`Episode: ep.ep = "${ep.ep}" -> epNum = ${epNum}, id = ${ep.id}, title = ${ep.t}`);
       if (epNum === episode) {
         targetEp = ep;
+        log(`Found target episode: ${ep.t} (ID: ${ep.id})`);
         break;
       }
     }
@@ -166,13 +176,13 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     if (!targetEp) {
       throw new Error(`Episode ${episode} not found in season ${season}`);
     }
-    log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
     contentId = targetEp.id;
   }
 
-  // Get playlist (sources) for the content
+  // Get playlist
   const playlist = await getPlaylist(contentId, title);
   if (!playlist.sources || !playlist.sources.length) {
+    log("Playlist sources are empty or missing");
     throw new Error("No sources in playlist");
   }
 
@@ -193,6 +203,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     };
   });
 
+  log(`Returning ${streams.length} streams`);
   return streams;
 }
 
