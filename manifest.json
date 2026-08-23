@@ -78,5 +78,18 @@
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     }
-  ]
+  ],
+{
+      "id": "tes",
+      "name": "Tes",
+      "description": "primevideo + cruncyroll",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/tes.js",
+      "enabled": true,
+      "hasSettings": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
+    }
 }
