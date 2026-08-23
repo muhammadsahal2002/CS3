@@ -1,4 +1,4 @@
-// primevideo.js – Prime Video API (Debug Version)
+// primevideo.js – Prime Video API with debug info in streams
 // =================================================================
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -20,8 +20,14 @@ const DEFAULT_HEADERS = {
 let tokenCache = null;
 let cookieHeader = null;
 let userHash = null;
+let debugLogs = [];
 
-function log(msg) { console.log("[PrimeVideo] " + msg); }
+function log(msg) { 
+  const logMsg = "[PrimeVideo] " + msg;
+  console.log(logMsg);
+  debugLogs.push(logMsg);
+}
+
 function getTimestamp() { return Math.floor(Date.now() / 1000); }
 
 async function fetchToken() {
@@ -32,14 +38,11 @@ async function fetchToken() {
   if (!json.t_hash_t || !json.addhash) throw new Error("Missing token fields");
   tokenCache = json;
   
-  // Build cookie with ott=pv (from logs)
   cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on; ott=pv`;
-  
-  // userhash = decoded t_hash_t (from logs)
   userHash = decodeURIComponent(json.t_hash_t);
   
-  log(`Cookie: ${cookieHeader}`);
-  log(`UserHash: ${userHash}`);
+  log(`Token loaded: t_hash_t=${json.t_hash_t.substring(0, 30)}...`);
+  log(`UserHash: ${userHash.substring(0, 30)}...`);
   return json;
 }
 
@@ -52,12 +55,10 @@ function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
 }
 
 async function fetchJson(url, options = {}) {
-  log(`Fetching: ${url}`);
+  log(`Fetching: ${url.substring(0, 100)}...`);
   const resp = await fetch(url, options);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
-  const data = await resp.json();
-  log(`Response: ${JSON.stringify(data).substring(0, 200)}...`);
-  return data;
+  return resp.json();
 }
 
 // ---------- PV API calls ----------
@@ -66,6 +67,7 @@ async function search(query) {
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (!data.searchResult) throw new Error("Search failed");
+  log(`Search found ${data.searchResult.length} results`);
   return data.searchResult;
 }
 
@@ -74,17 +76,18 @@ async function getPost(id) {
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Post failed");
+  log(`Post: type=${data.type}, title=${data.title}`);
   return data;
 }
 
 async function getPlaylist(id, title, lang = "hin") {
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=${lang}&hd=on&userhash=${encodeURIComponent(userHash)}`;
-  log(`Playlist URL: ${url}`);
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
   if (!Array.isArray(data) || !data.length) {
     throw new Error("Empty playlist response");
   }
+  log(`Playlist has ${data[0].sources ? data[0].sources.length : 0} sources`);
   return data[0];
 }
 
@@ -93,23 +96,25 @@ async function getTmdbTitle(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
   const data = await fetchJson(url);
-  return data.title || data.name;
+  const title = data.title || data.name;
+  log(`TMDB title: ${title}`);
+  return title;
 }
 
 // ---------- Main exported function ----------
 async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
+  // Reset debug logs
+  debugLogs = [];
+  log(`=== PRIME VIDEO: ${mediaType} ${tmdbId} S${season || '?'}E${episode || '?'} ===`);
+  
   try {
-    log("=== Starting Prime Video Stream Fetch ===");
     await fetchToken();
 
     const title = await getTmdbTitle(tmdbId, mediaType);
-    log(`TMDB title: ${title}`);
-
     const results = await search(title);
-    log(`Search results: ${JSON.stringify(results)}`);
     if (!results.length) throw new Error(`No results for "${title}"`);
     
-    // Find PV result
+    // Find PV result (alphanumeric ID pattern)
     let selected = null;
     for (const r of results) {
       if (r.id && /^[0-9A-Z]{10,}$/.test(r.id)) {
@@ -121,22 +126,19 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
     log(`Selected: ${selected.t} (ID: ${selected.id})`);
 
     const post = await getPost(selected.id);
-    log(`Post type: ${post.type}, title: ${post.title}`);
-    
     let contentId;
 
     if (post.type === "m" || season === undefined || episode === undefined) {
       contentId = post.main_id || selected.id;
-      log(`Movie mode - using ID: ${contentId}`);
+      log(`Movie mode - ID: ${contentId}`);
     } else {
-      log(`Series mode - looking for S${season}E${episode}`);
+      log(`Series mode - S${season}E${episode}`);
       const seasonList = post.season || [];
-      log(`Seasons available: ${JSON.stringify(seasonList)}`);
+      log(`Available seasons: ${JSON.stringify(seasonList.map(s => s.s))}`);
       
       let targetSeasonId = null;
       for (const s of seasonList) {
         const seasonNum = parseInt(s.s, 10);
-        log(`Checking season: ${s.s} -> ${seasonNum}`);
         if (seasonNum === season) {
           targetSeasonId = s.id;
           log(`Found season ${season} with ID ${targetSeasonId}`);
@@ -145,26 +147,24 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       }
       if (!targetSeasonId) throw new Error(`Season ${season} not found`);
 
-      // For PV, we need to get episodes differently
-      // Let's try using the episodes from post first (if available)
+      // Try episodes from post first
       let targetEp = null;
       const episodes = post.episodes || [];
-      log(`Episodes from post: ${JSON.stringify(episodes)}`);
+      log(`Episodes in post: ${episodes.length}`);
       
       for (const ep of episodes) {
         if (ep && ep.ep) {
           const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
-          log(`Checking episode: ${ep.ep} -> ${epNum}`);
           if (epNum === episode) {
             targetEp = ep;
+            log(`Found episode in post: ${ep.t} (ID: ${ep.id})`);
             break;
           }
         }
       }
       
       if (!targetEp) {
-        // Try fetching episodes from season endpoint
-        log("Trying to fetch episodes from season endpoint...");
+        log("Fetching episodes from season endpoint...");
         const url = `https://net52.cc/mobile/episodes.php?s=${targetSeasonId}&series=${selected.id}&t=${getTimestamp()}`;
         const headers = buildHeaders({}, "XMLHttpRequest");
         const data = await fetchJson(url, { headers });
@@ -176,6 +176,7 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
             const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
             if (epNum === episode) {
               targetEp = ep;
+              log(`Found episode: ${ep.t} (ID: ${ep.id})`);
               break;
             }
           }
@@ -184,16 +185,14 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       
       if (!targetEp) throw new Error(`Episode ${episode} not found`);
       contentId = targetEp.id;
-      log(`Episode found: ${targetEp.t} (ID: ${contentId})`);
     }
 
     const playlist = await getPlaylist(contentId, title, lang);
-    log(`Playlist sources: ${playlist.sources ? playlist.sources.length : 0}`);
-    
     if (!playlist.sources || !playlist.sources.length) {
       throw new Error("No sources in playlist");
     }
 
+    // Build stream objects with debug info as a special stream
     const streams = playlist.sources.map(src => {
       const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
       return {
@@ -210,13 +209,31 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       };
     });
 
-    log(`=== Success! Returning ${streams.length} streams ===`);
+    // Add a debug stream if there are logs (hidden, but shows in quality list)
+    if (debugLogs.length > 0) {
+      streams.push({
+        name: "🔍 DEBUG",
+        title: "Debug Info",
+        url: "data:text/plain," + encodeURIComponent(debugLogs.join('\n')),
+        quality: `${streams.length} streams found`,
+        headers: {}
+      });
+    }
+
+    log(`✅ Success! Returning ${streams.length} streams`);
     return streams;
     
   } catch (error) {
-    log(`ERROR: ${error.message}`);
-    log(`Stack: ${error.stack}`);
-    throw error;
+    log(`❌ ERROR: ${error.message}`);
+    
+    // Return error as a stream so user can see it
+    return [{
+      name: "❌ ERROR",
+      title: error.message,
+      url: "data:text/plain," + encodeURIComponent(debugLogs.join('\n') + '\n\nERROR: ' + error.message + '\n' + error.stack),
+      quality: "Check logs",
+      headers: {}
+    }];
   }
 }
 
