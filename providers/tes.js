@@ -1,146 +1,219 @@
-// mobile_newtv.js – Clean version (no debug logs)
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const TMDB_BASE = "https://api.themoviedb.org/3";
+// net52-mobile.js – Netflix Mirror (net52.cc mobile API)
+// =================================================================
+"use strict";
 
-const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
-const BASE_URL = "https://net52.cc/mobile";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_BASE = "https://api.themoviedb.org/3";
+var TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
+var BASE = "https://net52.cc";
+var MOBILE = BASE + "/mobile";
 
-const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
-  "Accept": "*/*",
-  "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-  "Sec-Fetch-Site": "same-origin",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Dest": "empty",
-  "Referer": "https://net52.cc/mobile/home?app=1",
-  "Connection": "keep-alive"
-};
+var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
 
-let tokenCache = null;
-let cookieHeader = null;
+var cookieHeader = "";
 
-function log(msg) { console.log("[MobileNewTV] " + msg); }
-function getTimestamp() { return Math.floor(Date.now() / 1000); }
-
-async function fetchToken() {
-  if (tokenCache) return tokenCache;
-  const resp = await fetch(TOKEN_URL);
-  if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
-  const json = await resp.json();
-  if (!json.t_hash_t || !json.addhash) throw new Error("Missing token fields");
-  tokenCache = json;
-  cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded");
-  return json;
+function log(msg) {
+    console.log("[Net52] " + msg);
 }
 
-function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
-  const h = { ...DEFAULT_HEADERS };
-  if (cookieHeader) h["Cookie"] = cookieHeader;
-  if (requestedWith) h["X-Requested-With"] = requestedWith;
-  if (extra) Object.assign(h, extra);
-  return h;
+function ts() {
+    return Math.floor(Date.now() / 1000);
 }
 
-async function fetchJson(url, options = {}) {
-  const resp = await fetch(url, options);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
-  return resp.json();
-}
-
-// ---- API wrappers ----
-async function search(query) {
-  const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
-  const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
-  if (data.status !== "y") throw new Error("Search failed");
-  return data.searchResult || [];
-}
-
-async function getPost(id) {
-  const url = `${BASE_URL}/post.php?id=${id}&t=${getTimestamp()}`;
-  const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
-  if (data.status !== "y") throw new Error("Post failed");
-  return data;
-}
-
-async function getEpisodes(seasonId, seriesId) {
-  let all = [], page = 1, hasNext = true;
-  while (hasNext) {
-    let url = `${BASE_URL}/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
-    if (page > 1) url += `&page=${page}`;
-    const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
-    if (!data.episodes) break;
-    all = all.concat(data.episodes);
-    hasNext = (data.nextPageShow === 1 && data.nextPage);
-    if (hasNext) page = data.nextPage;
-  }
-  return all;
-}
-
-async function getPlaylist(id, title) {
-  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
-  const data = await fetchJson(url, { headers: buildHeaders({}, "app.netmirror.nmv2") });
-  if (!Array.isArray(data) || !data.length) throw new Error("Empty playlist");
-  return data[0];
-}
-
-// ---- TMDB helper ----
-async function getTmdbTitle(tmdbId, mediaType) {
-  const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const data = await fetchJson(url);
-  return data.title || data.name;
-}
-
-// ---- Exported function ----
-async function getStreams(tmdbId, mediaType, season, episode) {
-  await fetchToken();
-
-  const title = await getTmdbTitle(tmdbId, mediaType);
-  const results = await search(title);
-  if (!results.length) throw new Error(`No results for "${title}"`);
-  const selected = results[0];
-
-  const post = await getPost(selected.id);
-  let contentId;
-
-  if (post.type === "m" || season === undefined || episode === undefined) {
-    contentId = post.main_id || selected.id;
-  } else {
-    // TV series
-    const seasonList = post.season || [];
-    let targetSeasonId = null;
-    for (const s of seasonList) {
-      if (parseInt(s.s, 10) === season) {
-        targetSeasonId = s.id;
-        break;
-      }
+function decodeToken(v) {
+    if (!v) return "";
+    try {
+        return decodeURIComponent(String(v));
+    } catch (e) {
+        return String(v);
     }
-    if (!targetSeasonId) throw new Error(`Season ${season} not found`);
-
-    const episodes = await getEpisodes(targetSeasonId, selected.id);
-    const targetEp = episodes.find(ep => parseInt(ep.ep.replace(/^E/i, ''), 10) === episode);
-    if (!targetEp) throw new Error(`Episode ${episode} not found`);
-    contentId = targetEp.id;
-  }
-
-  const playlist = await getPlaylist(contentId, title);
-  if (!playlist.sources || !playlist.sources.length) {
-    throw new Error("No sources in playlist");
-  }
-
-  return playlist.sources.map(src => ({
-    name: "Netflix",
-    title: src.label || "Auto",
-    url: src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`,
-    quality: src.label || "Auto",
-    headers: {
-      Referer: "https://net52.cc/",
-      "User-Agent": DEFAULT_HEADERS["User-Agent"],
-      "Cookie": cookieHeader,
-      "Origin": "https://net52.cc"
-    }
-  }));
 }
 
-module.exports = { getStreams };
+function headers(xhr) {
+    var h = {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Referer": BASE + "/mobile/home?app=1",
+        "Cookie": cookieHeader
+    };
+    if (xhr) h["X-Requested-With"] = xhr;
+    return h;
+}
+
+function fetchToken() {
+    return fetch(TOKEN_URL)
+        .then(function(r) {
+            if (!r.ok) throw new Error("Token HTTP " + r.status);
+            return r.json();
+        })
+        .then(function(json) {
+            // Prefer "token" (decoded), else t_hash_t (may be encoded)
+            var th = decodeToken(json.token || json.t_hash_t);
+            if (!th || th.indexOf("::") === -1) {
+                throw new Error("Bad t_hash_t in token.json");
+            }
+            cookieHeader = "t_hash_t=" + th + "; hd=on";
+            if (json.t_hash) {
+                cookieHeader += "; t_hash=" + decodeToken(json.t_hash);
+            }
+            log("Token OK");
+            return th;
+        });
+}
+
+function getTmdbTitle(tmdbId, mediaType) {
+    var url = TMDB_BASE + "/" + (mediaType === "movie" ? "movie" : "tv") +
+        "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+            if (!d) throw new Error("TMDB failed");
+            return d.title || d.name;
+        });
+}
+
+function search(query) {
+    var url = MOBILE + "/search.php?s=" + encodeURIComponent(query) +
+        "&t=" + ts() + "&ADSearch=false";
+    return fetch(url, { headers: headers("XMLHttpRequest") })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || data.status !== "y") {
+                throw new Error("Search failed (token expired?)");
+            }
+            return data.searchResult || [];
+        });
+}
+
+function getPost(id) {
+    var url = MOBILE + "/post.php?id=" + id + "&t=" + ts();
+    return fetch(url, { headers: headers("XMLHttpRequest") })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || data.status !== "y") throw new Error("Post failed");
+            return data;
+        });
+}
+
+function getEpisodes(seasonId, seriesId) {
+    var all = [];
+    var page = 1;
+
+    function next() {
+        var url = MOBILE + "/episodes.php?s=" + seasonId +
+            "&series=" + seriesId + "&t=" + ts();
+        if (page > 1) url += "&page=" + page;
+
+        return fetch(url, { headers: headers("XMLHttpRequest") })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data && data.episodes) {
+                    all = all.concat(data.episodes);
+                }
+                if (data && data.nextPageShow === 1) {
+                    page = data.nextPage || (page + 1);
+                    return next();
+                }
+                return all;
+            });
+    }
+    return next();
+}
+
+function getPlaylist(id, title) {
+    var url = MOBILE + "/playlist.php?id=" + id +
+        "&t=" + encodeURIComponent(title) + "&tm=" + ts();
+    return fetch(url, { headers: headers("app.netmirror.nmv2") })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || !data.length || !data[0].sources) {
+                throw new Error("Empty playlist");
+            }
+            return data[0];
+        });
+}
+
+function getStreams(tmdbId, mediaType, season, episode) {
+    season = parseInt(season, 10) || 1;
+    episode = parseInt(episode, 10) || 1;
+
+    return fetchToken()
+        .then(function() {
+            return getTmdbTitle(tmdbId, mediaType);
+        })
+        .then(function(title) {
+            log("Title: " + title);
+            return search(title).then(function(results) {
+                if (!results.length) throw new Error("No results for " + title);
+                var selected = results[0];
+                log("Selected: " + selected.t + " (" + selected.id + ")");
+                return getPost(selected.id).then(function(post) {
+                    return { title: title, selected: selected, post: post };
+                });
+            });
+        })
+        .then(function(ctx) {
+            var post = ctx.post;
+            var selected = ctx.selected;
+            var title = ctx.title;
+
+            // Movie
+            if (post.type === "m" || mediaType === "movie") {
+                log("Movie path");
+                return getPlaylist(selected.id, post.title || title);
+            }
+
+            // Series – season list uses "s":"1","s":"2",...
+            var seasonList = post.season || [];
+            var targetSeasonId = null;
+            for (var i = 0; i < seasonList.length; i++) {
+                if (parseInt(seasonList[i].s, 10) === season) {
+                    targetSeasonId = seasonList[i].id;
+                    break;
+                }
+            }
+            if (!targetSeasonId) {
+                throw new Error("Season " + season + " not found");
+            }
+            log("Season " + season + " id=" + targetSeasonId);
+
+            return getEpisodes(targetSeasonId, selected.id).then(function(eps) {
+                var target = null;
+                for (var j = 0; j < eps.length; j++) {
+                    var n = parseInt(String(eps[j].ep).replace(/^E/i, ""), 10);
+                    if (n === episode) {
+                        target = eps[j];
+                        break;
+                    }
+                }
+                if (!target) throw new Error("Episode " + episode + " not found");
+                log("EP: " + target.t + " id=" + target.id);
+                return getPlaylist(target.id, post.title || title);
+            });
+        })
+        .then(function(playlist) {
+            return playlist.sources.map(function(src) {
+                var file = src.file || "";
+                var url = file.indexOf("http") === 0 ? file : BASE + file;
+                return {
+                    name: "Netflix",
+                    title: src.label || "Auto",
+                    url: url,
+                    quality: src.label || "Auto",
+                    headers: {
+                        "Referer": BASE + "/",
+                        "Origin": BASE,
+                        "User-Agent": UA,
+                        "Cookie": cookieHeader
+                    }
+                };
+            });
+        })
+        .catch(function(err) {
+            log("ERROR: " + (err && err.message ? err.message : String(err)));
+            return [];
+        });
+}
+
+module.exports = { getStreams: getStreams };
