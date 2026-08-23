@@ -57,7 +57,7 @@
       "id": "primevideo",
       "name": "pRIME VIDEO",
       "description": "Prime Video + Crunchyroll",
-      "version": "1.0.0",
+     "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/primevideo.js",
