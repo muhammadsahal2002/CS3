@@ -66,8 +66,8 @@
       "contentLanguage": ["en"]
     },
 {
-      "id": "tes",
-      "name": "Tes",
+      "id": "test",
+      "name": "Test",
       "description": "primevideo + cruncyroll",
       "version": "1.0.0",
       "author": "You",
