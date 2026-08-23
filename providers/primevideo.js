@@ -8,7 +8,7 @@ var TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
-var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
+var UA = "Mozilla/5.0 (Linux; Android 17; SM-S928B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.139 Mobile Safari/537.36";
 
 var cookieHeader = "";
 var userHash = ""; // decoded t_hash_t for playlist query
