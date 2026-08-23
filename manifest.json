@@ -7,11 +7,10 @@
       "name": "Castle",
       "description": "Multi Lang provider",
       "version": "2.0.0",
-      "author": "Sahal Team",
+      "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/castle.js",
       "enabled": true,
-      "hasSettings": false,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en", "hi", "ta", "te"]
     },
@@ -24,7 +23,6 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/anikoto.js",
       "enabled": true,
-      "hasSettings": false,
       "formats": ["m3u8"],
       "contentLanguage": ["en", "ja"]
     },
@@ -50,18 +48,33 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/netflix.js",
       "enabled": true,
+      "hasSettings": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     },
     {
       "id": "primevideo",
-      "name": "pRIME VIDEO",
-      "description": "Prime Video + Crunchyroll"
+      "name": "PRIME VIDEO",
+      "description": "primevideo + cruncyroll",
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/primevideo.js",
       "enabled": true,
+      "hasSettings": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
+    },
+{
+      "id": "test",
+      "name": "Test",
+      "description": "primevideo + cruncyroll",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/test.js",
+      "enabled": true,
+      "hasSettings": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     }
