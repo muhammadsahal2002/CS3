@@ -5,12 +5,12 @@
     
 {
       "id": "test",
-      "name": "gggest",
+      "name": "uuuest",
       "description": "primevideo + cruncyroll",
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/tes.js",
+      "filename": "providers/test.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["mp4", "m3u8"],
