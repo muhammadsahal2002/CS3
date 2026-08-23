@@ -35,7 +35,7 @@ async function fetchToken() {
     throw new Error("Token JSON missing t_hash_t or addhash");
   }
   tokenCache = json;
-  cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on`;
+  cookieHeader = `t_hash_t=\( {json.t_hash_t}; ott=nf; t_hash= \){json.addhash}; hd=on`;
   log("Token loaded");
   return json;
 }
