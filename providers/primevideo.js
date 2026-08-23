@@ -1,4 +1,4 @@
-// primevideo.js – Prime Video API with debug info in streams
+// primevideo.js – Prime Video API with debug info as quality options
 // =================================================================
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -20,18 +20,19 @@ const DEFAULT_HEADERS = {
 let tokenCache = null;
 let cookieHeader = null;
 let userHash = null;
-let debugLogs = [];
+let debugSteps = [];
 
-function log(msg) { 
-  const logMsg = "[PrimeVideo] " + msg;
-  console.log(logMsg);
-  debugLogs.push(logMsg);
+function log(step, data = null) {
+  const msg = data ? `${step}: ${JSON.stringify(data)}` : step;
+  console.log("[PrimeVideo] " + msg);
+  debugSteps.push({ step, msg, data });
 }
 
 function getTimestamp() { return Math.floor(Date.now() / 1000); }
 
 async function fetchToken() {
   if (tokenCache) return tokenCache;
+  log("🔑 Fetching token from GitHub");
   const resp = await fetch(TOKEN_URL);
   if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
   const json = await resp.json();
@@ -41,8 +42,11 @@ async function fetchToken() {
   cookieHeader = `t_hash_t=${json.t_hash_t}; t_hash=${json.addhash}; hd=on; ott=pv`;
   userHash = decodeURIComponent(json.t_hash_t);
   
-  log(`Token loaded: t_hash_t=${json.t_hash_t.substring(0, 30)}...`);
-  log(`UserHash: ${userHash.substring(0, 30)}...`);
+  log("✅ Token loaded", { 
+    t_hash_t: json.t_hash_t.substring(0, 30) + '...',
+    addhash: json.addhash.substring(0, 30) + '...'
+  });
+  log("🔑 UserHash", userHash.substring(0, 50) + '...');
   return json;
 }
 
@@ -55,10 +59,15 @@ function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
 }
 
 async function fetchJson(url, options = {}) {
-  log(`Fetching: ${url.substring(0, 100)}...`);
+  log(`🌐 Requesting`, url.substring(0, 80) + '...');
   const resp = await fetch(url, options);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
-  return resp.json();
+  if (!resp.ok) {
+    log(`❌ HTTP Error ${resp.status}`, url);
+    throw new Error(`HTTP ${resp.status} on ${url}`);
+  }
+  const data = await resp.json();
+  log(`✅ Response received`, { status: resp.status, keys: Object.keys(data).join(', ') });
+  return data;
 }
 
 // ---------- PV API calls ----------
@@ -67,7 +76,7 @@ async function search(query) {
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (!data.searchResult) throw new Error("Search failed");
-  log(`Search found ${data.searchResult.length} results`);
+  log(`📋 Search results found`, data.searchResult.length);
   return data.searchResult;
 }
 
@@ -76,7 +85,7 @@ async function getPost(id) {
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Post failed");
-  log(`Post: type=${data.type}, title=${data.title}`);
+  log(`📄 Post details`, { type: data.type, title: data.title, hasSeason: !!data.season });
   return data;
 }
 
@@ -85,9 +94,11 @@ async function getPlaylist(id, title, lang = "hin") {
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
   if (!Array.isArray(data) || !data.length) {
+    log(`❌ Empty playlist`, { id, title });
     throw new Error("Empty playlist response");
   }
-  log(`Playlist has ${data[0].sources ? data[0].sources.length : 0} sources`);
+  const sourceCount = data[0].sources ? data[0].sources.length : 0;
+  log(`🎬 Playlist loaded`, { sources: sourceCount });
   return data[0];
 }
 
@@ -97,15 +108,15 @@ async function getTmdbTitle(tmdbId, mediaType) {
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
   const data = await fetchJson(url);
   const title = data.title || data.name;
-  log(`TMDB title: ${title}`);
+  log(`🎯 TMDB title`, title);
   return title;
 }
 
 // ---------- Main exported function ----------
 async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
-  // Reset debug logs
-  debugLogs = [];
-  log(`=== PRIME VIDEO: ${mediaType} ${tmdbId} S${season || '?'}E${episode || '?'} ===`);
+  // Reset debug steps
+  debugSteps = [];
+  log(`🚀 START: ${mediaType} ID:${tmdbId} S${season || '?'}E${episode || '?'}`, { lang });
   
   try {
     await fetchToken();
@@ -123,25 +134,25 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       }
     }
     if (!selected) selected = results[0];
-    log(`Selected: ${selected.t} (ID: ${selected.id})`);
+    log(`✅ Selected result`, { title: selected.t, id: selected.id });
 
     const post = await getPost(selected.id);
     let contentId;
 
     if (post.type === "m" || season === undefined || episode === undefined) {
       contentId = post.main_id || selected.id;
-      log(`Movie mode - ID: ${contentId}`);
+      log(`🎬 Movie mode`, { contentId });
     } else {
-      log(`Series mode - S${season}E${episode}`);
+      log(`📺 Series mode`, { season, episode });
       const seasonList = post.season || [];
-      log(`Available seasons: ${JSON.stringify(seasonList.map(s => s.s))}`);
+      log(`📋 Available seasons`, seasonList.map(s => s.s));
       
       let targetSeasonId = null;
       for (const s of seasonList) {
         const seasonNum = parseInt(s.s, 10);
         if (seasonNum === season) {
           targetSeasonId = s.id;
-          log(`Found season ${season} with ID ${targetSeasonId}`);
+          log(`✅ Found season ${season}`, { id: targetSeasonId });
           break;
         }
       }
@@ -150,33 +161,33 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       // Try episodes from post first
       let targetEp = null;
       const episodes = post.episodes || [];
-      log(`Episodes in post: ${episodes.length}`);
+      log(`📋 Episodes in post`, episodes.length);
       
       for (const ep of episodes) {
         if (ep && ep.ep) {
           const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
           if (epNum === episode) {
             targetEp = ep;
-            log(`Found episode in post: ${ep.t} (ID: ${ep.id})`);
+            log(`✅ Found episode in post`, { title: ep.t, id: ep.id });
             break;
           }
         }
       }
       
       if (!targetEp) {
-        log("Fetching episodes from season endpoint...");
+        log(`📡 Fetching episodes from season endpoint`);
         const url = `https://net52.cc/mobile/episodes.php?s=${targetSeasonId}&series=${selected.id}&t=${getTimestamp()}`;
         const headers = buildHeaders({}, "XMLHttpRequest");
         const data = await fetchJson(url, { headers });
         const allEpisodes = data.episodes || [];
-        log(`Fetched ${allEpisodes.length} episodes`);
+        log(`📋 Season episodes fetched`, allEpisodes.length);
         
         for (const ep of allEpisodes) {
           if (ep && ep.ep) {
             const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
             if (epNum === episode) {
               targetEp = ep;
-              log(`Found episode: ${ep.t} (ID: ${ep.id})`);
+              log(`✅ Found episode`, { title: ep.t, id: ep.id });
               break;
             }
           }
@@ -192,14 +203,14 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       throw new Error("No sources in playlist");
     }
 
-    // Build stream objects with debug info as a special stream
-    const streams = playlist.sources.map(src => {
+    // Build stream objects
+    const streams = playlist.sources.map((src, index) => {
       const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
       return {
         name: "Prime Video",
         title: src.label || "Auto",
         url: fileUrl,
-        quality: src.label || "Auto",
+        quality: src.label || `Source ${index + 1}`,
         headers: {
           Referer: "https://net52.cc/",
           "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -209,31 +220,62 @@ async function getStreams(tmdbId, mediaType, season, episode, lang = "hin") {
       };
     });
 
-    // Add a debug stream if there are logs (hidden, but shows in quality list)
-    if (debugLogs.length > 0) {
+    // Add debug streams - each step as a separate quality option
+    debugSteps.forEach((step, index) => {
       streams.push({
-        name: "🔍 DEBUG",
-        title: "Debug Info",
-        url: "data:text/plain," + encodeURIComponent(debugLogs.join('\n')),
-        quality: `${streams.length} streams found`,
+        name: `🔍 ${step.step}`,
+        title: step.msg.substring(0, 50),
+        url: "data:text/plain," + encodeURIComponent(step.msg + (step.data ? '\nData: ' + JSON.stringify(step.data, null, 2) : '')),
+        quality: `Step ${index + 1}/${debugSteps.length}`,
         headers: {}
       });
-    }
+    });
 
-    log(`✅ Success! Returning ${streams.length} streams`);
+    // Add a final success stream
+    streams.push({
+      name: "✅ SUCCESS",
+      title: `${streams.length - debugSteps.length - 1} video streams + ${debugSteps.length} debug steps`,
+      url: "data:text/plain," + encodeURIComponent(debugSteps.map(s => s.msg).join('\n')),
+      quality: "Complete",
+      headers: {}
+    });
+
+    log(`🎉 COMPLETE: ${streams.length} total options`);
     return streams;
     
   } catch (error) {
-    log(`❌ ERROR: ${error.message}`);
+    log(`💥 ERROR`, error.message);
     
-    // Return error as a stream so user can see it
-    return [{
+    // Build error streams
+    const errorStreams = [];
+    
+    // Add debug steps as error streams
+    debugSteps.forEach((step, index) => {
+      errorStreams.push({
+        name: `🔍 ${step.step}`,
+        title: step.msg.substring(0, 50),
+        url: "data:text/plain," + encodeURIComponent(step.msg + (step.data ? '\nData: ' + JSON.stringify(step.data, null, 2) : '')),
+        quality: `Step ${index + 1}/${debugSteps.length}`,
+        headers: {}
+      });
+    });
+    
+    // Add the error itself
+    errorStreams.push({
       name: "❌ ERROR",
       title: error.message,
-      url: "data:text/plain," + encodeURIComponent(debugLogs.join('\n') + '\n\nERROR: ' + error.message + '\n' + error.stack),
-      quality: "Check logs",
+      url: "data:text/plain," + encodeURIComponent(
+        'ERROR: ' + error.message + '\n\n' +
+        error.stack + '\n\n' +
+        'Full Debug Log:\n' +
+        debugSteps.map(s => s.msg).join('\n')
+      ),
+      quality: "❌ Failed",
       headers: {}
-    }];
+    });
+    
+    log(`❌ Returning ${errorStreams.length} error streams`);
+    return errorStreams;
   }
 }
 
