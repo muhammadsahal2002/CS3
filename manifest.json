@@ -33,7 +33,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/hotstar.js",
+      "filename": "providers/hs.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["mp4", "m3u8"],
