@@ -1,196 +1,270 @@
-// mobile_newtv.js – Fixed for series
+// primevideo.js – net52.cc mobile Prime Video (pv)
 // =================================================================
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const TMDB_BASE = "https://api.themoviedb.org/3";
+// Fixed: proper token handling, language selection, headers, cookies
+"use strict";
 
-const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
-const BASE_URL = "https://net52.cc/mobile/pv";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_BASE = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
+var BASE = "https://net52.cc";
+var PV = BASE + "/mobile/pv";
 
-const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
-  "Accept": "*/*",
-  "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-  "Sec-Fetch-Site": "same-origin",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Dest": "empty",
-  "Referer": "https://net52.cc/mobile/home?app=1",
-  "Connection": "keep-alive"
-};
+var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
 
-let tokenCache = null;
-let cookieHeader = null;
+// ------------------- State -------------------
+var cookieHeader = "";
+var rawToken = "";          // e.g., "ece0a0e8...::...::1787546744::ac::m"
+var t_hash = "";            // additional session hash (if available)
 
-function log(msg) { console.log("[MobileNewTV] " + msg); }
+// ------------------- Helpers -------------------
+function log(msg) { console.log("[PrimePV] " + msg); }
 
-function getTimestamp() {
-  return Math.floor(Date.now() / 1000);
-}
+function ts() { return Math.floor(Date.now() / 1000); }
 
-async function fetchToken() {
-  // Skip token fetching – use hardcoded values
-  const json = {
-    t_hash_t: "756bea42d91d0cdebecdfa43ee74a45d%3A%3A29d24b493fecd7f92d61cc141ea49e90%3A%3A1787570842%3A%3Adb%3A%3Am",
-    addhash: "a71b08512c35c58b19b5211205a7d7a6%3A%3A1787572642%3A%3Adb"
-  };
-  tokenCache = json;
-  cookieHeader = `t_hash_t=${json.t_hash_t}; ott=pv; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded from hardcoded values");
-  return json;
-}
-function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
-  const h = { ...DEFAULT_HEADERS };
-  if (cookieHeader) h["Cookie"] = cookieHeader;
-  if (requestedWith) h["X-Requested-With"] = requestedWith;
-  if (extra) Object.assign(h, extra);
-  return h;
-}
-
-async function fetchJson(url, options = {}) {
-  const resp = await fetch(url, options);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
-  return resp.json();
-}
-
-// ---------- API calls ----------
-async function search(query) {
-  const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
-  return data.searchResult || [];
-}
-
-async function getPost(id) {
-  const url = `${BASE_URL}/post.php?id=${id}&t=${getTimestamp()}`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Post failed: " + (data.error || "unknown"));
-  return data;
-}
-
-async function getEpisodes(seasonId, seriesId) {
-  let allEpisodes = [];
-  let page = 1;
-  let hasNext = true;
-
-  while (hasNext) {
-    let url = `${BASE_URL}/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
-    if (page > 1) url += `&page=${page}`;
-    const headers = buildHeaders({}, "XMLHttpRequest");
-    const data = await fetchJson(url, { headers });
-    if (!data.episodes) break;
-    allEpisodes = allEpisodes.concat(data.episodes);
-    if (data.nextPageShow === 1 && data.nextPage) {
-      page = data.nextPage;
-    } else {
-      hasNext = false;
-    }
-  }
-  return allEpisodes;
-}
-
-async function getPlaylist(id, title) {
-  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
-  const headers = buildHeaders({}, "app.netmirror.nmv2");
-  const data = await fetchJson(url, { headers });
-  if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
-  return data[0];
-}
-
-// ---------- TMDB helpers ----------
-async function getTmdbTitle(tmdbId, mediaType) {
-  const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const data = await fetchJson(url);
-  return data.title || data.name;
-}
-
-// ---------- Main exported function ----------
-async function getStreams(tmdbId, mediaType, season, episode) {
-  await fetchToken();
-
-  const title = await getTmdbTitle(tmdbId, mediaType);
-  log(`Title: ${title}`);
-
-  const results = await search(title);
-  if (!results.length) throw new Error(`No results for "${title}"`);
-  const selected = results[0];
-  log(`Selected: ${selected.t} (ID: ${selected.id})`);
-
-  const post = await getPost(selected.id);
-  log(`Type: ${post.type}, title: ${post.title}`);
-
-  let contentId;
-
-  if (post.type === "m" || season === undefined || episode === undefined) {
-    // Movie or no episode requested – use main_id if present
-    contentId = post.main_id || selected.id;
-    log(`Movie / no episode, using ID: ${contentId}`);
-  } else {
-    // ---------- TV SERIES ----------
-    const seasonList = post.season || [];
-    let targetSeasonId = null;
-
-    // Find the season ID by matching the number directly
-    for (const s of seasonList) {
-      // s.s is the season number as a string, e.g., "1", "2", ...
-      if (parseInt(s.s, 10) === season) {
-        targetSeasonId = s.id;
-        break;
-      }
-    }
-
-    if (!targetSeasonId) {
-      throw new Error(`Season ${season} not found in series data`);
-    }
-    log(`Season ID: ${targetSeasonId}`);
-
-    // Fetch all episodes for this season (handles pagination)
-    const episodes = await getEpisodes(targetSeasonId, selected.id);
-    if (!episodes.length) throw new Error(`No episodes for season ${season}`);
-
-    // Find the target episode by matching the number after "E"
-    let targetEp = null;
-    for (const ep of episodes) {
-      // ep.ep is like "E1", "E2", ...
-      const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
-      if (epNum === episode) {
-        targetEp = ep;
-        break;
-      }
-    }
-
-    if (!targetEp) {
-      throw new Error(`Episode ${episode} not found in season ${season}`);
-    }
-    log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
-    contentId = targetEp.id;
-  }
-
-  // Get playlist (sources) for the content
-  const playlist = await getPlaylist(contentId, title);
-  if (!playlist.sources || !playlist.sources.length) {
-    throw new Error("No sources in playlist");
-  }
-
-  // Build stream objects
-  const streams = playlist.sources.map(src => {
-    const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
-    return {
-      name: "Primevideo",
-      title: src.label || "Auto",
-      url: fileUrl,
-      quality: src.label || "Auto",
-      headers: {
-        Referer: "https://net52.cc/",
-        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+// Build headers for all requests
+function headers(xhr) {
+    var h = {
+        "User-Agent": UA,
+        "Accept": "*/*",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Referer": BASE + "/mobile/home?app=1",    // required
+        "Origin": BASE,
         "Cookie": cookieHeader,
-        "Origin": "https://net52.cc"
-      }
+        "X-Requested-With": xhr || "XMLHttpRequest"
     };
-  });
-
-  return streams;
+    // For M3U8 we might need extra, but this is fine
+    return h;
 }
 
-module.exports = { getStreams };
+// ------------------- Token Fetch -------------------
+function fetchToken() {
+    return fetch(TOKEN_URL)
+        .then(function(r) {
+            if (!r.ok) throw new Error("Token HTTP " + r.status);
+            return r.json();
+        })
+        .then(function(json) {
+            var record = json.record || {};
+            // raw token (unencoded) – used as userhash
+            rawToken = record.token || "";
+            // t_hash_t (URL-encoded) – cookie
+            var t_hash_t = record.t_hash_t || "";
+            // t_hash – separate cookie (if present)
+            var t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
+
+            if (!rawToken || rawToken.indexOf("::") === -1) {
+                throw new Error("Invalid token format in token.json");
+            }
+
+            // Build cookie header exactly as in original requests
+            cookieHeader = "t_hash_t=" + t_hash_t;
+            if (t_hash) {
+                cookieHeader += "; t_hash=" + t_hash;
+            }
+            cookieHeader += "; ott=pv; hd=on"  // required for Prime Video
+
+            log("Token OK: " + rawToken.substring(0, 30) + "...");
+            log("Cookie: " + cookieHeader);
+            return rawToken;
+        });
+}
+
+// ------------------- TMDB Title -------------------
+function getTmdbTitle(tmdbId, mediaType) {
+    var url = TMDB_BASE + "/" + (mediaType === "movie" ? "movie" : "tv") +
+        "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+            if (!d) throw new Error("TMDB failed");
+            return d.title || d.name;
+        });
+}
+
+// ------------------- Search -------------------
+function search(query) {
+    var url = PV + "/search.php?s=" + encodeURIComponent(query) +
+        "&t=" + ts() + "&ADSearch=false";
+    return fetch(url, { headers: headers("XMLHttpRequest") })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || !data.searchResult) {
+                throw new Error("Search failed (check token/cookies)");
+            }
+            return data.searchResult || [];
+        });
+}
+
+// ------------------- Post (metadata) -------------------
+function getPost(id) {
+    var url = PV + "/post.php?id=" + encodeURIComponent(id) + "&t=" + ts();
+    return fetch(url, { headers: headers("XMLHttpRequest") })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            // data.status should be "y"
+            if (!data || data.status !== "y") {
+                throw new Error("Post failed: " + (data.error || "unknown"));
+            }
+            return data;
+        });
+}
+
+// ------------------- Episodes (pagination) -------------------
+function getEpisodes(seasonId, seriesId) {
+    var all = [];
+    var page = 1;
+
+    function next() {
+        var url = PV + "/episodes.php?s=" + encodeURIComponent(seasonId) +
+            "&series=" + encodeURIComponent(seriesId) + "&t=" + ts();
+        if (page > 1) url += "&page=" + page;
+
+        return fetch(url, { headers: headers("XMLHttpRequest") })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+                if (!data) return all;
+                if (data.episodes) all = all.concat(data.episodes);
+                if (data.nextPageShow === 1) {
+                    page = data.nextPage || (page + 1);
+                    return next();
+                }
+                return all;
+            })
+            .catch(function() { return all; });
+    }
+    return next();
+}
+
+// ------------------- Playlist (sources) -------------------
+function getPlaylist(id, title, lang) {
+    // lang must be a valid language code (e.g., "eng", "hin") – from post.lang
+    // If not provided, default to "eng"
+    var langParam = lang || "eng";
+
+    var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
+        "&t=" + encodeURIComponent(title) +
+        "&tm=" + ts() +
+        "&lang=" + langParam +
+        "&hd=null" +   // or "off" – as per your logs
+        "&userhash=" + encodeURIComponent(rawToken);
+
+    return fetch(url, { headers: headers("app.netmirror.nmv2") })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || !data.length || !data[0].sources) {
+                throw new Error("Empty playlist (maybe wrong language or expired token)");
+            }
+            return data[0];
+        });
+}
+
+// ------------------- Main getStreams -------------------
+function getStreams(tmdbId, mediaType, season, episode) {
+    season = parseInt(season, 10) || 1;
+    episode = parseInt(episode, 10) || 1;
+
+    return fetchToken()
+        .then(function() {
+            return getTmdbTitle(tmdbId, mediaType);
+        })
+        .then(function(title) {
+            log("TMDB Title: " + title);
+            return search(title).then(function(results) {
+                if (!results.length) throw new Error("No results for " + title);
+                // Optionally filter by year/type to improve accuracy
+                var selected = results[0];
+                log("Selected: " + selected.t + " (" + selected.id + ")");
+                return getPost(selected.id).then(function(post) {
+                    return { title: title, selected: selected, post: post };
+                });
+            });
+        })
+        .then(function(ctx) {
+            var post = ctx.post;
+            var selected = ctx.selected;
+            var title = ctx.title;
+
+            // --- Choose language from available ---
+            var langList = post.lang || [];
+            var chosenLang = "eng"; // fallback
+            if (langList.length) {
+                // Prefer English if available, else first
+                var eng = langList.find(function(l) { return l.s === "eng"; });
+                chosenLang = eng ? eng.s : langList[0].s;
+            }
+            log("Selected language: " + chosenLang);
+
+            // --- Movie ---
+            if (post.type === "m" || mediaType === "movie") {
+                log("Movie mode");
+                return getPlaylist(selected.id, post.title || title, chosenLang)
+                    .then(function(playlist) {
+                        return { playlist: playlist, post: post, chosenLang: chosenLang };
+                    });
+            }
+
+            // --- Series ---
+            var seasonList = post.season || [];
+            var targetSeasonId = null;
+            for (var i = 0; i < seasonList.length; i++) {
+                if (parseInt(seasonList[i].s, 10) === season) {
+                    targetSeasonId = seasonList[i].id;
+                    break;
+                }
+            }
+            if (!targetSeasonId) {
+                throw new Error("Season " + season + " not found");
+            }
+            log("Season " + season + " → " + targetSeasonId);
+
+            return getEpisodes(targetSeasonId, selected.id).then(function(eps) {
+                // Fallback to post.episodes if no eps from episodes.php
+                if (!eps.length && post.episodes && post.episodes.length) {
+                    eps = post.episodes.filter(function(e) {
+                        return e && String(e.s).replace(/^S/i, "") === String(season);
+                    });
+                }
+                if (!eps.length) throw new Error("No episodes for season " + season);
+
+                var target = null;
+                for (var j = 0; j < eps.length; j++) {
+                    var n = parseInt(String(eps[j].ep).replace(/^E/i, ""), 10);
+                    if (n === episode) {
+                        target = eps[j];
+                        break;
+                    }
+                }
+                if (!target) throw new Error("Episode " + episode + " not found");
+                log("EP: " + target.t + " id=" + target.id);
+                return getPlaylist(target.id, post.title || title, chosenLang)
+                    .then(function(playlist) {
+                        return { playlist: playlist, post: post, chosenLang: chosenLang };
+                    });
+            });
+        })
+        .then(function(result) {
+            var playlist = result.playlist;
+            // Build source items for Kodi
+            return playlist.sources.map(function(src) {
+                var file = src.file || "";
+                var url = file.indexOf("http") === 0 ? file : BASE + file;
+                return {
+                    name: "Prime Video",
+                    title: src.label || "Auto",
+                    url: url,
+                    quality: src.label || "Auto",
+                    headers: {
+                        "Referer": BASE + "/",
+                        "Origin": BASE,
+                        "User-Agent": UA,
+                        "Cookie": cookieHeader
+                    }
+                };
+            });
+        })
+        .catch(function(err) {
+            log("ERROR: " + (err && err.message ? err.message : String(err)));
+            return [];
+        });
+}
+
+module.exports = { getStreams: getStreams };
