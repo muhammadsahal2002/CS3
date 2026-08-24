@@ -12,8 +12,8 @@ var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) Ap
 
 // ------------------- HARDCODED VALUES -------------------
 // Provided by user:
-// t_hash_t=756bea42d91d0cdebecdfa43ee74a45d%3A%3A29d24b493fecd7f92d61cc141ea49e90%3A%3A1787570842%3A%3Adb%3A%3Am
-// lang=eng; t_hash=f51f402eb954ee8aad3e029111dd4216%3A%3A1787595666%3A%3Adb; ott=pv
+// t_hash_t=fca7b8f26e63881a303aff0591893158%3A%3A11de177a46c3abc932a5d324e0f4431b%3A%3A1787502201%3A%3Adb%3A%3Am
+// lang=eng; t_hash=958bba8151f96971571834e7f9651436%3A%3A1787507082%3A%3Adb; ott=pv
 
 // Full cookie string (exactly as given)
 var cookieHeader = "t_hash_t=756bea42d91d0cdebecdfa43ee74a45d%3A%3A29d24b493fecd7f92d61cc141ea49e90%3A%3A1787570842%3A%3Adb%3A%3Am; lang=eng; t_hash=f51f402eb954ee8aad3e029111dd4216%3A%3A1787595666%3A%3Adb; ott=pv";
