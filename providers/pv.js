@@ -1,71 +1,54 @@
 // primevideo.js – net52.cc mobile Prime Video (pv)
 // =================================================================
-// Fixed: proper token handling, language selection, headers, cookies
+// HARDCODED version – uses provided cookie and token.
 "use strict";
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var TMDB_BASE = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
+var TMDB_BASE = "https://api.themoviedb.org/3";
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
 var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
 
-// ------------------- State -------------------
-var cookieHeader = "";
-var rawToken = "";          // e.g., "ece0a0e8...::...::1787546744::ac::m"
-var t_hash = "";            // additional session hash (if available)
+// ------------------- HARDCODED VALUES -------------------
+// Provided by user:
+// t_hash_t=756bea42d91d0cdebecdfa43ee74a45d%3A%3A29d24b493fecd7f92d61cc141ea49e90%3A%3A1787570842%3A%3Adb%3A%3Am
+// lang=eng; t_hash=f51f402eb954ee8aad3e029111dd4216%3A%3A1787595666%3A%3Adb; ott=pv
+
+// Full cookie string (exactly as given)
+var cookieHeader = "t_hash_t=756bea42d91d0cdebecdfa43ee74a45d%3A%3A29d24b493fecd7f92d61cc141ea49e90%3A%3A1787570842%3A%3Adb%3A%3Am; lang=eng; t_hash=f51f402eb954ee8aad3e029111dd4216%3A%3A1787595666%3A%3Adb; ott=pv";
+
+// Raw token (decoded t_hash_t) – used as userhash parameter
+// Decode the t_hash_t part to get the raw token.
+var rawToken = decodeURIComponent("756bea42d91d0cdebecdfa43ee74a45d%3A%3A29d24b493fecd7f92d61cc141ea49e90%3A%3A1787570842%3A%3Adb%3A%3Am");
+// rawToken will be "756bea42...::29d24b...::1787570842::db::m"
+
+// Default language (from cookie)
+var defaultLang = "eng";
 
 // ------------------- Helpers -------------------
 function log(msg) { console.log("[PrimePV] " + msg); }
 
 function ts() { return Math.floor(Date.now() / 1000); }
 
-// Build headers for all requests
 function headers(xhr) {
     var h = {
         "User-Agent": UA,
         "Accept": "*/*",
         "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-        "Referer": BASE + "/mobile/home?app=1",    // required
+        "Referer": BASE + "/mobile/home?app=1",
         "Origin": BASE,
         "Cookie": cookieHeader,
         "X-Requested-With": xhr || "XMLHttpRequest"
     };
-    // For M3U8 we might need extra, but this is fine
     return h;
 }
 
-// ------------------- Token Fetch -------------------
+// ------------------- Skip token fetch – already set -------------------
 function fetchToken() {
-    return fetch(TOKEN_URL)
-        .then(function(r) {
-            if (!r.ok) throw new Error("Token HTTP " + r.status);
-            return r.json();
-        })
-        .then(function(json) {
-            var record = json.record || {};
-            // raw token (unencoded) – used as userhash
-            rawToken = record.token || "";
-            // t_hash_t (URL-encoded) – cookie
-            var t_hash_t = record.t_hash_t || "";
-            // t_hash – separate cookie (if present)
-            var t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
-
-            if (!rawToken || rawToken.indexOf("::") === -1) {
-                throw new Error("Invalid token format in token.json");
-            }
-
-            // Build cookie header exactly as in original requests
-            cookieHeader = "t_hash_t=" + t_hash_t;
-            if (t_hash) {
-                cookieHeader += "; t_hash=" + t_hash;
-            }
-            cookieHeader += "; ott=pv; hd=on"  // required for Prime Video
-
-            log("Token OK: " + rawToken.substring(0, 30) + "...");
-            log("Cookie: " + cookieHeader);
-            return rawToken;
-        });
+    // Return a resolved promise with the raw token
+    log("Using hardcoded token: " + rawToken.substring(0, 30) + "...");
+    return Promise.resolve(rawToken);
 }
 
 // ------------------- TMDB Title -------------------
@@ -88,7 +71,7 @@ function search(query) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data || !data.searchResult) {
-                throw new Error("Search failed (check token/cookies)");
+                throw new Error("Search failed (check cookie)");
             }
             return data.searchResult || [];
         });
@@ -100,7 +83,6 @@ function getPost(id) {
     return fetch(url, { headers: headers("XMLHttpRequest") })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            // data.status should be "y"
             if (!data || data.status !== "y") {
                 throw new Error("Post failed: " + (data.error || "unknown"));
             }
@@ -136,15 +118,13 @@ function getEpisodes(seasonId, seriesId) {
 
 // ------------------- Playlist (sources) -------------------
 function getPlaylist(id, title, lang) {
-    // lang must be a valid language code (e.g., "eng", "hin") – from post.lang
-    // If not provided, default to "eng"
-    var langParam = lang || "eng";
+    var langParam = lang || defaultLang;
 
     var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
         "&t=" + encodeURIComponent(title) +
         "&tm=" + ts() +
         "&lang=" + langParam +
-        "&hd=null" +   // or "off" – as per your logs
+        "&hd=on" +   // hardcoded on (or you can use null)
         "&userhash=" + encodeURIComponent(rawToken);
 
     return fetch(url, { headers: headers("app.netmirror.nmv2") })
@@ -170,7 +150,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             log("TMDB Title: " + title);
             return search(title).then(function(results) {
                 if (!results.length) throw new Error("No results for " + title);
-                // Optionally filter by year/type to improve accuracy
+                // Optionally improve selection by filtering by year/type
                 var selected = results[0];
                 log("Selected: " + selected.t + " (" + selected.id + ")");
                 return getPost(selected.id).then(function(post) {
@@ -183,9 +163,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var selected = ctx.selected;
             var title = ctx.title;
 
-            // --- Choose language from available ---
+            // --- Choose language (use defaultLang, but can pick from post.lang) ---
             var langList = post.lang || [];
-            var chosenLang = "eng"; // fallback
+            var chosenLang = defaultLang;
             if (langList.length) {
                 // Prefer English if available, else first
                 var eng = langList.find(function(l) { return l.s === "eng"; });
@@ -217,7 +197,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             log("Season " + season + " → " + targetSeasonId);
 
             return getEpisodes(targetSeasonId, selected.id).then(function(eps) {
-                // Fallback to post.episodes if no eps from episodes.php
                 if (!eps.length && post.episodes && post.episodes.length) {
                     eps = post.episodes.filter(function(e) {
                         return e && String(e.s).replace(/^S/i, "") === String(season);
