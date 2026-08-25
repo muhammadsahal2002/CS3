@@ -1,6 +1,7 @@
 // primevideo.js – net52.cc Prime Video (pv)
 // For Nuvio – ES5-compatible, uses fetch + Promises.
 // Fetches token from JSONBin, uses TMDB title, searches Net52.
+// Fixed: cookie has no lang, has hd=on; playlist uses lang=null & hd=on
 
 "use strict";
 
@@ -47,19 +48,21 @@ function fetchToken() {
             var record = json.record || {};
             rawToken = record.token || "";
             var t_hash_t = record.t_hash_t || "";
+            var t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
 
             if (!rawToken || rawToken.indexOf("::") === -1) {
                 throw new Error("Invalid token format");
             }
 
+            // Cookie: NO lang, includes hd=on
             cookieHeader = "t_hash_t=" + t_hash_t;
-            cookieHeader += "; lang=eng";
-            if (record.t_hash) {
-                cookieHeader += "; t_hash=" + record.t_hash;
+            if (t_hash) {
+                cookieHeader += "; t_hash=" + t_hash;
             }
-            cookieHeader += "; ott=pv";
+            cookieHeader += "; ott=pv; hd=on";   // hd=on in cookie
 
             log("Token OK: " + rawToken.substring(0, 30) + "...");
+            log("Cookie: " + cookieHeader);
             return rawToken;
         });
 }
@@ -128,12 +131,12 @@ function getEpisodes(seasonId, seriesId) {
 }
 
 function getPlaylist(id, title, lang) {
-    var langParam = lang || "eng";
+    // lang is ignored – we always use 'null' to enable Full HD
     var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
         "&t=" + encodeURIComponent(title) +
         "&tm=" + ts() +
-        "&lang=" + langParam +
-        "&hd=on" +
+        "&lang=null" +          // <-- force null to get all qualities
+        "&hd=on" +              // <-- hd=on in URL
         "&userhash=" + encodeURIComponent(rawToken);
 
     return fetch(url, { headers: headers("app.netmirror.nmv2") })
@@ -171,7 +174,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var selected = ctx.selected;
             var title = ctx.title;
 
-            // Choose language: prefer English, else first available
+            // Language selection: not used in playlist URL (we force null)
+            // but we keep for logging and possible future use.
             var langList = post.lang || [];
             var chosenLang = "eng";
             if (langList.length) {
