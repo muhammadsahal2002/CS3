@@ -7,7 +7,7 @@ const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/re
 const BASE_URL = "https://net52.cc/mobile";
 
 const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
   "Accept": "*/*",
   "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
   "Sec-Fetch-Site": "same-origin",
