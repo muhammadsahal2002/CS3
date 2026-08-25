@@ -57,7 +57,7 @@ function fetchToken() {
             if (record.t_hash) {
                 cookieHeader += "; t_hash=" + record.t_hash;
             }
-            cookieHeader += "; ott=pv";
+            cookieHeader += "; ott=pv";  hd=on";
 
             log("Token OK: " + rawToken.substring(0, 30) + "...");
             return rawToken;
