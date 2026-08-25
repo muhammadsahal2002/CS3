@@ -33,7 +33,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/xhs.js",
+      "filename": "providers/hotstar.js",
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
@@ -57,7 +57,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/x.js",
+      "filename": "providers/primevideo.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["mp4", "m3u8"],
