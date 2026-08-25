@@ -7,7 +7,7 @@ const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/re
 const BASE_URL = "https://net52.cc/mobile";
 
 const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
   "Accept": "*/*",
   "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
   "Sec-Fetch-Site": "same-origin",
@@ -29,8 +29,8 @@ function getTimestamp() {
 async function fetchToken() {
   // Skip token fetching – use hardcoded values
   const json = {
-    t_hash_t: "fca7b8f26e63881a303aff0591893158%3A%3A11de177a46c3abc932a5d324e0f4431b%3A%3A1787502201%3A%3Adb%3A%3Am",
-    addhash: "958bba8151f96971571834e7f9651436%3A%3A1787507082%3A%3Adb"
+    t_hash_t: "798b4780666f81c0537250970287a06f%3A%3Aa81057716d4f13ef9167cfb1b40e1161%3A%3A1787618221%3A%3Adb%3A%3Am",
+    addhash: "561c620725088c1a1f3be74c01bf612f%3A%3A8144fe9f9f791fdd2cfd1b4663785c76%3A%3A1787618179%3A%3Adb"
   };
   tokenCache = json;
   cookieHeader = `t_hash_t=${json.t_hash_t}; ott=nf; t_hash=${json.addhash}; hd=on`;
