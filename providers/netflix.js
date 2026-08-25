@@ -29,8 +29,8 @@ function getTimestamp() {
 async function fetchToken() {
   // Skip token fetching – use hardcoded values
   const json = {
-    t_hash_t: "798b4780666f81c0537250970287a06f%3A%3Aa81057716d4f13ef9167cfb1b40e1161%3A%3A1787618221%3A%3Adb%3A%3Am",
-    addhash: "561c620725088c1a1f3be74c01bf612f%3A%3A8144fe9f9f791fdd2cfd1b4663785c76%3A%3A1787618179%3A%3Adb"
+    t_hash_t: "67d389659291038dedb81306a720e347%3A%3A122a4468b4726f50ab2f0323c3a00732%3A%3A1787619916%3A%3Adb%3A%3Am",
+    addhash: "40b9f83a6380cc65025fec697513a61b%3A%3A3c77f4609854ba210ee56a7db7358957%3A%3A1787619852%3A%3Adb"
   };
   tokenCache = json;
   cookieHeader = `t_hash_t=${json.t_hash_t}; ott=nf; t_hash=${json.addhash}; hd=on`;
