@@ -1,9 +1,14 @@
-// mobile_newtv.js – Fixed for series
-// =================================================================
+// mobile_newtv.js – Hotstar (hs) for Nuvio
+// Now fetches token from JSONBin (same as primevideo.js)
+// ES6-compatible (async/await, const/let)
+
+"use strict";
+
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
-const TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
+// Use the same JSONBin URL as primevideo.js (the token generator updates this)
+const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 const BASE_URL = "https://net52.cc/mobile";
 
 const DEFAULT_HEADERS = {
@@ -19,6 +24,7 @@ const DEFAULT_HEADERS = {
 
 let tokenCache = null;
 let cookieHeader = null;
+let rawToken = null;  // for possible userhash, though Hotstar may not need it
 
 function log(msg) { console.log("[MobileNewTV] " + msg); }
 
@@ -26,17 +32,32 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
+// ---------- Token Fetch (exactly like primevideo.js) ----------
 async function fetchToken() {
-  // Skip token fetching – use hardcoded values
-  const json = {
-    t_hash_t: "67d389659291038dedb81306a720e347%3A%3A122a4468b4726f50ab2f0323c3a00732%3A%3A1787619916%3A%3Adb%3A%3Am",
-    addhash: "40b9f83a6380cc65025fec697513a61b%3A%3A3c77f4609854ba210ee56a7db7358957%3A%3A1787619852%3A%3Adb"
-  };
-  tokenCache = json;
-  cookieHeader = `t_hash_t=${json.t_hash_t}; ott=nf; t_hash=${json.addhash}; hd=on`;
-  log("Token loaded from hardcoded values");
-  return json;
+  if (tokenCache) return tokenCache;
+
+  const resp = await fetch(TOKEN_URL);
+  if (!resp.ok) throw new Error(`Token HTTP ${resp.status}`);
+  const json = await resp.json();
+
+  const record = json.record || {};
+  // Hotstar uses t_hash_t and t_hash (like the original logs)
+  const t_hash_t = record.t_hash_t || "";
+  const t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
+  rawToken = record.token || ""; // not used for HS but keep
+
+  if (!t_hash_t) throw new Error("Missing t_hash_t in token");
+
+  // Build Hotstar cookie: ott=hs, t_hash_t, t_hash, hd=on (optional)
+  cookieHeader = `t_hash_t=${t_hash_t}; ott=nf`;
+  if (t_hash) cookieHeader += `; t_hash=${t_hash}`;
+  cookieHeader += "; hd=on";  // from original mobile_newtv.js
+
+  tokenCache = { t_hash_t, t_hash, rawToken };
+  log("Token loaded from JSONBin");
+  return tokenCache;
 }
+
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   const h = { ...DEFAULT_HEADERS };
   if (cookieHeader) h["Cookie"] = cookieHeader;
@@ -51,7 +72,7 @@ async function fetchJson(url, options = {}) {
   return resp.json();
 }
 
-// ---------- API calls ----------
+// ---------- API calls (same as before, but using BASE_URL for HS) ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -90,6 +111,7 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
+  // Hotstar playlist does not use lang or userhash – just id, title, tm
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -131,9 +153,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const seasonList = post.season || [];
     let targetSeasonId = null;
 
-    // Find the season ID by matching the number directly
     for (const s of seasonList) {
-      // s.s is the season number as a string, e.g., "1", "2", ...
       if (parseInt(s.s, 10) === season) {
         targetSeasonId = s.id;
         break;
@@ -145,14 +165,11 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
     log(`Season ID: ${targetSeasonId}`);
 
-    // Fetch all episodes for this season (handles pagination)
     const episodes = await getEpisodes(targetSeasonId, selected.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
 
-    // Find the target episode by matching the number after "E"
     let targetEp = null;
     for (const ep of episodes) {
-      // ep.ep is like "E1", "E2", ...
       const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
       if (epNum === episode) {
         targetEp = ep;

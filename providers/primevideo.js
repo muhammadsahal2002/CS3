@@ -1,17 +1,19 @@
-// primevideo.js – net52.cc mobile Prime Video (pv)
-// =================================================================
+// primevideo.js – net52.cc Prime Video (pv)
+// For Nuvio – ES5-compatible, uses fetch + Promises.
+// Fetches token from JSONBin, uses TMDB title, searches Net52.
+
 "use strict";
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
+var TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
 var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
 
 var cookieHeader = "";
-var userHash = ""; // decoded t_hash_t for playlist query
+var rawToken = "";
 
 function log(msg) {
     console.log("[PrimePV] " + msg);
@@ -21,27 +23,20 @@ function ts() {
     return Math.floor(Date.now() / 1000);
 }
 
-function decodeToken(v) {
-    if (!v) return "";
-    try {
-        return decodeURIComponent(String(v));
-    } catch (e) {
-        return String(v);
-    }
-}
-
 function headers(xhr) {
     var h = {
         "User-Agent": UA,
         "Accept": "*/*",
         "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
         "Referer": BASE + "/mobile/home?app=1",
-        "Cookie": cookieHeader
+        "Origin": BASE,
+        "Cookie": cookieHeader,
+        "X-Requested-With": xhr || "XMLHttpRequest"
     };
-    if (xhr) h["X-Requested-With"] = xhr;
     return h;
 }
 
+// ---------- Token ----------
 function fetchToken() {
     return fetch(TOKEN_URL)
         .then(function(r) {
@@ -49,20 +44,27 @@ function fetchToken() {
             return r.json();
         })
         .then(function(json) {
-            userHash = decodeToken(json.token || json.t_hash_t);
-            if (!userHash || userHash.indexOf("::") === -1) {
-                throw new Error("Bad token in token.json");
+            var record = json.record || {};
+            rawToken = record.token || "";
+            var t_hash_t = record.t_hash_t || "";
+
+            if (!rawToken || rawToken.indexOf("::") === -1) {
+                throw new Error("Invalid token format");
             }
-            // ott=pv is required for Prime
-            cookieHeader = "t_hash_t=" + userHash + "; hd=on; ott=pv; lang=hin";
-            if (json.t_hash) {
-                cookieHeader += "; t_hash=" + decodeToken(json.t_hash);
+
+            cookieHeader = "t_hash_t=" + t_hash_t;
+            cookieHeader += "; lang=eng";
+            if (record.t_hash) {
+                cookieHeader += "; t_hash=" + record.t_hash;
             }
-            log("Token OK");
-            return userHash;
+            cookieHeader += "; ott=pv";
+
+            log("Token OK: " + rawToken.substring(0, 30) + "...");
+            return rawToken;
         });
 }
 
+// ---------- TMDB ----------
 function getTmdbTitle(tmdbId, mediaType) {
     var url = TMDB_BASE + "/" + (mediaType === "movie" ? "movie" : "tv") +
         "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
@@ -74,15 +76,15 @@ function getTmdbTitle(tmdbId, mediaType) {
         });
 }
 
+// ---------- Net52 API ----------
 function search(query) {
-    // PV search – response has searchResult (may not have status:"y")
     var url = PV + "/search.php?s=" + encodeURIComponent(query) +
         "&t=" + ts() + "&ADSearch=false";
     return fetch(url, { headers: headers("XMLHttpRequest") })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data || !data.searchResult) {
-                throw new Error("Search failed (token/ott?)");
+                throw new Error("Search failed (check token/cookies)");
             }
             return data.searchResult || [];
         });
@@ -93,7 +95,9 @@ function getPost(id) {
     return fetch(url, { headers: headers("XMLHttpRequest") })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (!data || data.status !== "y") throw new Error("Post failed");
+            if (!data || data.status !== "y") {
+                throw new Error("Post failed: " + (data.error || "unknown"));
+            }
             return data;
         });
 }
@@ -103,7 +107,6 @@ function getEpisodes(seasonId, seriesId) {
     var page = 1;
 
     function next() {
-        // Same pattern as NF, under /pv/
         var url = PV + "/episodes.php?s=" + encodeURIComponent(seasonId) +
             "&series=" + encodeURIComponent(seriesId) + "&t=" + ts();
         if (page > 1) url += "&page=" + page;
@@ -119,30 +122,31 @@ function getEpisodes(seasonId, seriesId) {
                 }
                 return all;
             })
-            .catch(function() {
-                return all;
-            });
+            .catch(function() { return all; });
     }
     return next();
 }
 
-function getPlaylist(id, title) {
-    // Captured: playlist.php?id=...&t=Title&tm=...&lang=hin&hd=on&userhash=decoded_t_hash_t
+function getPlaylist(id, title, lang) {
+    var langParam = lang || "eng";
     var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
         "&t=" + encodeURIComponent(title) +
         "&tm=" + ts() +
-        "&lang=hin&hd=on&userhash=" + encodeURIComponent(userHash);
+        "&lang=" + langParam +
+        "&hd=on" +
+        "&userhash=" + encodeURIComponent(rawToken);
 
     return fetch(url, { headers: headers("app.netmirror.nmv2") })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data || !data.length || !data[0].sources) {
-                throw new Error("Empty playlist");
+                throw new Error("Empty playlist (maybe wrong language or expired token)");
             }
             return data[0];
         });
 }
 
+// ---------- Main getStreams ----------
 function getStreams(tmdbId, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
@@ -152,7 +156,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return getTmdbTitle(tmdbId, mediaType);
         })
         .then(function(title) {
-            log("Title: " + title);
+            log("TMDB Title: " + title);
             return search(title).then(function(results) {
                 if (!results.length) throw new Error("No results for " + title);
                 var selected = results[0];
@@ -167,10 +171,22 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var selected = ctx.selected;
             var title = ctx.title;
 
+            // Choose language: prefer English, else first available
+            var langList = post.lang || [];
+            var chosenLang = "eng";
+            if (langList.length) {
+                var eng = langList.find(function(l) { return l.s === "eng"; });
+                chosenLang = eng ? eng.s : langList[0].s;
+            }
+            log("Selected language: " + chosenLang);
+
             // Movie
             if (post.type === "m" || mediaType === "movie") {
-                log("Movie");
-                return getPlaylist(selected.id, post.title || title);
+                log("Movie mode");
+                return getPlaylist(selected.id, post.title || title, chosenLang)
+                    .then(function(playlist) {
+                        return { playlist: playlist, post: post, chosenLang: chosenLang };
+                    });
             }
 
             // Series
@@ -187,10 +203,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             log("Season " + season + " → " + targetSeasonId);
 
-            // Prefer episodes.php; fallback to post.episodes if same season
             return getEpisodes(targetSeasonId, selected.id).then(function(eps) {
                 if (!eps.length && post.episodes && post.episodes.length) {
-                    // post may only have last selected season eps
                     eps = post.episodes.filter(function(e) {
                         return e && String(e.s).replace(/^S/i, "") === String(season);
                     });
@@ -207,10 +221,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
                 if (!target) throw new Error("Episode " + episode + " not found");
                 log("EP: " + target.t + " id=" + target.id);
-                return getPlaylist(target.id, post.title || title);
+                return getPlaylist(target.id, post.title || title, chosenLang)
+                    .then(function(playlist) {
+                        return { playlist: playlist, post: post, chosenLang: chosenLang };
+                    });
             });
         })
-        .then(function(playlist) {
+        .then(function(result) {
+            var playlist = result.playlist;
             return playlist.sources.map(function(src) {
                 var file = src.file || "";
                 var url = file.indexOf("http") === 0 ? file : BASE + file;

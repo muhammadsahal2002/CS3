@@ -1,9 +1,14 @@
-// mobile_hotstar.js – Hotstar Mobile API (net52.cc/mobile/hs)
-// =================================================================
+// mobile_newtv.js – Hotstar (hs) for Nuvio
+// Now fetches token from JSONBin (same as primevideo.js)
+// ES6-compatible (async/await, const/let)
+
+"use strict";
+
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
-const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b";
+// Use the same JSONBin URL as primevideo.js (the token generator updates this)
+const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 const BASE_URL = "https://net52.cc/mobile/hs";
 
 const DEFAULT_HEADERS = {
@@ -19,68 +24,55 @@ const DEFAULT_HEADERS = {
 
 let tokenCache = null;
 let cookieHeader = null;
+let rawToken = null;  // for possible userhash, though Hotstar may not need it
 
-function log(msg) { console.log("[Hotstar] " + msg); }
-function getTimestamp() { return Math.floor(Date.now() / 1000); }
+function log(msg) { console.log("[MobileNewTV] " + msg); }
 
-// ========== TOKEN FETCHING ==========
+function getTimestamp() {
+  return Math.floor(Date.now() / 1000);
+}
+
+// ---------- Token Fetch (exactly like primevideo.js) ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
-  
+
   const resp = await fetch(TOKEN_URL);
-  if (!resp.ok) throw new Error(`Failed to fetch token: HTTP ${resp.status}`);
-  
+  if (!resp.ok) throw new Error(`Token HTTP ${resp.status}`);
   const json = await resp.json();
-  
-  // Extract data (works for both wrapped and clean)
-  const data = json.record || json;
-  
-  if (!data.t_hash_t || !data.addhash) {
-    throw new Error("Token JSON missing t_hash_t or addhash");
-  }
-  
-  tokenCache = data;
-  
-  // Create cookie header
-  cookieHeader = `t_hash_t=${data.t_hash_t}; ott=hs; t_hash=${data.addhash}; hd=on`;
-  
-  log("✅ Token loaded");
-  return data;
+
+  const record = json.record || {};
+  // Hotstar uses t_hash_t and t_hash (like the original logs)
+  const t_hash_t = record.t_hash_t || "";
+  const t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
+  rawToken = record.token || ""; // not used for HS but keep
+
+  if (!t_hash_t) throw new Error("Missing t_hash_t in token");
+
+  // Build Hotstar cookie: ott=hs, t_hash_t, t_hash, hd=on (optional)
+  cookieHeader = `t_hash_t=${t_hash_t}; ott=hs`;
+  if (t_hash) cookieHeader += `; t_hash=${t_hash}`;
+  cookieHeader += "; hd=on";  // from original mobile_newtv.js
+
+  tokenCache = { t_hash_t, t_hash, rawToken };
+  log("Token loaded from JSONBin");
+  return tokenCache;
 }
 
-// ========== BUILD HEADERS ==========
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
-  const headers = {
-    "Accept": "*/*",
-    ...DEFAULT_HEADERS,
-    ...extra
-  };
-  
-  if (cookieHeader) {
-    headers["Cookie"] = cookieHeader;
-  }
-  
-  if (requestedWith) {
-    headers["X-Requested-With"] = requestedWith;
-  }
-  
-  return headers;
+  const h = { ...DEFAULT_HEADERS };
+  if (cookieHeader) h["Cookie"] = cookieHeader;
+  if (requestedWith) h["X-Requested-With"] = requestedWith;
+  if (extra) Object.assign(h, extra);
+  return h;
 }
 
-// ========== FETCH WITH COOKIE ==========
 async function fetchJson(url, options = {}) {
-  const headers = buildHeaders(options.headers || {});
-  
-  const resp = await fetch(url, {
-    ...options,
-    headers: headers
-  });
-  
+  const resp = await fetch(url, options);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
   return resp.json();
 }
 
-// ---------- API calls ----------
+// ---------- API calls (same as before, but using BASE_URL for HS) ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -119,6 +111,7 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
+  // Hotstar playlist does not use lang or userhash – just id, title, tm
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -152,9 +145,11 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   let contentId;
 
   if (post.type === "m" || season === undefined || episode === undefined) {
+    // Movie or no episode requested – use main_id if present
     contentId = post.main_id || selected.id;
     log(`Movie / no episode, using ID: ${contentId}`);
   } else {
+    // ---------- TV SERIES ----------
     const seasonList = post.season || [];
     let targetSeasonId = null;
 
@@ -189,15 +184,17 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     contentId = targetEp.id;
   }
 
+  // Get playlist (sources) for the content
   const playlist = await getPlaylist(contentId, title);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
 
+  // Build stream objects
   const streams = playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
-      name: "Hotstarrrrr",
+      name: "Hotstar",
       title: src.label || "Auto",
       url: fileUrl,
       quality: src.label || "Auto",
