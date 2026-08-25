@@ -1,12 +1,12 @@
-// primevideo.js – net52.cc mobile Prime Video (pv)
-// =================================================================
-// Updated: only t_hash_t is used (no separate t_hash).
-// Cookie: t_hash_t + lang=eng + ott=pv
+// primevideo.js – net52.cc Prime Video (pv)
+// For Nuvio – ES5-compatible, uses fetch + Promises.
+// Fetches token from JSONBin, uses TMDB title, searches Net52.
+
 "use strict";
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var TOKEN_URL = "https://raw.githubusercontent.com/muhammadsahal2002/adfree/refs/heads/master/token.json";
+var TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
@@ -15,9 +15,13 @@ var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) Ap
 var cookieHeader = "";
 var rawToken = "";
 
-function log(msg) { console.log("[PrimePV] " + msg); }
+function log(msg) {
+    console.log("[PrimePV] " + msg);
+}
 
-function ts() { return Math.floor(Date.now() / 1000); }
+function ts() {
+    return Math.floor(Date.now() / 1000);
+}
 
 function headers(xhr) {
     var h = {
@@ -32,6 +36,7 @@ function headers(xhr) {
     return h;
 }
 
+// ---------- Token ----------
 function fetchToken() {
     return fetch(TOKEN_URL)
         .then(function(r) {
@@ -40,26 +45,26 @@ function fetchToken() {
         })
         .then(function(json) {
             var record = json.record || {};
-            // raw token (unencoded) – used as userhash
             rawToken = record.token || "";
-            // t_hash_t (already URL-encoded) – cookie
             var t_hash_t = record.t_hash_t || "";
 
             if (!rawToken || rawToken.indexOf("::") === -1) {
-                throw new Error("Invalid token format in token.json");
+                throw new Error("Invalid token format");
             }
 
-            // Build cookie: only t_hash_t + lang=eng + ott=pv (no t_hash)
             cookieHeader = "t_hash_t=" + t_hash_t;
-            cookieHeader += "; lang=eng";   // required
-            cookieHeader += "; ott=pv";     // required for Prime Video
+            cookieHeader += "; lang=eng";
+            if (record.t_hash) {
+                cookieHeader += "; t_hash=" + record.t_hash;
+            }
+            cookieHeader += "; ott=pv";
 
             log("Token OK: " + rawToken.substring(0, 30) + "...");
-            log("Cookie: " + cookieHeader);
             return rawToken;
         });
 }
 
+// ---------- TMDB ----------
 function getTmdbTitle(tmdbId, mediaType) {
     var url = TMDB_BASE + "/" + (mediaType === "movie" ? "movie" : "tv") +
         "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
@@ -71,6 +76,7 @@ function getTmdbTitle(tmdbId, mediaType) {
         });
 }
 
+// ---------- Net52 API ----------
 function search(query) {
     var url = PV + "/search.php?s=" + encodeURIComponent(query) +
         "&t=" + ts() + "&ADSearch=false";
@@ -123,12 +129,11 @@ function getEpisodes(seasonId, seriesId) {
 
 function getPlaylist(id, title, lang) {
     var langParam = lang || "eng";
-
     var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
         "&t=" + encodeURIComponent(title) +
         "&tm=" + ts() +
         "&lang=" + langParam +
-        "&hd=on" +   // or "null" – as per your preference
+        "&hd=on" +
         "&userhash=" + encodeURIComponent(rawToken);
 
     return fetch(url, { headers: headers("app.netmirror.nmv2") })
@@ -141,6 +146,7 @@ function getPlaylist(id, title, lang) {
         });
 }
 
+// ---------- Main getStreams ----------
 function getStreams(tmdbId, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
@@ -227,7 +233,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 var file = src.file || "";
                 var url = file.indexOf("http") === 0 ? file : BASE + file;
                 return {
-                    name: "PrimexxxVideo",
+                    name: "Prime Video",
                     title: src.label || "Auto",
                     url: url,
                     quality: src.label || "Auto",
