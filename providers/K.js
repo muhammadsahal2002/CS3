@@ -1,6 +1,7 @@
 // mobile_nf.js – Netflix (nf) for Nuvio
-// Fetches token from JSONBin, uses TMDB info (title + year) for best match.
-// Fixed: cookie has ott=nf, hd=on, no lang; playlist uses lang=null & hd=on.
+// Fetches token from JSONBin, uses TMDB title + year for best match.
+// Base URL: /mobile (as in your working version)
+// Cookie: ott=nf, hd=on, no lang; playlist uses lang=null&hd=on.
 
 "use strict";
 
@@ -9,7 +10,7 @@ const TMDB_BASE = "https://api.themoviedb.org/3";
 
 // Same JSONBin URL as other plugins
 const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
-const BASE_URL = "https://net52.cc/mobile/nf";   // fixed: /nf
+const BASE_URL = "https://net52.cc/mobile";   // <-- using /mobile (no /nf)
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -121,7 +122,7 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
-  // Use lang=null & hd=on in URL
+  // Use lang=null & hd=on to get Full HD when available
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
