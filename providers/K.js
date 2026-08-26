@@ -1,16 +1,13 @@
 // mobile_nf.js – Netflix (nf) for Nuvio
-// Fetches token from JSONBin, uses TMDB title + year for best match.
-// Base URL: /mobile (as in your working version)
-// Cookie: ott=nf, hd=on, no lang; playlist uses lang=null&hd=on.
+// Improved: fallback search with normalized title when original returns no results.
+// Uses /mobile endpoint (no /nf) – matches your working version.
 
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
-
-// Same JSONBin URL as other plugins
 const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
-const BASE_URL = "https://net52.cc/mobile";   // <-- using /mobile (no /nf)
+const BASE_URL = "https://net52.cc/mobile";   // Netflix uses /mobile (no /nf)
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -31,6 +28,22 @@ function log(msg) { console.log("[NetflixNF] " + msg); }
 
 function getTimestamp() {
   return Math.floor(Date.now() / 1000);
+}
+
+function normalizeTitle(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTitleForSearch(str) {
+  // Remove special characters but keep spaces for search
+  return String(str || "")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ---------- Token Fetch ----------
@@ -83,13 +96,31 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- API calls ----------
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
   return data.searchResult || [];
+}
+
+// ---------- Search with fallback ----------
+async function searchWithFallback(originalTitle, year) {
+  const normalized = normalizeTitleForSearch(originalTitle);
+  let results = await search(originalTitle).catch(() => []);
+  if (results.length > 0) return results;
+
+  log("No results for original title, trying normalized: " + normalized);
+  results = await search(normalized).catch(() => []);
+  if (results.length === 0) return [];
+
+  // If we have a year, filter results that match the year
+  if (year) {
+    const filtered = results.filter(item => item.y === year);
+    if (filtered.length > 0) return filtered;
+  }
+  return results;
 }
 
 async function getPost(id) {
@@ -139,21 +170,40 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const year = tmdbInfo.year;
   log(`TMDB: ${title} (${year})`);
 
-  const results = await search(title);
+  const results = await searchWithFallback(title, year);
   if (!results.length) throw new Error(`No results for "${title}"`);
 
-  // Score results for best match
+  const normalizedTmdbTitle = normalizeTitle(title);
   let best = null;
   let bestScore = -1;
+
   for (const item of results) {
     let score = 0;
     const itemTitle = item.t || "";
     const itemYear = item.y || "";
-    if (itemTitle.toLowerCase() === title.toLowerCase()) score += 50;
+    const normalizedItemTitle = normalizeTitle(itemTitle);
+
+    // Exact match after normalization (ignoring punctuation)
+    if (normalizedItemTitle === normalizedTmdbTitle) score += 50;
+    // Year match
     if (year && itemYear === year) score += 30;
-    if (itemTitle.toLowerCase().indexOf(title.toLowerCase()) !== -1) score += 10;
-    if (score > bestScore) { bestScore = score; best = item; }
+    // Partial match
+    if (normalizedItemTitle.indexOf(normalizedTmdbTitle) !== -1 ||
+        normalizedTmdbTitle.indexOf(normalizedItemTitle) !== -1) {
+      score += 10;
+    }
+    // Length bonus to break ties
+    score += Math.min(itemTitle.length / 10, 5);
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = item;
+    } else if (score === bestScore && best && itemTitle.length > best.t.length) {
+      // Tie-breaker: pick longer title
+      best = item;
+    }
   }
+
   if (!best) {
     best = results[0];
     log(`No exact match, using first: ${best.t}`);
@@ -195,7 +245,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     contentId = targetEp.id;
   }
 
-  const playlist = await getPlaylist(contentId, title);
+  const playlist = await getPlaylist(contentId, post.title || title);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
