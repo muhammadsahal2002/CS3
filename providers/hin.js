@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) with language preference
+// mobile_nf.js – Netflix (nf) with language preference + aggregated logging
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -7,10 +7,10 @@ const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 const BASE_URL = "https://net52.cc/mobile";
 
 // Set your preferred audio language (3-letter code)
-const PREFERRED_LANGUAGE = "hin";   // <-- change to your preference
+const PREFERRED_LANGUAGE = "hin";   // change as needed
 
 const languageNameMap = {
-    "hin": ["Hindi", "(Hindi)"],
+    "hin": ["Hindi", "(Hindi)", "Hindi "],
     "tel": ["Telugu", "(Telugu)"],
     "tam": ["Tamil", "(Tamil)"],
     "kan": ["Kannada", "(Kannada)"],
@@ -41,7 +41,19 @@ let tokenCache = null;
 let cookieHeader = null;
 let rawToken = null;
 
-function log(msg) { console.log("[NetflixNF] " + msg); }
+// ---------- Logging helper: aggregates all logs ----------
+let logBuffer = [];
+
+function log(msg) {
+    logBuffer.push(msg);
+}
+
+function flushLogs() {
+    if (logBuffer.length === 0) return;
+    const combined = logBuffer.join("\n");
+    console.log("[NetflixNF]\n" + combined);
+    logBuffer = [];
+}
 
 function getTimestamp() {
   return Math.floor(Date.now() / 1000);
@@ -118,17 +130,45 @@ async function search(query) {
 }
 
 async function searchWithFallback(originalTitle, year) {
-  const normalized = normalizeTitleForSearch(originalTitle);
-  let results = await search(originalTitle).catch(() => []);
-  if (results.length > 0) return results;
+  let results = [];
 
-  log("No results for original title, trying normalized: " + normalized);
-  results = await search(normalized).catch(() => []);
-  if (results.length === 0) return [];
+  // 1. Try original title
+  results = await search(originalTitle).catch(() => []);
+  if (results.length === 0) {
+    const normalized = normalizeTitleForSearch(originalTitle);
+    log(`No results for original, trying normalized: ${normalized}`);
+    results = await search(normalized).catch(() => []);
+  }
 
-  if (year) {
+  // 2. If preferred language, also search with language keyword
+  if (PREFERRED_LANGUAGE && languageNameMap[PREFERRED_LANGUAGE]) {
+    const langKeywords = languageNameMap[PREFERRED_LANGUAGE];
+    for (const kw of langKeywords) {
+      // Avoid duplicate search if keyword already in title
+      if (originalTitle.indexOf(kw) !== -1) continue;
+      const queryWithLang = originalTitle + " " + kw;
+      log(`Trying language search: ${queryWithLang}`);
+      const langResults = await search(queryWithLang).catch(() => []);
+      if (langResults.length > 0) {
+        // Merge, avoiding duplicates by id
+        const existingIds = new Set(results.map(item => item.id));
+        for (const item of langResults) {
+          if (!existingIds.has(item.id)) {
+            results.push(item);
+            existingIds.add(item.id);
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Filter by year if provided
+  if (year && results.length > 0) {
     const filtered = results.filter(item => item.y === year);
-    if (filtered.length > 0) return filtered;
+    if (filtered.length > 0) {
+      log(`Filtered to ${filtered.length} results with year ${year}`);
+      return filtered;
+    }
   }
   return results;
 }
@@ -170,7 +210,12 @@ async function getPlaylist(id, title) {
   return data[0];
 }
 
+// ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
+  // Clear previous logs
+  logBuffer = [];
+  log("=== Starting Netflix stream fetch ===");
+
   await fetchToken();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
@@ -179,11 +224,23 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   log(`TMDB: ${title} (${year})`);
 
   const results = await searchWithFallback(title, year);
-  if (!results.length) throw new Error(`No results for "${title}"`);
+  if (!results.length) {
+    log(`❌ No results found for "${title}"`);
+    flushLogs();
+    throw new Error(`No results for "${title}"`);
+  }
+
+  // Build a detailed log of all results
+  let resultLines = [];
+  for (const item of results) {
+    resultLines.push(`  ${item.t} (${item.y}) id=${item.id}`);
+  }
+  log("All search results:\n" + resultLines.join("\n"));
 
   const normalizedTmdbTitle = normalizeTitle(title);
   let best = null;
   let bestScore = -1;
+  let scoreLines = [];
 
   for (const item of results) {
     let score = 0;
@@ -200,16 +257,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     score += Math.min(itemTitle.length / 10, 5);
 
     // Language preference bonus
+    let langBonus = 0;
     if (PREFERRED_LANGUAGE && languageNameMap[PREFERRED_LANGUAGE]) {
       const keywords = languageNameMap[PREFERRED_LANGUAGE];
       for (const kw of keywords) {
         if (itemTitle.indexOf(kw) !== -1) {
+          langBonus = 20;
           score += 20;
           break;
         }
       }
     }
-
+    scoreLines.push(`  ${itemTitle}: score=${score}${langBonus ? ' (+20 language bonus)' : ''}`);
     if (score > bestScore) {
       bestScore = score;
       best = item;
@@ -218,11 +277,13 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
   }
 
+  log("Scores:\n" + scoreLines.join("\n"));
+
   if (!best) {
     best = results[0];
     log(`No exact match, using first: ${best.t}`);
   } else {
-    log(`Selected: ${best.t} (${best.y}) score=${bestScore}`);
+    log(`✅ Selected: ${best.t} (${best.y}) score=${bestScore}`);
   }
 
   const post = await getPost(best.id);
@@ -278,7 +339,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
   }
 
-  return playlist.sources.map(src => {
+  const streams = playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
       name: "Netflix",
@@ -294,6 +355,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       subtitles: subtitles
     };
   });
+
+  log("✅ Stream fetch complete.");
+  flushLogs();   // Output all logs at once
+  return streams;
 }
 
 module.exports = { getStreams };
