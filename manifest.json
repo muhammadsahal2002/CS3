@@ -51,6 +51,18 @@
       "contentLanguage": ["en"]
     },
     {
+      "id": "prvideo",
+      "name": "PRIMEXxxxx VIDEO",
+      "description": "primevideo + cruncyroll",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/K.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
+    },
+{
       "id": "primevideo",
       "name": "PRIME VIDEO",
       "description": "primevideo + cruncyroll",
@@ -62,6 +74,7 @@
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     }
+
 
    
 
