@@ -1,5 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Full HD, language priority, subtitles
-// This script gets all qualities (Auto, Full HD, Mid HD, Low HD) as in original app.
+// mobile_nf.js – Netflix (nf) with language priority picker
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -28,7 +27,7 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
-// ---------- Language priority (Hindi > English > no tag > other languages) ----------
+// ---------- Language priority ----------
 function langPriority(title) {
   var t = (title || "").toLowerCase();
   if (/\bhindi\b/.test(t)) return 100;
@@ -75,7 +74,6 @@ async function fetchToken() {
 
   if (!t_hash_t) throw new Error("Missing t_hash_t in token");
 
-  // Cookie matches original: ott=nf, hd=on
   cookieHeader = `t_hash_t=${t_hash_t}; ott=nf`;
   if (t_hash) cookieHeader += `; t_hash=${t_hash}`;
   cookieHeader += "; hd=on";
@@ -164,7 +162,7 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
-  // lang=null & hd=on enables Full HD (1080p) when available
+  // 🔥 This line enables Full HD (1080p) when available
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -184,7 +182,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const results = await searchWithFallback(title, year);
   if (!results.length) throw new Error(`No results for "${title}"`);
 
-  // ---- Language priority picker ----
+  // ---- Use language priority picker ----
   let selected = pickBestResult(results, year);
   if (!selected) {
     selected = results[0];
@@ -230,10 +228,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
-
-  // Log qualities available (for debugging)
-  const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
-  log(`Available qualities: ${qualities.join(', ')}`);
 
   const subtitles = [];
   if (playlist.tracks && playlist.tracks.length) {
