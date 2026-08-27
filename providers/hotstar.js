@@ -1,13 +1,8 @@
-// mobile_newtv.js – Hotstar (hs) for Nuvio
-// Now fetches token from JSONBin (same as primevideo.js)
-// ES6-compatible (async/await, const/let)
-
+// mobile_newtv.js – Hotstar (hs) with subtitles
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
-
-// Use the same JSONBin URL as primevideo.js (the token generator updates this)
 const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 const BASE_URL = "https://net52.cc/mobile/hs";
 
@@ -24,7 +19,7 @@ const DEFAULT_HEADERS = {
 
 let tokenCache = null;
 let cookieHeader = null;
-let rawToken = null;  // for possible userhash, though Hotstar may not need it
+let rawToken = null;
 
 function log(msg) { console.log("[MobileNewTV] " + msg); }
 
@@ -32,7 +27,21 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
-// ---------- Token Fetch (exactly like primevideo.js) ----------
+function normalizeTitle(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTitleForSearch(str) {
+  return String(str || "")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -41,17 +50,15 @@ async function fetchToken() {
   const json = await resp.json();
 
   const record = json.record || {};
-  // Hotstar uses t_hash_t and t_hash (like the original logs)
   const t_hash_t = record.t_hash_t || "";
   const t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
-  rawToken = record.token || ""; // not used for HS but keep
+  rawToken = record.token || "";
 
   if (!t_hash_t) throw new Error("Missing t_hash_t in token");
 
-  // Build Hotstar cookie: ott=hs, t_hash_t, t_hash, hd=on (optional)
   cookieHeader = `t_hash_t=${t_hash_t}; ott=hs`;
   if (t_hash) cookieHeader += `; t_hash=${t_hash}`;
-  cookieHeader += "; hd=on";  // from original mobile_newtv.js
+  cookieHeader += "; hd=on";
 
   tokenCache = { t_hash_t, t_hash, rawToken };
   log("Token loaded from JSONBin");
@@ -72,13 +79,38 @@ async function fetchJson(url, options = {}) {
   return resp.json();
 }
 
-// ---------- API calls (same as before, but using BASE_URL for HS) ----------
+async function getTmdbInfo(tmdbId, mediaType) {
+  const endpoint = mediaType === "movie" ? "movie" : "tv";
+  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  const data = await fetchJson(url);
+  const title = data.title || data.name;
+  const year = data.release_date ? data.release_date.substring(0,4) :
+               (data.first_air_date ? data.first_air_date.substring(0,4) : "");
+  return { title, year };
+}
+
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
   return data.searchResult || [];
+}
+
+async function searchWithFallback(originalTitle, year) {
+  const normalized = normalizeTitleForSearch(originalTitle);
+  let results = await search(originalTitle).catch(() => []);
+  if (results.length > 0) return results;
+
+  log("No results for original title, trying normalized: " + normalized);
+  results = await search(normalized).catch(() => []);
+  if (results.length === 0) return [];
+
+  if (year) {
+    const filtered = results.filter(item => item.y === year);
+    if (filtered.length > 0) return filtered;
+  }
+  return results;
 }
 
 async function getPost(id) {
@@ -111,87 +143,111 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
-  // Hotstar playlist does not use lang or userhash – just id, title, tm
-  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}`;
+  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
   if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
   return data[0];
 }
 
-// ---------- TMDB helpers ----------
-async function getTmdbTitle(tmdbId, mediaType) {
-  const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const data = await fetchJson(url);
-  return data.title || data.name;
-}
-
-// ---------- Main exported function ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
-  const title = await getTmdbTitle(tmdbId, mediaType);
-  log(`Title: ${title}`);
+  const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
+  const title = tmdbInfo.title;
+  const year = tmdbInfo.year;
+  log(`TMDB: ${title} (${year})`);
 
-  const results = await search(title);
+  const results = await searchWithFallback(title, year);
   if (!results.length) throw new Error(`No results for "${title}"`);
-  const selected = results[0];
-  log(`Selected: ${selected.t} (ID: ${selected.id})`);
 
-  const post = await getPost(selected.id);
+  const normalizedTmdbTitle = normalizeTitle(title);
+  let best = null;
+  let bestScore = -1;
+
+  for (const item of results) {
+    let score = 0;
+    const itemTitle = item.t || "";
+    const itemYear = item.y || "";
+    const normalizedItemTitle = normalizeTitle(itemTitle);
+
+    if (normalizedItemTitle === normalizedTmdbTitle) score += 50;
+    if (year && itemYear === year) score += 30;
+    if (normalizedItemTitle.indexOf(normalizedTmdbTitle) !== -1 ||
+        normalizedTmdbTitle.indexOf(normalizedItemTitle) !== -1) {
+      score += 10;
+    }
+    score += Math.min(itemTitle.length / 10, 5);
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = item;
+    } else if (score === bestScore && best && itemTitle.length > best.t.length) {
+      best = item;
+    }
+  }
+
+  if (!best) {
+    best = results[0];
+    log(`No exact match, using first: ${best.t}`);
+  } else {
+    log(`Selected: ${best.t} (${best.y}) score=${bestScore}`);
+  }
+
+  const post = await getPost(best.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
 
-  if (post.type === "m" || season === undefined || episode === undefined) {
-    // Movie or no episode requested – use main_id if present
-    contentId = post.main_id || selected.id;
-    log(`Movie / no episode, using ID: ${contentId}`);
+  if (post.type === "m" || mediaType === "movie") {
+    contentId = post.main_id || best.id;
+    log(`Movie, using ID: ${contentId}`);
   } else {
-    // ---------- TV SERIES ----------
     const seasonList = post.season || [];
     let targetSeasonId = null;
-
     for (const s of seasonList) {
       if (parseInt(s.s, 10) === season) {
         targetSeasonId = s.id;
         break;
       }
     }
-
-    if (!targetSeasonId) {
-      throw new Error(`Season ${season} not found in series data`);
-    }
+    if (!targetSeasonId) throw new Error(`Season ${season} not found`);
     log(`Season ID: ${targetSeasonId}`);
 
-    const episodes = await getEpisodes(targetSeasonId, selected.id);
+    const episodes = await getEpisodes(targetSeasonId, best.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
 
     let targetEp = null;
     for (const ep of episodes) {
       const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
-      if (epNum === episode) {
-        targetEp = ep;
-        break;
-      }
+      if (epNum === episode) { targetEp = ep; break; }
     }
-
-    if (!targetEp) {
-      throw new Error(`Episode ${episode} not found in season ${season}`);
-    }
+    if (!targetEp) throw new Error(`Episode ${episode} not found`);
     log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
     contentId = targetEp.id;
   }
 
-  // Get playlist (sources) for the content
-  const playlist = await getPlaylist(contentId, title);
+  const playlist = await getPlaylist(contentId, post.title || title);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
 
-  // Build stream objects
-  const streams = playlist.sources.map(src => {
+  const subtitles = [];
+  if (playlist.tracks && playlist.tracks.length) {
+    for (const track of playlist.tracks) {
+      let url = track.file || "";
+      if (url && url.indexOf("http") !== 0) {
+        url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
+      }
+      subtitles.push({
+        url: url,
+        language: track.label || "Unknown",
+        default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
+      });
+    }
+  }
+
+  return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
       name: "Hotstar",
@@ -203,11 +259,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
         "Cookie": cookieHeader,
         "Origin": "https://net52.cc"
-      }
+      },
+      subtitles: subtitles
     };
   });
-
-  return streams;
 }
 
 module.exports = { getStreams };
