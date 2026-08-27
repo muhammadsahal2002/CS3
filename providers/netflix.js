@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) with subtitles
+// mobile_nf.js – Netflix (nf) with language priority picker
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -27,12 +27,29 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
-function normalizeTitle(str) {
-  return String(str || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+// ---------- Language priority ----------
+function langPriority(title) {
+  var t = (title || "").toLowerCase();
+  if (/\bhindi\b/.test(t)) return 100;
+  if (/\benglish\b/.test(t)) return 90;
+  if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
+  return 10;
+}
+
+function pickBestResult(results, year) {
+  if (!results || !results.length) return null;
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var score = langPriority(r.t) * 10;
+    if (year && r.y === year) score += 5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
 }
 
 function normalizeTitleForSearch(str) {
@@ -42,6 +59,7 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
+// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -89,6 +107,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -143,6 +162,7 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
+  // 🔥 This line enables Full HD (1080p) when available
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -150,6 +170,7 @@ async function getPlaylist(id, title) {
   return data[0];
 }
 
+// ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
@@ -161,46 +182,22 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const results = await searchWithFallback(title, year);
   if (!results.length) throw new Error(`No results for "${title}"`);
 
-  const normalizedTmdbTitle = normalizeTitle(title);
-  let best = null;
-  let bestScore = -1;
-
-  for (const item of results) {
-    let score = 0;
-    const itemTitle = item.t || "";
-    const itemYear = item.y || "";
-    const normalizedItemTitle = normalizeTitle(itemTitle);
-
-    if (normalizedItemTitle === normalizedTmdbTitle) score += 50;
-    if (year && itemYear === year) score += 30;
-    if (normalizedItemTitle.indexOf(normalizedTmdbTitle) !== -1 ||
-        normalizedTmdbTitle.indexOf(normalizedItemTitle) !== -1) {
-      score += 10;
-    }
-    score += Math.min(itemTitle.length / 10, 5);
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = item;
-    } else if (score === bestScore && best && itemTitle.length > best.t.length) {
-      best = item;
-    }
-  }
-
-  if (!best) {
-    best = results[0];
-    log(`No exact match, using first: ${best.t}`);
+  // ---- Use language priority picker ----
+  let selected = pickBestResult(results, year);
+  if (!selected) {
+    selected = results[0];
+    log(`No pick, using first: ${selected.t}`);
   } else {
-    log(`Selected: ${best.t} (${best.y}) score=${bestScore}`);
+    log(`Selected: ${selected.t} (${selected.y})`);
   }
 
-  const post = await getPost(best.id);
+  const post = await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
 
   if (post.type === "m" || mediaType === "movie") {
-    contentId = post.main_id || best.id;
+    contentId = post.main_id || selected.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
     const seasonList = post.season || [];
@@ -214,7 +211,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     if (!targetSeasonId) throw new Error(`Season ${season} not found`);
     log(`Season ID: ${targetSeasonId}`);
 
-    const episodes = await getEpisodes(targetSeasonId, best.id);
+    const episodes = await getEpisodes(targetSeasonId, selected.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
 
     let targetEp = null;
