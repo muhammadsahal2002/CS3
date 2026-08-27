@@ -1,13 +1,10 @@
-// mobile_nf.js – Netflix (nf) for Nuvio
-// Improved: fallback search with normalized title when original returns no results.
-// Uses /mobile endpoint (no /nf) – matches your working version.
-
+// mobile_nf.js – Netflix (nf) with subtitles
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
-const BASE_URL = "https://net52.cc/mobile";   // Netflix uses /mobile (no /nf)
+const BASE_URL = "https://net52.cc/mobile";
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -39,14 +36,12 @@ function normalizeTitle(str) {
 }
 
 function normalizeTitleForSearch(str) {
-  // Remove special characters but keep spaces for search
   return String(str || "")
     .replace(/[^a-zA-Z0-9\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// ---------- Token Fetch ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -61,7 +56,6 @@ async function fetchToken() {
 
   if (!t_hash_t) throw new Error("Missing t_hash_t in token");
 
-  // Cookie: ott=nf, hd=on, no lang
   cookieHeader = `t_hash_t=${t_hash_t}; ott=nf`;
   if (t_hash) cookieHeader += `; t_hash=${t_hash}`;
   cookieHeader += "; hd=on";
@@ -85,7 +79,6 @@ async function fetchJson(url, options = {}) {
   return resp.json();
 }
 
-// ---------- TMDB: title + year ----------
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
@@ -96,7 +89,6 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -105,7 +97,6 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-// ---------- Search with fallback ----------
 async function searchWithFallback(originalTitle, year) {
   const normalized = normalizeTitleForSearch(originalTitle);
   let results = await search(originalTitle).catch(() => []);
@@ -115,7 +106,6 @@ async function searchWithFallback(originalTitle, year) {
   results = await search(normalized).catch(() => []);
   if (results.length === 0) return [];
 
-  // If we have a year, filter results that match the year
   if (year) {
     const filtered = results.filter(item => item.y === year);
     if (filtered.length > 0) return filtered;
@@ -153,7 +143,6 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
-  // Use lang=null & hd=on to get Full HD when available
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -161,7 +150,6 @@ async function getPlaylist(id, title) {
   return data[0];
 }
 
-// ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
@@ -183,23 +171,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const itemYear = item.y || "";
     const normalizedItemTitle = normalizeTitle(itemTitle);
 
-    // Exact match after normalization (ignoring punctuation)
     if (normalizedItemTitle === normalizedTmdbTitle) score += 50;
-    // Year match
     if (year && itemYear === year) score += 30;
-    // Partial match
     if (normalizedItemTitle.indexOf(normalizedTmdbTitle) !== -1 ||
         normalizedTmdbTitle.indexOf(normalizedItemTitle) !== -1) {
       score += 10;
     }
-    // Length bonus to break ties
     score += Math.min(itemTitle.length / 10, 5);
 
     if (score > bestScore) {
       bestScore = score;
       best = item;
     } else if (score === bestScore && best && itemTitle.length > best.t.length) {
-      // Tie-breaker: pick longer title
       best = item;
     }
   }
@@ -220,7 +203,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     contentId = post.main_id || best.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
-    // Series
     const seasonList = post.season || [];
     let targetSeasonId = null;
     for (const s of seasonList) {
@@ -250,7 +232,21 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     throw new Error("No sources in playlist");
   }
 
-  // Build streams
+  const subtitles = [];
+  if (playlist.tracks && playlist.tracks.length) {
+    for (const track of playlist.tracks) {
+      let url = track.file || "";
+      if (url && url.indexOf("http") !== 0) {
+        url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
+      }
+      subtitles.push({
+        url: url,
+        language: track.label || "Unknown",
+        default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
+      });
+    }
+  }
+
   return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
@@ -263,7 +259,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
         "Cookie": cookieHeader,
         "Origin": "https://net52.cc"
-      }
+      },
+      subtitles: subtitles
     };
   });
 }
