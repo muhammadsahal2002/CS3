@@ -1,30 +1,10 @@
-// mobile_nf.js – Netflix (nf) with language preference + aggregated logging
+// mobile_nf.js – Netflix (nf) with language priority picker
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
 const BASE_URL = "https://net52.cc/mobile";
-
-// Set your preferred audio language (3-letter code)
-const PREFERRED_LANGUAGE = "hin";   // change as needed
-
-const languageNameMap = {
-    "hin": ["Hindi", "(Hindi)", "Hindi "],
-    "tel": ["Telugu", "(Telugu)"],
-    "tam": ["Tamil", "(Tamil)"],
-    "kan": ["Kannada", "(Kannada)"],
-    "mal": ["Malayalam", "(Malayalam)"],
-    "eng": ["English", "(English)"],
-    "spa": ["Spanish", "(Spanish)"],
-    "fra": ["French", "(French)"],
-    "deu": ["German", "(German)"],
-    "por": ["Portuguese", "(Portuguese)"],
-    "jpn": ["Japanese", "(Japanese)"],
-    "ita": ["Italian", "(Italian)"],
-    "pol": ["Polish", "(Polish)"],
-    "rus": ["Russian", "(Russian)"]
-};
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -41,30 +21,35 @@ let tokenCache = null;
 let cookieHeader = null;
 let rawToken = null;
 
-// ---------- Logging helper: aggregates all logs ----------
-let logBuffer = [];
-
-function log(msg) {
-    logBuffer.push(msg);
-}
-
-function flushLogs() {
-    if (logBuffer.length === 0) return;
-    const combined = logBuffer.join("\n");
-    console.log("[NetflixNF]\n" + combined);
-    logBuffer = [];
-}
+function log(msg) { console.log("[NetflixNF] " + msg); }
 
 function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
-function normalizeTitle(str) {
-  return String(str || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+// ---------- Language priority ----------
+function langPriority(title) {
+  var t = (title || "").toLowerCase();
+  if (/\bhindi\b/.test(t)) return 100;
+  if (/\benglish\b/.test(t)) return 90;
+  if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
+  return 10;
+}
+
+function pickBestResult(results, year) {
+  if (!results || !results.length) return null;
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var score = langPriority(r.t) * 10;
+    if (year && r.y === year) score += 5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
 }
 
 function normalizeTitleForSearch(str) {
@@ -74,6 +59,7 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
+// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -121,6 +107,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -130,45 +117,17 @@ async function search(query) {
 }
 
 async function searchWithFallback(originalTitle, year) {
-  let results = [];
+  const normalized = normalizeTitleForSearch(originalTitle);
+  let results = await search(originalTitle).catch(() => []);
+  if (results.length > 0) return results;
 
-  // 1. Try original title
-  results = await search(originalTitle).catch(() => []);
-  if (results.length === 0) {
-    const normalized = normalizeTitleForSearch(originalTitle);
-    log(`No results for original, trying normalized: ${normalized}`);
-    results = await search(normalized).catch(() => []);
-  }
+  log("No results for original title, trying normalized: " + normalized);
+  results = await search(normalized).catch(() => []);
+  if (results.length === 0) return [];
 
-  // 2. If preferred language, also search with language keyword
-  if (PREFERRED_LANGUAGE && languageNameMap[PREFERRED_LANGUAGE]) {
-    const langKeywords = languageNameMap[PREFERRED_LANGUAGE];
-    for (const kw of langKeywords) {
-      // Avoid duplicate search if keyword already in title
-      if (originalTitle.indexOf(kw) !== -1) continue;
-      const queryWithLang = originalTitle + " " + kw;
-      log(`Trying language search: ${queryWithLang}`);
-      const langResults = await search(queryWithLang).catch(() => []);
-      if (langResults.length > 0) {
-        // Merge, avoiding duplicates by id
-        const existingIds = new Set(results.map(item => item.id));
-        for (const item of langResults) {
-          if (!existingIds.has(item.id)) {
-            results.push(item);
-            existingIds.add(item.id);
-          }
-        }
-      }
-    }
-  }
-
-  // 3. Filter by year if provided
-  if (year && results.length > 0) {
+  if (year) {
     const filtered = results.filter(item => item.y === year);
-    if (filtered.length > 0) {
-      log(`Filtered to ${filtered.length} results with year ${year}`);
-      return filtered;
-    }
+    if (filtered.length > 0) return filtered;
   }
   return results;
 }
@@ -212,10 +171,6 @@ async function getPlaylist(id, title) {
 
 // ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
-  // Clear previous logs
-  logBuffer = [];
-  log("=== Starting Netflix stream fetch ===");
-
   await fetchToken();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
@@ -224,75 +179,24 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   log(`TMDB: ${title} (${year})`);
 
   const results = await searchWithFallback(title, year);
-  if (!results.length) {
-    log(`❌ No results found for "${title}"`);
-    flushLogs();
-    throw new Error(`No results for "${title}"`);
-  }
+  if (!results.length) throw new Error(`No results for "${title}"`);
 
-  // Build a detailed log of all results
-  let resultLines = [];
-  for (const item of results) {
-    resultLines.push(`  ${item.t} (${item.y}) id=${item.id}`);
-  }
-  log("All search results:\n" + resultLines.join("\n"));
-
-  const normalizedTmdbTitle = normalizeTitle(title);
-  let best = null;
-  let bestScore = -1;
-  let scoreLines = [];
-
-  for (const item of results) {
-    let score = 0;
-    const itemTitle = item.t || "";
-    const itemYear = item.y || "";
-    const normalizedItemTitle = normalizeTitle(itemTitle);
-
-    if (normalizedItemTitle === normalizedTmdbTitle) score += 50;
-    if (year && itemYear === year) score += 30;
-    if (normalizedItemTitle.indexOf(normalizedTmdbTitle) !== -1 ||
-        normalizedTmdbTitle.indexOf(normalizedItemTitle) !== -1) {
-      score += 10;
-    }
-    score += Math.min(itemTitle.length / 10, 5);
-
-    // Language preference bonus
-    let langBonus = 0;
-    if (PREFERRED_LANGUAGE && languageNameMap[PREFERRED_LANGUAGE]) {
-      const keywords = languageNameMap[PREFERRED_LANGUAGE];
-      for (const kw of keywords) {
-        if (itemTitle.indexOf(kw) !== -1) {
-          langBonus = 20;
-          score += 20;
-          break;
-        }
-      }
-    }
-    scoreLines.push(`  ${itemTitle}: score=${score}${langBonus ? ' (+20 language bonus)' : ''}`);
-    if (score > bestScore) {
-      bestScore = score;
-      best = item;
-    } else if (score === bestScore && best && itemTitle.length > best.t.length) {
-      best = item;
-    }
-  }
-
-  log("Scores:\n" + scoreLines.join("\n"));
-
-  if (!best) {
-    best = results[0];
-    log(`No exact match, using first: ${best.t}`);
+  // ---- Use language priority picker ----
+  let selected = pickBestResult(results, year);
+  if (!selected) {
+    selected = results[0];
+    log(`No pick, using first: ${selected.t}`);
   } else {
-    log(`✅ Selected: ${best.t} (${best.y}) score=${bestScore}`);
+    log(`Selected: ${selected.t} (${selected.y})`);
   }
 
-  const post = await getPost(best.id);
+  const post = await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
 
   if (post.type === "m" || mediaType === "movie") {
-    contentId = post.main_id || best.id;
+    contentId = post.main_id || selected.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
     const seasonList = post.season || [];
@@ -306,7 +210,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     if (!targetSeasonId) throw new Error(`Season ${season} not found`);
     log(`Season ID: ${targetSeasonId}`);
 
-    const episodes = await getEpisodes(targetSeasonId, best.id);
+    const episodes = await getEpisodes(targetSeasonId, selected.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
 
     let targetEp = null;
@@ -339,7 +243,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
   }
 
-  const streams = playlist.sources.map(src => {
+  return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
       name: "Netflix",
@@ -355,10 +259,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       subtitles: subtitles
     };
   });
-
-  log("✅ Stream fetch complete.");
-  flushLogs();   // Output all logs at once
-  return streams;
 }
 
 module.exports = { getStreams };
