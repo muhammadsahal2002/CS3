@@ -3,7 +3,7 @@
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
-const TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
+const TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
 const BASE_URL = "https://net52.cc/mobile/hs";
 
 const DEFAULT_HEADERS = {
