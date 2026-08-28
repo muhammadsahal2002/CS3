@@ -61,6 +61,18 @@
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
+    },
+{
+      "id": "moviebox",
+      "name": "Movie Box",
+      "description": "primevideo + cruncyroll",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/moviebox.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
     }
  
 
