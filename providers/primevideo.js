@@ -3,7 +3,7 @@
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
+var TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
