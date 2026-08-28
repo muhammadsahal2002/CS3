@@ -479,7 +479,7 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
                     name: "MovieBox",
                     title: `${mediaTitle} S${se}E${ep} (${item.lang}) - ${quality} [Fallback]`,
                     url: video.resourceLink,
-                    quality,
+                    Moviebox quality,
                     headers: {
                       "Referer": API_BASE,
                       "User-Agent": `com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; MovieBox; Build/BP22.250325.006; Cronet/133.0.6876.3)`
