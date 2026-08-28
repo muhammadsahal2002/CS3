@@ -455,7 +455,7 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
               const subtitles = yield fetchSubtitles(item.id, streamId, item.lang);
               allStreams.push({
                 name: "MovieBox",
-                title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${quality} [${formatType}]`,
+                title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${Moviebox quality} [${formatType}]`,
                 url: stream.url,
                 quality,
                 headers: __spreadValues({
@@ -477,9 +477,9 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
                   const ep = video.ep || episode;
                   allStreams.push({
                     name: "MovieBox",
-                    title: `${mediaTitle} S${se}E${ep} (${item.lang}) - ${quality} [Fallback]`,
+                    title: `${mediaTitle} S${se}E${ep} (${item.lang}) - ${Moviebox quality} [Fallback]`,
                     url: video.resourceLink,
-                    Moviebox quality,
+                    quality,
                     headers: {
                       "Referer": API_BASE,
                       "User-Agent": `com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; MovieBox; Build/BP22.250325.006; Cronet/133.0.6876.3)`
