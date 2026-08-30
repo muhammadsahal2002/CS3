@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Year-first scoring + title similarity
+// mobile_nf.js – Netflix (nf) – Year-first selection + forced variations
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -25,77 +25,6 @@ function log(msg) { console.log("[NetflixNF] " + msg); }
 
 function getTimestamp() {
   return Math.floor(Date.now() / 1000);
-}
-
-// ---------- Language priority (tiebreaker only) ----------
-function langPriority(title) {
-  var t = (title || "").toLowerCase();
-  if (/\bhindi\b/.test(t)) return 100;
-  if (/\benglish\b/.test(t)) return 90;
-  if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
-  return 10;
-}
-
-// ---------- Title similarity (simple: longest common prefix + length bonus) ----------
-function titleSimilarity(a, b) {
-  var s1 = (a || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  var s2 = (b || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (s1 === s2) return 100;
-  // Count matching characters
-  var maxLen = Math.max(s1.length, s2.length);
-  var matches = 0;
-  for (var i = 0; i < Math.min(s1.length, s2.length); i++) {
-    if (s1[i] === s2[i]) matches++;
-  }
-  // Also check if one contains the other
-  if (s1.indexOf(s2) !== -1 || s2.indexOf(s1) !== -1) {
-    matches += Math.min(s1.length, s2.length) * 0.5;
-  }
-  return Math.min(100, (matches / maxLen) * 100 + (Math.min(s1.length, s2.length) / maxLen) * 20);
-}
-
-function pickBestResult(results, title, year) {
-  if (!results || !results.length) return null;
-
-  var best = null;
-  var bestScore = -999;
-
-  for (var i = 0; i < results.length; i++) {
-    var r = results[i];
-    var score = 0;
-
-    // ---- YEAR MATCH (Highest priority) ----
-    if (year && r.y === year) {
-      score += 50;   // Year match: highest weight
-    } else if (year && r.y !== year) {
-      score -= 10;   // Penalty for wrong year
-    }
-
-    // ---- TITLE SIMILARITY ----
-    var sim = titleSimilarity(r.t, title);
-    score += sim * 0.5;   // Up to 50 points for near-exact title match
-
-    // ---- LENGTH BONUS (helps differentiate "Mad" vs "Mad Square") ----
-    // Longer titles get a small bonus if they contain the search term
-    var normTitle = (r.t || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    var normSearch = (title || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (normTitle.indexOf(normSearch) !== -1 && normTitle.length > normSearch.length) {
-      score += 5;
-    }
-
-    // ---- LANGUAGE (tiebreaker only – small weight) ----
-    score += langPriority(r.t) * 0.1;   // Max 10 points
-
-    // ---- LOG SCORING ----
-    log(`  "${r.t}" (${r.y}): year=${year && r.y === year ? '+50' : '-10'}, sim=${Math.round(sim)}, total=${Math.round(score)}`);
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = r;
-    }
-  }
-
-  return best;
 }
 
 function normalizeTitleForSearch(str) {
@@ -153,7 +82,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- Net52 API (multiple search attempts) ----------
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -162,45 +91,69 @@ async function search(query) {
   return data.searchResult || [];
 }
 
+// ---------- Aggressive search with multiple variations ----------
 async function searchWithFallback(originalTitle, year) {
   const normalized = normalizeTitleForSearch(originalTitle);
-  let results = [];
+  let allResults = [];
+  let queries = [];
 
-  // 1. Try original title
-  results = await search(originalTitle).catch(() => []);
-  if (results.length > 0) return results;
+  // Build search queries
+  queries.push(originalTitle);
+  queries.push(normalized);
 
-  // 2. Try normalized
-  log("No results for original, trying normalized: " + normalized);
-  results = await search(normalized).catch(() => []);
-  if (results.length > 0) return results;
-
-  // 3. Try title + year
-  if (year) {
-    const withYear = `${normalized} ${year}`;
-    log("Trying with year: " + withYear);
-    results = await search(withYear).catch(() => []);
-    if (results.length > 0) return results;
-  }
-
-  // 4. Special case: for "Mad" vs "Mad Square"
+  // For special cases like "Mad" -> also try "Mad Square", "Mad 2", etc.
   if (normalized.toLowerCase() === "mad") {
-    const variations = ["Mad Square", "MAD Square", "Mad2", "MAD2", "Mad 2"];
-    for (const variant of variations) {
-      log("Trying variation: " + variant);
-      const vResults = await search(variant).catch(() => []);
-      if (vResults.length > 0) {
-        // Filter by year if possible
-        if (year) {
-          const filtered = vResults.filter(item => item.y === year);
-          if (filtered.length > 0) return filtered;
-        }
-        return vResults;
-      }
+    queries.push("Mad Square");
+    queries.push("MAD Square");
+    queries.push("Mad 2");
+    queries.push("MAD 2");
+    queries.push("Mad²");
+    queries.push("MAD²");
+    // Also try with year
+    if (year) {
+      queries.push(`Mad Square ${year}`);
+      queries.push(`Mad ${year}`);
     }
   }
 
-  return [];
+  // Also try with year appended to original
+  if (year) {
+    queries.push(`${originalTitle} ${year}`);
+    queries.push(`${normalized} ${year}`);
+  }
+
+  // Remove duplicates
+  const uniqueQueries = [...new Set(queries)];
+
+  // Search each query and collect results
+  const seenIds = new Set();
+  for (const q of uniqueQueries) {
+    log(`Searching: "${q}"`);
+    try {
+      const results = await search(q);
+      if (results && results.length > 0) {
+        for (const item of results) {
+          if (!seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            allResults.push(item);
+          }
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Filter by year if possible
+  if (year && allResults.length > 0) {
+    const yearMatches = allResults.filter(item => item.y === year);
+    if (yearMatches.length > 0) {
+      log(`Found ${yearMatches.length} results with year ${year}`);
+      return yearMatches;
+    }
+  }
+
+  return allResults;
 }
 
 async function getPost(id) {
@@ -249,22 +202,85 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const year = tmdbInfo.year;
   log(`TMDB: "${title}" (${year})`);
 
+  // Aggressive search with variations
   const results = await searchWithFallback(title, year);
-  if (!results.length) throw new Error(`No results for "${title}"`);
+  if (!results.length) throw new Error(`No results found for "${title}"`);
 
   // Log all results
-  log("Search results:");
+  log("All search results:");
   for (const item of results) {
     log(`  "${item.t}" (${item.y}) id=${item.id}`);
   }
 
-  // ---- Pick best result with year-first scoring ----
-  let selected = pickBestResult(results, title, year);
+  // ---- STEP 1: Filter by year first ----
+  let candidates = results;
+  if (year) {
+    const yearMatches = results.filter(item => item.y === year);
+    if (yearMatches.length > 0) {
+      log(`✅ Found ${yearMatches.length} results with year ${year}`);
+      candidates = yearMatches;
+    } else {
+      log(`⚠️ No results with year ${year}, using all results`);
+    }
+  }
+
+  // ---- STEP 2: Among year matches, pick the one with best title match ----
+  let selected = null;
+  let bestTitleScore = -1;
+
+  // Normalize search title
+  const searchNorm = normalizeTitleForSearch(title).toLowerCase();
+
+  for (const item of candidates) {
+    const itemNorm = normalizeTitleForSearch(item.t).toLowerCase();
+    let score = 0;
+
+    // Exact match after normalization
+    if (itemNorm === searchNorm) {
+      score = 100;
+    }
+    // One contains the other
+    else if (itemNorm.indexOf(searchNorm) !== -1 || searchNorm.indexOf(itemNorm) !== -1) {
+      score = 50;
+      // Bonus for longer title (e.g., "Mad Square" vs "Mad")
+      if (itemNorm.length > searchNorm.length) {
+        score += 10;
+      }
+    }
+    // Partial word match
+    else {
+      const searchWords = searchNorm.split(" ");
+      const itemWords = itemNorm.split(" ");
+      let matches = 0;
+      for (const sw of searchWords) {
+        for (const iw of itemWords) {
+          if (iw.indexOf(sw) !== -1 || sw.indexOf(iw) !== -1) {
+            matches++;
+            break;
+          }
+        }
+      }
+      score = (matches / Math.max(searchWords.length, 1)) * 30;
+    }
+
+    // Bonus for containing Hindi/English language tag (if preferred)
+    const t = (item.t || "").toLowerCase();
+    if (/\bhindi\b/.test(t)) score += 5;
+    if (/\benglish\b/.test(t)) score += 3;
+
+    log(`  "${item.t}": title_score=${Math.round(score)}`);
+
+    if (score > bestTitleScore) {
+      bestTitleScore = score;
+      selected = item;
+    }
+  }
+
   if (!selected) {
-    selected = results[0];
+    selected = candidates[0] || results[0];
     log(`No pick, using first: "${selected.t}" (${selected.y})`);
   } else {
-    log(`✅ Selected: "${selected.t}" (${selected.y})`);
+    log(`✅ Selected: "${selected.t}" (${selected.y}) title_score=${Math.round(bestTitleScore)}`);
   }
 
   const post = await getPost(selected.id);
