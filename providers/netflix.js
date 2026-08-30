@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Normalize TMDB title first, no aliases
+// mobile_nf.js – Netflix (nf) – Year first + word matching
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -121,16 +121,17 @@ async function search(query) {
 }
 
 async function searchWithFallback(originalTitle, year) {
-  // ---- NORMALIZE TMDB TITLE FIRST ----
   const normalized = normalizeTitleForSearch(originalTitle);
   let allResults = [];
   let queries = [];
 
-  // Only use normalized title (no aliases)
+  // Try original title first (important)
+  queries.push(originalTitle);
+  // Try normalized as fallback
   queries.push(normalized);
-  
-  // Also try with year appended (helps when title is too short like "Mad")
+  // Try with year appended (helps when title is short like "Mad")
   if (year) {
+    queries.push(`${originalTitle} ${year}`);
     queries.push(`${normalized} ${year}`);
   }
 
