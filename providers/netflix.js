@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Year-first selection + forced variations
+// mobile_nf.js – Netflix (nf) – Year MUST match
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -34,7 +34,6 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -82,7 +81,6 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -91,17 +89,15 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-// ---------- Aggressive search with multiple variations ----------
 async function searchWithFallback(originalTitle, year) {
   const normalized = normalizeTitleForSearch(originalTitle);
   let allResults = [];
   let queries = [];
 
-  // Build search queries
   queries.push(originalTitle);
   queries.push(normalized);
 
-  // For special cases like "Mad" -> also try "Mad Square", "Mad 2", etc.
+  // Special variations for "Mad"
   if (normalized.toLowerCase() === "mad") {
     queries.push("Mad Square");
     queries.push("MAD Square");
@@ -109,24 +105,20 @@ async function searchWithFallback(originalTitle, year) {
     queries.push("MAD 2");
     queries.push("Mad²");
     queries.push("MAD²");
-    // Also try with year
     if (year) {
       queries.push(`Mad Square ${year}`);
       queries.push(`Mad ${year}`);
     }
   }
 
-  // Also try with year appended to original
   if (year) {
     queries.push(`${originalTitle} ${year}`);
     queries.push(`${normalized} ${year}`);
   }
 
-  // Remove duplicates
   const uniqueQueries = [...new Set(queries)];
-
-  // Search each query and collect results
   const seenIds = new Set();
+
   for (const q of uniqueQueries) {
     log(`Searching: "${q}"`);
     try {
@@ -139,18 +131,7 @@ async function searchWithFallback(originalTitle, year) {
           }
         }
       }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // Filter by year if possible
-  if (year && allResults.length > 0) {
-    const yearMatches = allResults.filter(item => item.y === year);
-    if (yearMatches.length > 0) {
-      log(`Found ${yearMatches.length} results with year ${year}`);
-      return yearMatches;
-    }
+    } catch (e) { /* ignore */ }
   }
 
   return allResults;
@@ -202,53 +183,42 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const year = tmdbInfo.year;
   log(`TMDB: "${title}" (${year})`);
 
-  // Aggressive search with variations
   const results = await searchWithFallback(title, year);
   if (!results.length) throw new Error(`No results found for "${title}"`);
 
-  // Log all results
   log("All search results:");
   for (const item of results) {
     log(`  "${item.t}" (${item.y}) id=${item.id}`);
   }
 
-  // ---- STEP 1: Filter by year first ----
-  let candidates = results;
+  // ---- FILTER BY YEAR - MUST MATCH ----
+  let candidates = [];
   if (year) {
-    const yearMatches = results.filter(item => item.y === year);
-    if (yearMatches.length > 0) {
-      log(`✅ Found ${yearMatches.length} results with year ${year}`);
-      candidates = yearMatches;
-    } else {
-      log(`⚠️ No results with year ${year}, using all results`);
+    candidates = results.filter(item => item.y === year);
+    if (candidates.length === 0) {
+      const availableYears = [...new Set(results.map(r => r.y))].join(', ');
+      throw new Error(`No results found with year ${year}. Available years: ${availableYears}`);
     }
+    log(`✅ Found ${candidates.length} results with year ${year}`);
+  } else {
+    candidates = results;
   }
 
-  // ---- STEP 2: Among year matches, pick the one with best title match ----
+  // ---- Among year matches, pick best title match ----
   let selected = null;
   let bestTitleScore = -1;
-
-  // Normalize search title
   const searchNorm = normalizeTitleForSearch(title).toLowerCase();
 
   for (const item of candidates) {
     const itemNorm = normalizeTitleForSearch(item.t).toLowerCase();
     let score = 0;
 
-    // Exact match after normalization
     if (itemNorm === searchNorm) {
       score = 100;
-    }
-    // One contains the other
-    else if (itemNorm.indexOf(searchNorm) !== -1 || searchNorm.indexOf(itemNorm) !== -1) {
+    } else if (itemNorm.indexOf(searchNorm) !== -1 || searchNorm.indexOf(itemNorm) !== -1) {
       score = 50;
-      // Bonus for longer title (e.g., "Mad Square" vs "Mad")
-      if (itemNorm.length > searchNorm.length) {
-        score += 10;
-      }
-    }
-    // Partial word match
-    else {
+      if (itemNorm.length > searchNorm.length) score += 10;
+    } else {
       const searchWords = searchNorm.split(" ");
       const itemWords = itemNorm.split(" ");
       let matches = 0;
@@ -263,7 +233,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       score = (matches / Math.max(searchWords.length, 1)) * 30;
     }
 
-    // Bonus for containing Hindi/English language tag (if preferred)
     const t = (item.t || "").toLowerCase();
     if (/\bhindi\b/.test(t)) score += 5;
     if (/\benglish\b/.test(t)) score += 3;
@@ -277,10 +246,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }
 
   if (!selected) {
-    selected = candidates[0] || results[0];
-    log(`No pick, using first: "${selected.t}" (${selected.y})`);
+    selected = candidates[0];
+    log(`Using first matching year result: "${selected.t}" (${selected.y})`);
   } else {
-    log(`✅ Selected: "${selected.t}" (${selected.y}) title_score=${Math.round(bestTitleScore)}`);
+    log(`✅ Selected: "${selected.t}" (${selected.y})`);
   }
 
   const post = await getPost(selected.id);
@@ -321,7 +290,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     throw new Error("No sources in playlist");
   }
 
-  // Log available qualities
   const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
   log(`Available qualities: ${qualities.join(', ')}`);
 
