@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Year first + word matching
+// mobile_nf.js – Netflix (nf) – Normalize TMDB title first, no aliases
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -43,11 +43,9 @@ function wordMatchScore(tmdbTitle, resultTitle) {
   const matchedList = [];
   
   for (const tw of tmdbWords) {
-    // Skip very short words (like "a", "the", "and")
     if (tw.length < 2) continue;
     for (const rw of resultWords) {
       if (rw.length < 2) continue;
-      // Check if words match or one contains the other
       if (rw === tw || rw.indexOf(tw) !== -1 || tw.indexOf(rw) !== -1) {
         if (!matchedList.includes(tw)) {
           matchedList.push(tw);
@@ -58,7 +56,6 @@ function wordMatchScore(tmdbTitle, resultTitle) {
     }
   }
 
-  // Score = (matched words / total words in tmdb title) * 100
   const totalWords = tmdbWords.filter(w => w.length >= 2).length;
   if (totalWords === 0) return 0;
   
@@ -124,29 +121,16 @@ async function search(query) {
 }
 
 async function searchWithFallback(originalTitle, year) {
+  // ---- NORMALIZE TMDB TITLE FIRST ----
   const normalized = normalizeTitleForSearch(originalTitle);
   let allResults = [];
   let queries = [];
 
-  queries.push(originalTitle);
+  // Only use normalized title (no aliases)
   queries.push(normalized);
-
-  // Special variations for "Mad"
-  if (normalized.toLowerCase() === "mad") {
-    queries.push("Mad Square");
-    queries.push("MAD Square");
-    queries.push("Mad 2");
-    queries.push("MAD 2");
-    queries.push("Mad²");
-    queries.push("MAD²");
-    if (year) {
-      queries.push(`Mad Square ${year}`);
-      queries.push(`Mad ${year}`);
-    }
-  }
-
+  
+  // Also try with year appended (helps when title is too short like "Mad")
   if (year) {
-    queries.push(`${originalTitle} ${year}`);
     queries.push(`${normalized} ${year}`);
   }
 
