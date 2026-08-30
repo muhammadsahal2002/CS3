@@ -1,265 +1,624 @@
-// mobile_nf.js – Netflix (nf) with language priority picker
 "use strict";
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const TMDB_BASE = "https://api.themoviedb.org/3";
-const TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
-const BASE_URL = "https://net52.cc/mobile";
+// ============================================================
+// SEARCH + MATCHING
+// ============================================================
 
-const DEFAULT_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
-  "Accept": "*/*",
-  "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-  "Sec-Fetch-Site": "same-origin",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Dest": "empty",
-  "Referer": "https://net52.cc/mobile/home?app=1",
-  "Connection": "keep-alive"
-};
-
-let tokenCache = null;
-let cookieHeader = null;
-let rawToken = null;
-
-function log(msg) { console.log("[NetflixNF] " + msg); }
-
-function getTimestamp() {
-  return Math.floor(Date.now() / 1000);
+// ---------- Debug ----------
+function debugSearch(msg) {
+console.log("[NetflixNF][SEARCH] " + msg);
 }
 
-// ---------- Language priority ----------
+// ---------- Normalization ----------
+function normalizeTitle(str) {
+return String(str || "")
+.toLowerCase()
+
+// Unicode/special sequel symbols
+.replace(/²/g, " square")
+.replace(/³/g, " 3")
+
+// Common separators
+.replace(/&/g, " and ")
+
+// Remove punctuation but preserve words
+.replace(/[^a-z0-9\s]/g, " ")
+
+// Collapse spaces
+.replace(/\s+/g, " ")
+.trim();
+
+}
+
+function normalizeYear(year) {
+var y = String(year || "").trim();
+return /^\d{4}$/.test(y) ? y : "";
+}
+
+// ---------- Title aliases ----------
+// Add special aliases here when TMDB and Net52 use different names.
+function getTitleAliases(title, year) {
+var aliases = [];
+
+function add(value) {
+value = String(value || "").trim();
+if (!value) return;
+
+for (var i = 0; i < aliases.length; i++) {
+  if (normalizeTitle(aliases[i]) === normalizeTitle(value)) {
+    return;
+  }
+}
+
+aliases.push(value);
+
+}
+
+var original = String(title || "").trim();
+var normalized = normalizeTitle(original);
+
+// Always search original first
+add(original);
+
+// ----------------------------------------------------------
+// MAD (2023) / (MAD)² aka MAD Square
+// ----------------------------------------------------------
+
+if (
+original === "(MAD)²" ||
+normalized === "mad square" ||
+normalized === "mad 2"
+) {
+add("MAD Square");
+add("Mad Square");
+add("MAD 2");
+add("(MAD)²");
+}
+
+// ----------------------------------------------------------
+// Generic sequel aliases
+// Example:
+// Movie 2
+// Movie II
+// ----------------------------------------------------------
+
+var romanMatch = original.match(/^(.*?)\s+II$/i);
+
+if (romanMatch) {
+var baseRoman = romanMatch[1].trim();
+
+add(baseRoman + " 2");
+
+}
+
+var numberMatch = original.match(/^(.*?)\s+2$/i);
+
+if (numberMatch) {
+var baseNumber = numberMatch[1].trim();
+
+add(baseNumber + " II");
+
+}
+
+// Also search normalized version if different
+var normalizedSearch = normalizeTitle(original);
+
+if (
+normalizedSearch &&
+normalizedSearch !== normalizeTitle(original)
+) {
+add(normalizedSearch);
+}
+
+debugSearch(
+"Aliases for "" +
+original +
+"" (" +
+year +
+"): [" +
+aliases.join(" | ") +
+"]"
+);
+
+return aliases;
+}
+
+// ============================================================
+// LANGUAGE PRIORITY
+// Only used AFTER title/year matching.
+// ============================================================
+
 function langPriority(title) {
-  var t = (title || "").toLowerCase();
-  if (/\bhindi\b/.test(t)) return 100;
-  if (/\benglish\b/.test(t)) return 90;
-  if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
-  return 10;
+var t = String(title || "").toLowerCase();
+
+if (/\bhindi\b/.test(t)) return 100;
+
+if (/\benglish\b/.test(t)) return 90;
+
+if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) {
+return 50;
 }
 
-function pickBestResult(results, year) {
-  if (!results || !results.length) return null;
-  var best = null;
-  var bestScore = -1;
-  for (var i = 0; i < results.length; i++) {
-    var r = results[i];
-    var score = langPriority(r.t) * 10;
-    if (year && r.y === year) score += 5;
-    if (score > bestScore) {
-      bestScore = score;
-      best = r;
-    }
+return 10;
+}
+
+// ============================================================
+// TITLE SCORING
+// ============================================================
+
+function getWords(str) {
+var normalized = normalizeTitle(str);
+
+if (!normalized) return [];
+
+return normalized.split(" ");
+}
+
+function wordSimilarity(a, b) {
+var wordsA = getWords(a);
+var wordsB = getWords(b);
+
+if (!wordsA.length || !wordsB.length) {
+return 0;
+}
+
+var found = 0;
+
+for (var i = 0; i < wordsA.length; i++) {
+if (wordsB.indexOf(wordsA[i]) !== -1) {
+found++;
+}
+}
+
+return found / Math.max(wordsA.length, wordsB.length);
+}
+
+function isExactAliasMatch(resultTitle, aliases) {
+var normalizedResult = normalizeTitle(resultTitle);
+
+for (var i = 0; i < aliases.length; i++) {
+if (
+normalizedResult ===
+normalizeTitle(aliases[i])
+) {
+return true;
+}
+}
+
+return false;
+}
+
+function scoreResult(result, targetTitle, targetYear, aliases) {
+var resultTitle = String(result.t || "");
+var resultYear = normalizeYear(result.y);
+
+var targetNormalized = normalizeTitle(targetTitle);
+var resultNormalized = normalizeTitle(resultTitle);
+
+var score = 0;
+var reasons = [];
+
+// ----------------------------------------------------------
+// 1. Exact original title
+// ----------------------------------------------------------
+
+if (resultNormalized === targetNormalized) {
+score += 10000;
+reasons.push("EXACT_TITLE +10000");
+}
+
+// ----------------------------------------------------------
+// 2. Exact alias
+// ----------------------------------------------------------
+
+if (isExactAliasMatch(resultTitle, aliases)) {
+score += 9000;
+reasons.push("ALIAS_MATCH +9000");
+}
+
+// ----------------------------------------------------------
+// 3. Year
+// ----------------------------------------------------------
+
+if (
+targetYear &&
+resultYear &&
+String(targetYear) === String(resultYear)
+) {
+score += 2000;
+reasons.push("YEAR_MATCH +2000");
+} else if (
+targetYear &&
+resultYear &&
+String(targetYear) !== String(resultYear)
+) {
+score -= 500;
+reasons.push("YEAR_MISMATCH -500");
+}
+
+// ----------------------------------------------------------
+// 4. Word similarity
+// ----------------------------------------------------------
+
+var similarity = wordSimilarity(
+targetTitle,
+resultTitle
+);
+
+var similarityScore = Math.round(
+similarity * 1000
+);
+
+score += similarityScore;
+
+reasons.push(
+"SIMILARITY " +
+similarity.toFixed(2) +
+" +" +
+similarityScore
+);
+
+// ----------------------------------------------------------
+// 5. IMPORTANT:
+// Prevent original MAD and MAD Square confusion
+// ----------------------------------------------------------
+
+var targetIsMad =
+targetNormalized === "mad";
+
+var targetIsMadSquare =
+targetNormalized === "mad square" ||
+targetNormalized === "mad 2";
+
+var resultIsMad =
+resultNormalized === "mad";
+
+var resultIsMadSquare =
+resultNormalized === "mad square" ||
+resultNormalized === "mad 2";
+
+if (
+targetIsMadSquare &&
+resultIsMad
+) {
+score -= 20000;
+
+reasons.push(
+  "WRONG_MOVIE_MAD_INSTEAD_OF_MAD_SQUARE -20000"
+);
+
+}
+
+if (
+targetIsMad &&
+resultIsMadSquare
+) {
+score -= 20000;
+
+reasons.push(
+  "WRONG_MOVIE_MAD_SQUARE_INSTEAD_OF_MAD -20000"
+);
+
+}
+
+// ----------------------------------------------------------
+// 6. Language priority
+// Small bonus only.
+// Never enough to beat correct title.
+// ----------------------------------------------------------
+
+var languageScore = langPriority(resultTitle);
+
+score += languageScore;
+
+reasons.push(
+"LANGUAGE +" +
+languageScore
+);
+
+return {
+score: score,
+reasons: reasons,
+similarity: similarity,
+exactMatch:
+resultNormalized === targetNormalized,
+aliasMatch:
+isExactAliasMatch(resultTitle, aliases),
+yearMatch:
+!!(
+targetYear &&
+resultYear &&
+String(targetYear) === String(resultYear)
+)
+};
+}
+
+// ============================================================
+// RESULT PICKER
+// ============================================================
+
+function pickBestResult(
+results,
+targetTitle,
+targetYear
+) {
+if (!results || !results.length) {
+debugSearch("pickBestResult: no results");
+return null;
+}
+
+var aliases = getTitleAliases(
+targetTitle,
+targetYear
+);
+
+debugSearch(
+"========================================"
+);
+
+debugSearch(
+"TARGET: "" +
+targetTitle +
+"" YEAR=" +
+targetYear
+);
+
+debugSearch(
+"RESULT COUNT: " +
+results.length
+);
+
+var best = null;
+var bestScore = -Infinity;
+var bestInfo = null;
+
+for (var i = 0; i < results.length; i++) {
+var result = results[i];
+
+var info = scoreResult(
+  result,
+  targetTitle,
+  targetYear,
+  aliases
+);
+
+debugSearch(
+  "----------------------------------------"
+);
+
+debugSearch(
+  "CANDIDATE #" +
+  (i + 1)
+);
+
+debugSearch(
+  "ID: " +
+  result.id
+);
+
+debugSearch(
+  "TITLE: " +
+  result.t
+);
+
+debugSearch(
+  "YEAR: " +
+  result.y
+);
+
+debugSearch(
+  "SCORE: " +
+  info.score
+);
+
+debugSearch(
+  "REASONS: " +
+  info.reasons.join(" | ")
+);
+
+if (info.score > bestScore) {
+  bestScore = info.score;
+  best = result;
+  bestInfo = info;
+
+  debugSearch(
+    ">>> NEW BEST MATCH"
+  );
+}
+
+}
+
+debugSearch(
+"========================================"
+);
+
+if (best) {
+debugSearch(
+"FINAL MATCH:"
+);
+
+debugSearch(
+  "ID=" +
+  best.id +
+  " TITLE=\"" +
+  best.t +
+  "\" YEAR=" +
+  best.y +
+  " SCORE=" +
+  bestScore
+);
+
+debugSearch(
+  "FINAL REASONS: " +
+  bestInfo.reasons.join(" | ")
+);
+
+}
+
+debugSearch(
+"========================================"
+);
+
+return best;
+}
+
+// ============================================================
+// SEARCH ALL ALIASES
+// ============================================================
+
+async function searchWithFallback(
+originalTitle,
+year
+) {
+var aliases = getTitleAliases(
+originalTitle,
+year
+);
+
+var allResults = [];
+var seen = {};
+
+debugSearch(
+"========================================"
+);
+
+debugSearch(
+"START SEARCH:"
+);
+
+debugSearch(
+"TITLE="" +
+originalTitle +
+"" YEAR=" +
+year
+);
+
+for (
+var i = 0;
+i < aliases.length;
+i++
+) {
+var query = aliases[i];
+
+debugSearch(
+  "Searching Net52: \"" +
+  query +
+  "\""
+);
+
+var results = [];
+
+try {
+  results = await search(query);
+
+  debugSearch(
+    "Search returned " +
+    results.length +
+    " results"
+  );
+} catch (err) {
+  debugSearch(
+    "SEARCH ERROR for \"" +
+    query +
+    "\": " +
+    err.message
+  );
+
+  continue;
+}
+
+for (
+  var j = 0;
+  j < results.length;
+  j++
+) {
+  var item = results[j];
+
+  if (!item || !item.id) {
+    continue;
   }
-  return best;
-}
 
-function normalizeTitleForSearch(str) {
-  return String(str || "")
-    .replace(/[^a-zA-Z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+  if (!seen[item.id]) {
+    seen[item.id] = true;
 
-// ---------- Token ----------
-async function fetchToken() {
-  if (tokenCache) return tokenCache;
+    allResults.push(item);
 
-  const resp = await fetch(TOKEN_URL);
-  if (!resp.ok) throw new Error(`Token HTTP ${resp.status}`);
-  const json = await resp.json();
-
-  const record = json.record || {};
-  const t_hash_t = record.t_hash_t || "";
-  const t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
-  rawToken = record.token || "";
-
-  if (!t_hash_t) throw new Error("Missing t_hash_t in token");
-
-  cookieHeader = `t_hash_t=${t_hash_t}; ott=nf`;
-  if (t_hash) cookieHeader += `; t_hash=${t_hash}`;
-  cookieHeader += "; hd=on";
-
-  tokenCache = { t_hash_t, t_hash, rawToken };
-  log("Token loaded from JSONBin");
-  return tokenCache;
-}
-
-function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
-  const h = { ...DEFAULT_HEADERS };
-  if (cookieHeader) h["Cookie"] = cookieHeader;
-  if (requestedWith) h["X-Requested-With"] = requestedWith;
-  if (extra) Object.assign(h, extra);
-  return h;
-}
-
-async function fetchJson(url, options = {}) {
-  const resp = await fetch(url, options);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
-  return resp.json();
-}
-
-async function getTmdbInfo(tmdbId, mediaType) {
-  const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const data = await fetchJson(url);
-  const title = data.title || data.name;
-  const year = data.release_date ? data.release_date.substring(0,4) :
-               (data.first_air_date ? data.first_air_date.substring(0,4) : "");
-  return { title, year };
-}
-
-// ---------- Net52 API ----------
-async function search(query) {
-  const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
-  return data.searchResult || [];
-}
-
-async function searchWithFallback(originalTitle, year) {
-  const normalized = normalizeTitleForSearch(originalTitle);
-  let results = await search(originalTitle).catch(() => []);
-  if (results.length > 0) return results;
-
-  log("No results for original title, trying normalized: " + normalized);
-  results = await search(normalized).catch(() => []);
-  if (results.length === 0) return [];
-
-  if (year) {
-    const filtered = results.filter(item => item.y === year);
-    if (filtered.length > 0) return filtered;
-  }
-  return results;
-}
-
-async function getPost(id) {
-  const url = `${BASE_URL}/post.php?id=${id}&t=${getTimestamp()}`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Post failed: " + (data.error || "unknown"));
-  return data;
-}
-
-async function getEpisodes(seasonId, seriesId) {
-  let allEpisodes = [];
-  let page = 1;
-  let hasNext = true;
-
-  while (hasNext) {
-    let url = `${BASE_URL}/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
-    if (page > 1) url += `&page=${page}`;
-    const headers = buildHeaders({}, "XMLHttpRequest");
-    const data = await fetchJson(url, { headers });
-    if (!data.episodes) break;
-    allEpisodes = allEpisodes.concat(data.episodes);
-    if (data.nextPageShow === 1 && data.nextPage) {
-      page = data.nextPage;
-    } else {
-      hasNext = false;
-    }
-  }
-  return allEpisodes;
-}
-
-async function getPlaylist(id, title) {
-  // 🔥 This line enables Full HD (1080p) when available
-  const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
-  const headers = buildHeaders({}, "app.netmirror.nmv2");
-  const data = await fetchJson(url, { headers });
-  if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
-  return data[0];
-}
-
-// ---------- Main getStreams ----------
-async function getStreams(tmdbId, mediaType, season, episode) {
-  await fetchToken();
-
-  const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
-  const title = tmdbInfo.title;
-  const year = tmdbInfo.year;
-  log(`TMDB: ${title} (${year})`);
-
-  const results = await searchWithFallback(title, year);
-  if (!results.length) throw new Error(`No results for "${title}"`);
-
-  // ---- Use language priority picker ----
-  let selected = pickBestResult(results, year);
-  if (!selected) {
-    selected = results[0];
-    log(`No pick, using first: ${selected.t}`);
+    debugSearch(
+      "ADD RESULT: ID=" +
+      item.id +
+      " TITLE=\"" +
+      item.t +
+      "\" YEAR=" +
+      item.y
+    );
   } else {
-    log(`Selected: ${selected.t} (${selected.y})`);
+    debugSearch(
+      "DUPLICATE SKIPPED: ID=" +
+      item.id +
+      " TITLE=\"" +
+      item.t +
+      "\""
+    );
   }
-
-  const post = await getPost(selected.id);
-  log(`Type: ${post.type}, title: ${post.title}`);
-
-  let contentId;
-
-  if (post.type === "m" || mediaType === "movie") {
-    contentId = post.main_id || selected.id;
-    log(`Movie, using ID: ${contentId}`);
-  } else {
-    const seasonList = post.season || [];
-    let targetSeasonId = null;
-    for (const s of seasonList) {
-      if (parseInt(s.s, 10) === season) {
-        targetSeasonId = s.id;
-        break;
-      }
-    }
-    if (!targetSeasonId) throw new Error(`Season ${season} not found`);
-    log(`Season ID: ${targetSeasonId}`);
-
-    const episodes = await getEpisodes(targetSeasonId, selected.id);
-    if (!episodes.length) throw new Error(`No episodes for season ${season}`);
-
-    let targetEp = null;
-    for (const ep of episodes) {
-      const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
-      if (epNum === episode) { targetEp = ep; break; }
-    }
-    if (!targetEp) throw new Error(`Episode ${episode} not found`);
-    log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
-    contentId = targetEp.id;
-  }
-
-  const playlist = await getPlaylist(contentId, post.title || title);
-  if (!playlist.sources || !playlist.sources.length) {
-    throw new Error("No sources in playlist");
-  }
-
-  const subtitles = [];
-  if (playlist.tracks && playlist.tracks.length) {
-    for (const track of playlist.tracks) {
-      let url = track.file || "";
-      if (url && url.indexOf("http") !== 0) {
-        url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
-      }
-      subtitles.push({
-        url: url,
-        language: track.label || "Unknown",
-        default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
-      });
-    }
-  }
-
-  return playlist.sources.map(src => {
-    const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
-    return {
-      name: "Netflix",
-      title: src.label || "Auto",
-      url: fileUrl,
-      quality: src.label || "Auto",
-      headers: {
-        Referer: "https://net52.cc/",
-        "User-Agent": DEFAULT_HEADERS["User-Agent"],
-        "Cookie": cookieHeader,
-        "Origin": "https://net52.cc"
-      },
-      subtitles: subtitles
-    };
-  });
 }
 
-module.exports = { getStreams };
+}
+
+debugSearch(
+"TOTAL UNIQUE RESULTS: " +
+allResults.length
+);
+
+// ----------------------------------------------------------
+// Optional year-first filtering
+// Keep ALL results because title matching still decides,
+// but show how many match the requested year.
+// ----------------------------------------------------------
+
+if (year) {
+var yearMatches = allResults.filter(
+function(item) {
+return (
+String(item.y || "") ===
+String(year)
+);
+}
+);
+
+debugSearch(
+  "YEAR MATCHES (" +
+  year +
+  "): " +
+  yearMatches.length
+);
+
+}
+
+debugSearch(
+"========================================"
+);
+
+return allResults;
+}
+
+// ============================================================
+// USE IN getStreams()
+// ============================================================
+//
+// REPLACE:
+//
+// const results = await searchWithFallback(title, year);
+//
+// let selected = pickBestResult(results, year);
+//
+// WITH:
+//
+// const results = await searchWithFallback(title, year);
+//
+// let selected = pickBestResult(
+//   results,
+//   title,
+//   year
+// );
+//
+// ============================================================
