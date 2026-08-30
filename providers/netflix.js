@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Year MUST match
+// mobile_nf.js – Netflix (nf) – Year first + word matching
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -32,6 +32,40 @@ function normalizeTitleForSearch(str) {
     .replace(/[^a-zA-Z0-9\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// ---------- Word matching score ----------
+function wordMatchScore(tmdbTitle, resultTitle) {
+  const tmdbWords = normalizeTitleForSearch(tmdbTitle).toLowerCase().split(" ");
+  const resultWords = normalizeTitleForSearch(resultTitle).toLowerCase().split(" ");
+  
+  let matchedWords = 0;
+  const matchedList = [];
+  
+  for (const tw of tmdbWords) {
+    // Skip very short words (like "a", "the", "and")
+    if (tw.length < 2) continue;
+    for (const rw of resultWords) {
+      if (rw.length < 2) continue;
+      // Check if words match or one contains the other
+      if (rw === tw || rw.indexOf(tw) !== -1 || tw.indexOf(rw) !== -1) {
+        if (!matchedList.includes(tw)) {
+          matchedList.push(tw);
+          matchedWords++;
+        }
+        break;
+      }
+    }
+  }
+
+  // Score = (matched words / total words in tmdb title) * 100
+  const totalWords = tmdbWords.filter(w => w.length >= 2).length;
+  if (totalWords === 0) return 0;
+  
+  // Bonus for exact title match
+  const exactBonus = normalizeTitleForSearch(tmdbTitle).toLowerCase() === normalizeTitleForSearch(resultTitle).toLowerCase() ? 20 : 0;
+  
+  return Math.round((matchedWords / totalWords) * 100) + exactBonus;
 }
 
 async function fetchToken() {
@@ -191,7 +225,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     log(`  "${item.t}" (${item.y}) id=${item.id}`);
   }
 
-  // ---- FILTER BY YEAR - MUST MATCH ----
+  // ---- STEP 1: FILTER BY YEAR - MUST MATCH ----
   let candidates = [];
   if (year) {
     candidates = results.filter(item => item.y === year);
@@ -204,43 +238,15 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     candidates = results;
   }
 
-  // ---- Among year matches, pick best title match ----
+  // ---- STEP 2: WORD MATCHING ----
   let selected = null;
-  let bestTitleScore = -1;
-  const searchNorm = normalizeTitleForSearch(title).toLowerCase();
+  let bestWordScore = -1;
 
   for (const item of candidates) {
-    const itemNorm = normalizeTitleForSearch(item.t).toLowerCase();
-    let score = 0;
-
-    if (itemNorm === searchNorm) {
-      score = 100;
-    } else if (itemNorm.indexOf(searchNorm) !== -1 || searchNorm.indexOf(itemNorm) !== -1) {
-      score = 50;
-      if (itemNorm.length > searchNorm.length) score += 10;
-    } else {
-      const searchWords = searchNorm.split(" ");
-      const itemWords = itemNorm.split(" ");
-      let matches = 0;
-      for (const sw of searchWords) {
-        for (const iw of itemWords) {
-          if (iw.indexOf(sw) !== -1 || sw.indexOf(iw) !== -1) {
-            matches++;
-            break;
-          }
-        }
-      }
-      score = (matches / Math.max(searchWords.length, 1)) * 30;
-    }
-
-    const t = (item.t || "").toLowerCase();
-    if (/\bhindi\b/.test(t)) score += 5;
-    if (/\benglish\b/.test(t)) score += 3;
-
-    log(`  "${item.t}": title_score=${Math.round(score)}`);
-
-    if (score > bestTitleScore) {
-      bestTitleScore = score;
+    const wordScore = wordMatchScore(title, item.t);
+    log(`  "${item.t}": word_score=${wordScore}`);
+    if (wordScore > bestWordScore) {
+      bestWordScore = wordScore;
       selected = item;
     }
   }
@@ -249,7 +255,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     selected = candidates[0];
     log(`Using first matching year result: "${selected.t}" (${selected.y})`);
   } else {
-    log(`✅ Selected: "${selected.t}" (${selected.y})`);
+    log(`✅ Selected: "${selected.t}" (${selected.y}) word_score=${bestWordScore}`);
   }
 
   const post = await getPost(selected.id);
