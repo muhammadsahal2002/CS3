@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Year first + word matching
+// mobile_nf.js – Netflix (nf) with language priority picker
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -27,6 +27,31 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
+// ---------- Language priority ----------
+function langPriority(title) {
+  var t = (title || "").toLowerCase();
+  if (/\bhindi\b/.test(t)) return 100;
+  if (/\benglish\b/.test(t)) return 90;
+  if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
+  return 10;
+}
+
+function pickBestResult(results, year) {
+  if (!results || !results.length) return null;
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var score = langPriority(r.t) * 10;
+    if (year && r.y === year) score += 5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
+}
+
 function normalizeTitleForSearch(str) {
   return String(str || "")
     .replace(/[^a-zA-Z0-9\s]/g, "")
@@ -34,37 +59,7 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ---------- Word matching score ----------
-function wordMatchScore(tmdbTitle, resultTitle) {
-  const tmdbWords = normalizeTitleForSearch(tmdbTitle).toLowerCase().split(" ");
-  const resultWords = normalizeTitleForSearch(resultTitle).toLowerCase().split(" ");
-  
-  let matchedWords = 0;
-  const matchedList = [];
-  
-  for (const tw of tmdbWords) {
-    if (tw.length < 2) continue;
-    for (const rw of resultWords) {
-      if (rw.length < 2) continue;
-      if (rw === tw || rw.indexOf(tw) !== -1 || tw.indexOf(rw) !== -1) {
-        if (!matchedList.includes(tw)) {
-          matchedList.push(tw);
-          matchedWords++;
-        }
-        break;
-      }
-    }
-  }
-
-  const totalWords = tmdbWords.filter(w => w.length >= 2).length;
-  if (totalWords === 0) return 0;
-  
-  // Bonus for exact title match
-  const exactBonus = normalizeTitleForSearch(tmdbTitle).toLowerCase() === normalizeTitleForSearch(resultTitle).toLowerCase() ? 20 : 0;
-  
-  return Math.round((matchedWords / totalWords) * 100) + exactBonus;
-}
-
+// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -112,6 +107,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -122,38 +118,18 @@ async function search(query) {
 
 async function searchWithFallback(originalTitle, year) {
   const normalized = normalizeTitleForSearch(originalTitle);
-  let allResults = [];
-  let queries = [];
+  let results = await search(originalTitle).catch(() => []);
+  if (results.length > 0) return results;
 
-  // Try original title first (important)
-  queries.push(originalTitle);
-  // Try normalized as fallback
-  queries.push(normalized);
-  // Try with year appended (helps when title is short like "Mad")
+  log("No results for original title, trying normalized: " + normalized);
+  results = await search(normalized).catch(() => []);
+  if (results.length === 0) return [];
+
   if (year) {
-    queries.push(`${originalTitle} ${year}`);
-    queries.push(`${normalized} ${year}`);
+    const filtered = results.filter(item => item.y === year);
+    if (filtered.length > 0) return filtered;
   }
-
-  const uniqueQueries = [...new Set(queries)];
-  const seenIds = new Set();
-
-  for (const q of uniqueQueries) {
-    log(`Searching: "${q}"`);
-    try {
-      const results = await search(q);
-      if (results && results.length > 0) {
-        for (const item of results) {
-          if (!seenIds.has(item.id)) {
-            seenIds.add(item.id);
-            allResults.push(item);
-          }
-        }
-      }
-    } catch (e) { /* ignore */ }
-  }
-
-  return allResults;
+  return results;
 }
 
 async function getPost(id) {
@@ -186,6 +162,7 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
+  // 🔥 This line enables Full HD (1080p) when available
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -200,47 +177,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
-  log(`TMDB: "${title}" (${year})`);
+  log(`TMDB: ${title} (${year})`);
 
   const results = await searchWithFallback(title, year);
-  if (!results.length) throw new Error(`No results found for "${title}"`);
+  if (!results.length) throw new Error(`No results for "${title}"`);
 
-  log("All search results:");
-  for (const item of results) {
-    log(`  "${item.t}" (${item.y}) id=${item.id}`);
-  }
-
-  // ---- STEP 1: FILTER BY YEAR - MUST MATCH ----
-  let candidates = [];
-  if (year) {
-    candidates = results.filter(item => item.y === year);
-    if (candidates.length === 0) {
-      const availableYears = [...new Set(results.map(r => r.y))].join(', ');
-      throw new Error(`No results found with year ${year}. Available years: ${availableYears}`);
-    }
-    log(`✅ Found ${candidates.length} results with year ${year}`);
-  } else {
-    candidates = results;
-  }
-
-  // ---- STEP 2: WORD MATCHING ----
-  let selected = null;
-  let bestWordScore = -1;
-
-  for (const item of candidates) {
-    const wordScore = wordMatchScore(title, item.t);
-    log(`  "${item.t}": word_score=${wordScore}`);
-    if (wordScore > bestWordScore) {
-      bestWordScore = wordScore;
-      selected = item;
-    }
-  }
-
+  // ---- Use language priority picker ----
+  let selected = pickBestResult(results, year);
   if (!selected) {
-    selected = candidates[0];
-    log(`Using first matching year result: "${selected.t}" (${selected.y})`);
+    selected = results[0];
+    log(`No pick, using first: ${selected.t}`);
   } else {
-    log(`✅ Selected: "${selected.t}" (${selected.y}) word_score=${bestWordScore}`);
+    log(`Selected: ${selected.t} (${selected.y})`);
   }
 
   const post = await getPost(selected.id);
@@ -280,9 +228,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
-
-  const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
-  log(`Available qualities: ${qualities.join(', ')}`);
 
   const subtitles = [];
   if (playlist.tracks && playlist.tracks.length) {
