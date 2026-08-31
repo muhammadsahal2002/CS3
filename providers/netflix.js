@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Movies use IMDb, Series use TMDB
+// mobile_nf.js – Netflix (nf) – IMDb title + year from post
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -9,7 +9,7 @@ const BASE_URL = "https://net52.cc/mobile";
 // OMDb API key
 const OMDb_API_KEY = "8d6935ed";
 
-// ---- Hardcoded title mapping (for movies only) ----
+// ---- Hardcoded title mapping ----
 const TITLE_MAPPING = {
   "(MAD)²": "Mad Square",
   "MAD²": "Mad Square",
@@ -42,6 +42,31 @@ function normalizeTitleForSearch(str) {
     .replace(/[^a-zA-Z0-9\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// ---------- Language priority ----------
+function langPriority(title) {
+  var t = (title || "").toLowerCase();
+  if (/\bhindi\b/.test(t)) return 100;
+  if (/\benglish\b/.test(t)) return 90;
+  if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
+  return 10;
+}
+
+function pickBestResult(results, year) {
+  if (!results || !results.length) return null;
+  var best = null;
+  var bestScore = -1;
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var score = langPriority(r.t) * 10;
+    if (year && r.y === year) score += 5;
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return best;
 }
 
 // ---------- Get IMDb ID from TMDB ----------
@@ -108,6 +133,7 @@ function wordMatchScore(tmdbTitle, resultTitle) {
   return Math.round((matchedWords / totalWords) * 100) + exactBonus;
 }
 
+// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -155,6 +181,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -163,28 +190,21 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-async function searchWithFallback(originalTitle, year, imdbTitle, isMovie) {
+async function searchWithFallback(originalTitle, year, imdbTitle) {
   const normalized = normalizeTitleForSearch(originalTitle);
   let allResults = [];
   let queries = [];
 
-  // ---- For movies: use IMDb title first ----
-  // ---- For series: use TMDB title first ----
-  let searchTitle;
-  if (isMovie) {
-    let mappedTitle = TITLE_MAPPING[originalTitle] || null;
-    searchTitle = imdbTitle || mappedTitle || originalTitle;
-  } else {
-    // Series: use TMDB title
-    searchTitle = originalTitle;
-  }
+  // ---- Use IMDb title first (or mapped title) ----
+  let mappedTitle = TITLE_MAPPING[originalTitle] || null;
+  let searchTitle = imdbTitle || mappedTitle || originalTitle;
   
   queries.push(searchTitle);
   if (year) {
     queries.push(`${searchTitle} ${year}`);
   }
   
-  // Also try original as fallback (for series, this is the same)
+  // Also try original as fallback
   if (searchTitle !== originalTitle) {
     queries.push(originalTitle);
     queries.push(normalized);
@@ -261,36 +281,25 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
-  const isMovie = (mediaType === "movie");
-  log(`TMDB: "${title}" (${year}) [${isMovie ? 'Movie' : 'Series'}]`);
+  log(`TMDB: ${title} (${year})`);
 
-  // ---- Get IMDb ID and title (only for movies) ----
+  // ---- Get IMDb title ----
+  const imdbId = await getImdbId(tmdbId, mediaType);
   let imdbTitle = null;
-  if (isMovie) {
-    const imdbId = await getImdbId(tmdbId, mediaType);
-    if (imdbId) {
-      imdbTitle = await getImdbTitle(imdbId);
-      if (imdbTitle) {
-        log(`IMDb title: "${imdbTitle}"`);
-      }
+  if (imdbId) {
+    imdbTitle = await getImdbTitle(imdbId);
+    if (imdbTitle) {
+      log(`IMDb title: "${imdbTitle}"`);
     }
   }
 
-  // ---- Search with appropriate title ----
-  const results = await searchWithFallback(title, year, imdbTitle, isMovie);
-  if (!results.length) {
-    throw new Error(`No results found for "${title}"`);
-  }
+  // ---- Search with IMDb title ----
+  const results = await searchWithFallback(title, year, imdbTitle);
+  if (!results.length) throw new Error(`No results for "${title}"`);
 
-  log("All search results:");
-  for (const item of results) {
-    log(`  "${item.t}" (year unknown) id=${item.id}`);
-  }
-
-  // ---- STEP 1: Fetch year from post.php for each candidate ----
-  log(`Fetching year for ${results.length} candidates...`);
+  // ---- Fetch year from post for each result ----
+  log("Fetching year for candidates...");
   let candidatesWithYear = [];
-
   for (const item of results) {
     try {
       const post = await getPost(item.id);
@@ -311,41 +320,27 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
   }
 
-  // ---- STEP 2: Filter by year (MUST MATCH) ----
-  let yearMatches = [];
+  // ---- Filter by year ----
+  let candidates = [];
   if (year) {
-    yearMatches = candidatesWithYear.filter(item => item.y === year);
-    if (yearMatches.length === 0) {
+    candidates = candidatesWithYear.filter(item => item.y === year);
+    if (candidates.length === 0) {
       const availableYears = [...new Set(candidatesWithYear.map(r => r.y).filter(y => y))].join(', ');
       log(`❌ No results with year ${year}. Available: ${availableYears || 'none'}`);
       throw new Error(`No results found with year ${year}.`);
     }
-    log(`✅ Found ${yearMatches.length} results with year ${year}`);
+    log(`✅ Found ${candidates.length} results with year ${year}`);
   } else {
-    yearMatches = candidatesWithYear;
+    candidates = candidatesWithYear;
   }
 
-  // ---- STEP 3: Word matching among year matches ----
-  let selected = null;
-  let bestWordScore = -1;
-  // For movies, use IMDb title; for series, use TMDB title
-  const matchTitle = (isMovie && imdbTitle) ? imdbTitle : title;
-  log(`Using match title: "${matchTitle}"`);
-
-  for (const item of yearMatches) {
-    const wordScore = wordMatchScore(matchTitle, item.t);
-    log(`  "${item.t}" (${item.y}): word_score=${wordScore}`);
-    if (wordScore > bestWordScore) {
-      bestWordScore = wordScore;
-      selected = item;
-    }
-  }
-
+  // ---- Use language priority picker (with year from post) ----
+  let selected = pickBestResult(candidates, year);
   if (!selected) {
-    selected = yearMatches[0];
-    log(`Using first matching year result: "${selected.t}" (${selected.y})`);
+    selected = candidates[0];
+    log(`No pick, using first: ${selected.t}`);
   } else {
-    log(`✅ Selected: "${selected.t}" (${selected.y}) word_score=${bestWordScore}`);
+    log(`Selected: ${selected.t} (${selected.y})`);
   }
 
   // Use the post we already fetched
