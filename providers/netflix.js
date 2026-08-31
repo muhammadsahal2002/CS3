@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – IMDb Title Search + Series Fix
+// mobile_nf.js – Netflix (nf) – IMDb Title Search + Apostrophe Fix
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -8,6 +8,14 @@ const BASE_URL = "https://net52.cc/mobile";
 
 // OMDb API key
 const OMDb_API_KEY = "8d6935ed";
+
+// ---- Hardcoded title mapping ----
+const TITLE_MAPPING = {
+  "(MAD)²": "Mad Square",
+  "MAD²": "Mad Square",
+  "Mad²": "Mad Square",
+  "India's Got Latent": "India’s Got Latent"
+};
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -28,6 +36,20 @@ function log(msg) { console.log("[NetflixNF] " + msg); }
 
 function getTimestamp() {
   return Math.floor(Date.now() / 1000);
+}
+
+function normalizeTitleForSearch(str) {
+  return String(str || "")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function fixApostropheForSearch(str) {
+  // Replace curly apostrophe with straight, and vice versa
+  return String(str || "")
+    .replace(/[’']/g, "'")   // Replace all apostrophes with straight apostrophe
+    .trim();
 }
 
 // ---------- Language priority ----------
@@ -53,13 +75,6 @@ function pickBestResult(results, year) {
     }
   }
   return best;
-}
-
-function normalizeTitleForSearch(str) {
-  return String(str || "")
-    .replace(/[^a-zA-Z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 // ---------- Get IMDb ID from TMDB ----------
@@ -146,19 +161,67 @@ async function getTmdbInfo(tmdbId, mediaType) {
 
 // ---------- Net52 API ----------
 async function search(query) {
-  const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
-  if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
-  return data.searchResult || [];
+  // Build variations of the query
+  let searchQueries = [query];
+  
+  // Normalize apostrophes
+  const normalized = fixApostropheForSearch(query);
+  if (normalized !== query) {
+    searchQueries.push(normalized);
+  }
+  
+  // If query has straight apostrophe, also try curly
+  if (query.includes("'")) {
+    const curlyVersion = query.replace(/'/g, "’");
+    if (curlyVersion !== query) {
+      searchQueries.push(curlyVersion);
+    }
+  }
+  
+  // If query has curly apostrophe, also try straight
+  if (query.includes("’")) {
+    const straightVersion = query.replace(/’/g, "'");
+    if (straightVersion !== query) {
+      searchQueries.push(straightVersion);
+    }
+  }
+
+  // Remove duplicates
+  searchQueries = [...new Set(searchQueries)];
+
+  // Try each query
+  for (const q of searchQueries) {
+    const url = `${BASE_URL}/search.php?s=${encodeURIComponent(q)}&t=${getTimestamp()}&ADSearch=false`;
+    const headers = buildHeaders({}, "XMLHttpRequest");
+    try {
+      const data = await fetchJson(url, { headers });
+      if (data.status === "y" && data.searchResult && data.searchResult.length > 0) {
+        log(`Search found ${data.searchResult.length} results with: "${q}"`);
+        return data.searchResult;
+      }
+    } catch (e) {
+      // Continue to next query
+    }
+  }
+  
+  log(`No results found for any variation of: "${query}"`);
+  return [];
 }
 
 async function searchWithFallback(originalTitle, year, imdbTitle) {
   let searchTitle = imdbTitle || originalTitle;
-  let results = await search(searchTitle).catch(() => []);
   
+  // Check hardcoded mapping first
+  let mappedTitle = TITLE_MAPPING[searchTitle] || null;
+  if (mappedTitle) {
+    log(`Using hardcoded mapping: "${searchTitle}" → "${mappedTitle}"`);
+    searchTitle = mappedTitle;
+  }
+  
+  // Try search title
+  let results = await search(searchTitle);
   if (results.length > 0) {
-    log(`Found ${results.length} results with IMDb title: "${searchTitle}"`);
+    log(`Found ${results.length} results with title: "${searchTitle}"`);
     if (year) {
       const filtered = results.filter(item => item.y === year);
       if (filtered.length > 0) {
@@ -169,9 +232,10 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
     return results;
   }
 
+  // Fallback: try normalized
   const normalized = normalizeTitleForSearch(originalTitle);
-  log(`No results with IMDb title, trying normalized: "${normalized}"`);
-  results = await search(normalized).catch(() => []);
+  log(`No results, trying normalized: "${normalized}"`);
+  results = await search(normalized);
   if (results.length === 0) return [];
 
   if (year) {
@@ -289,7 +353,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
   let contentId;
 
-  // ---- FIX: Treat "t" as TV series ----
+  // Treat "t" as TV series
   const isMovie = (post.type === "m" || mediaType === "movie");
 
   if (isMovie) {
