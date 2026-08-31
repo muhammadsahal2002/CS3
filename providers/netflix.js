@@ -1,10 +1,13 @@
-// mobile_nf.js – Netflix (nf) with language priority picker
+// mobile_nf.js – Netflix (nf) – Search only with IMDb title
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
 const BASE_URL = "https://net52.cc/mobile";
+
+// OMDb API key
+const OMDb_API_KEY = "8d6935ed";
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -25,6 +28,13 @@ function log(msg) { console.log("[NetflixNF] " + msg); }
 
 function getTimestamp() {
   return Math.floor(Date.now() / 1000);
+}
+
+function normalizeTitleForSearch(str) {
+  return String(str || "")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ---------- Language priority ----------
@@ -52,14 +62,40 @@ function pickBestResult(results, year) {
   return best;
 }
 
-function normalizeTitleForSearch(str) {
-  return String(str || "")
-    .replace(/[^a-zA-Z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+// ---------- Get IMDb ID from TMDB ----------
+async function getImdbId(tmdbId, mediaType) {
+  const endpoint = mediaType === "movie" ? "movie" : "tv";
+  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
+  try {
+    const data = await fetchJson(url);
+    return data.imdb_id || null;
+  } catch (e) {
+    log(`Failed to get IMDb ID: ${e.message}`);
+    return null;
+  }
 }
 
-// ---------- Token ----------
+// ---------- Get IMDb title using OMDb ----------
+async function getImdbTitle(imdbId) {
+  if (!imdbId) return null;
+  
+  try {
+    const url = `https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.Response === "True" && data.Title) {
+      log(`OMDb title: "${data.Title}"`);
+      return data.Title;
+    } else {
+      log(`OMDb error: ${data.Error || 'Unknown'}`);
+    }
+  } catch (e) {
+    log(`OMDb failed: ${e.message}`);
+  }
+  return null;
+}
+
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -107,7 +143,6 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -116,19 +151,12 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-async function searchWithFallback(originalTitle, year) {
-  const normalized = normalizeTitleForSearch(originalTitle);
-  let results = await search(originalTitle).catch(() => []);
-  if (results.length > 0) return results;
-
-  log("No results for original title, trying normalized: " + normalized);
-  results = await search(normalized).catch(() => []);
-  if (results.length === 0) return [];
-
-  if (year) {
-    const filtered = results.filter(item => item.y === year);
-    if (filtered.length > 0) return filtered;
-  }
+// ---- Search ONLY with IMDb title ----
+async function searchWithImdbTitle(imdbTitle) {
+  if (!imdbTitle) return [];
+  log(`Searching with IMDb title: "${imdbTitle}"`);
+  const results = await search(imdbTitle).catch(() => []);
+  log(`Found ${results.length} results`);
   return results;
 }
 
@@ -162,7 +190,6 @@ async function getEpisodes(seasonId, seriesId) {
 }
 
 async function getPlaylist(id, title) {
-  // 🔥 This line enables Full HD (1080p) when available
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
   const headers = buildHeaders({}, "app.netmirror.nmv2");
   const data = await fetchJson(url, { headers });
@@ -177,21 +204,80 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
-  log(`TMDB: ${title} (${year})`);
+  log(`TMDB: "${title}" (${year})`);
 
-  const results = await searchWithFallback(title, year);
-  if (!results.length) throw new Error(`No results for "${title}"`);
+  // ---- Get IMDb title ----
+  const imdbId = await getImdbId(tmdbId, mediaType);
+  let imdbTitle = null;
+  if (imdbId) {
+    imdbTitle = await getImdbTitle(imdbId);
+    if (imdbTitle) {
+      log(`IMDb title: "${imdbTitle}"`);
+    } else {
+      log(`Could not get IMDb title for ${imdbId}`);
+      throw new Error(`No IMDb title found for ${title}`);
+    }
+  } else {
+    log(`No IMDb ID found for ${title}`);
+    throw new Error(`No IMDb ID found for ${title}`);
+  }
+
+  // ---- Search ONLY with IMDb title ----
+  const results = await searchWithImdbTitle(imdbTitle);
+  if (!results.length) throw new Error(`No results found for IMDb title "${imdbTitle}"`);
+
+  log("All search results:");
+  for (const item of results) {
+    log(`  "${item.t}" (year unknown) id=${item.id}`);
+  }
+
+  // ---- Fetch year from post for each result ----
+  log(`Fetching year for ${results.length} candidates...`);
+  let candidatesWithYear = [];
+  for (const item of results) {
+    try {
+      const post = await getPost(item.id);
+      const itemYear = post.year || "";
+      log(`  "${item.t}" → year: "${itemYear}"`);
+      candidatesWithYear.push({
+        ...item,
+        y: itemYear,
+        post: post
+      });
+    } catch (e) {
+      log(`  Failed to get year for "${item.t}": ${e.message}`);
+      candidatesWithYear.push({
+        ...item,
+        y: "",
+        post: null
+      });
+    }
+  }
+
+  // ---- Filter by year ----
+  let candidates = [];
+  if (year) {
+    candidates = candidatesWithYear.filter(item => item.y === year);
+    if (candidates.length === 0) {
+      const availableYears = [...new Set(candidatesWithYear.map(r => r.y).filter(y => y))].join(', ');
+      log(`❌ No results with year ${year}. Available: ${availableYears || 'none'}`);
+      throw new Error(`No results found with year ${year}.`);
+    }
+    log(`✅ Found ${candidates.length} results with year ${year}`);
+  } else {
+    candidates = candidatesWithYear;
+  }
 
   // ---- Use language priority picker ----
-  let selected = pickBestResult(results, year);
+  let selected = pickBestResult(candidates, year);
   if (!selected) {
-    selected = results[0];
+    selected = candidates[0];
     log(`No pick, using first: ${selected.t}`);
   } else {
     log(`Selected: ${selected.t} (${selected.y})`);
   }
 
-  const post = await getPost(selected.id);
+  const post = selected.post || await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
@@ -228,6 +314,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
   }
+
+  const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
+  log(`Available qualities: ${qualities.join(', ')}`);
 
   const subtitles = [];
   if (playlist.tracks && playlist.tracks.length) {
