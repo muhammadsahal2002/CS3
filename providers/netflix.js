@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Debugging version with hardcoded title mapping
+// mobile_nf.js – Netflix (nf) – IMDb title first, year from post
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -6,11 +6,10 @@ const TMDB_BASE = "https://api.themoviedb.org/3";
 const TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
 const BASE_URL = "https://net52.cc/mobile";
 
-// OMDb API key (yours)
+// OMDb API key
 const OMDb_API_KEY = "8d6935ed";
 
-// ---- HARDCODED TITLE MAPPING (TMDB title → Net52 title) ----
-// Add entries where TMDB title differs from what Net52 uses
+// ---- Hardcoded title mapping (fallback if OMDb fails) ----
 const TITLE_MAPPING = {
   "(MAD)²": "Mad Square",
   "MAD²": "Mad Square",
@@ -51,7 +50,6 @@ async function getImdbId(tmdbId, mediaType) {
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
   try {
     const data = await fetchJson(url);
-    log(`IMDb ID from TMDB: ${data.imdb_id || 'none'}`);
     return data.imdb_id || null;
   } catch (e) {
     log(`Failed to get IMDb ID: ${e.message}`);
@@ -63,7 +61,6 @@ async function getImdbId(tmdbId, mediaType) {
 async function getImdbTitle(imdbId) {
   if (!imdbId) return null;
   
-  log(`Fetching OMDb for IMDb ID: ${imdbId}`);
   try {
     const url = `https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`;
     const resp = await fetch(url);
@@ -78,29 +75,6 @@ async function getImdbTitle(imdbId) {
   } catch (e) {
     log(`OMDb failed: ${e.message}`);
   }
-  
-  // Fallback: scrape IMDb page
-  log(`Attempting to scrape IMDb page for ${imdbId}`);
-  try {
-    const htmlResp = await fetch(`https://www.imdb.com/title/${imdbId}/`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      }
-    });
-    if (!htmlResp.ok) throw new Error(`HTTP ${htmlResp.status}`);
-    const html = await htmlResp.text();
-    const titleMatch = html.match(/<title>(.*?)<\/title>/);
-    if (titleMatch) {
-      let title = titleMatch[1]
-        .replace(/\s*\(\d{4}\)\s*-\s*IMDb$/, "")
-        .trim();
-      log(`IMDb title (scraped): "${title}"`);
-      return title;
-    }
-  } catch (e) {
-    log(`IMDb scrape failed: ${e.message}`);
-  }
-  
   return null;
 }
 
@@ -137,7 +111,6 @@ function wordMatchScore(tmdbTitle, resultTitle) {
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
-  log("Fetching token from JSONHosting...");
   const resp = await fetch(TOKEN_URL);
   if (!resp.ok) throw new Error(`Token HTTP ${resp.status}`);
   const json = await resp.json();
@@ -185,12 +158,9 @@ async function getTmdbInfo(tmdbId, mediaType) {
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
-  log(`Searching: ${url}`);
   const data = await fetchJson(url, { headers });
   if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
-  const results = data.searchResult || [];
-  log(`Found ${results.length} results`);
-  return results;
+  return data.searchResult || [];
 }
 
 async function searchWithFallback(originalTitle, year, imdbTitle) {
@@ -198,43 +168,33 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
   let allResults = [];
   let queries = [];
 
-  // ---- Check hardcoded mapping ----
+  // ---- Use IMDb title first (most likely to match Net52) ----
   let mappedTitle = TITLE_MAPPING[originalTitle] || null;
-  if (mappedTitle) {
-    log(`Using hardcoded mapping: "${originalTitle}" → "${mappedTitle}"`);
-  }
-
-  // 1. Try mapped title (if exists)
-  if (mappedTitle) {
-    queries.push(mappedTitle);
-    if (year) {
-      queries.push(`${mappedTitle} ${year}`);
-    }
-  }
-
-  // 2. Try IMDb title
-  if (imdbTitle && imdbTitle !== originalTitle && imdbTitle !== mappedTitle) {
-    queries.push(imdbTitle);
-    if (year) {
-      queries.push(`${imdbTitle} ${year}`);
-    }
-  }
-
-  // 3. Try original TMDB title
-  queries.push(originalTitle);
-  queries.push(normalized);
   
-  // 4. Try with year
+  // Priority: IMDb title > mapped title > original title
+  let searchTitle = imdbTitle || mappedTitle || originalTitle;
+  
+  // Always search with the best title
+  queries.push(searchTitle);
   if (year) {
-    queries.push(`${originalTitle} ${year}`);
-    queries.push(`${normalized} ${year}`);
+    queries.push(`${searchTitle} ${year}`);
+  }
+  
+  // Also try original as fallback
+  if (searchTitle !== originalTitle) {
+    queries.push(originalTitle);
+    queries.push(normalized);
+    if (year) {
+      queries.push(`${originalTitle} ${year}`);
+      queries.push(`${normalized} ${year}`);
+    }
   }
 
   const uniqueQueries = [...new Set(queries)];
-  log(`Will search with ${uniqueQueries.length} queries:`, uniqueQueries);
   const seenIds = new Set();
 
   for (const q of uniqueQueries) {
+    log(`Searching: "${q}"`);
     try {
       const results = await search(q);
       if (results && results.length > 0) {
@@ -306,45 +266,68 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     imdbTitle = await getImdbTitle(imdbId);
     if (imdbTitle) {
       log(`IMDb title: "${imdbTitle}"`);
-    } else {
-      log(`Could not get IMDb title for ${imdbId}`);
     }
   }
 
+  // ---- Search with IMDb title first ----
   const results = await searchWithFallback(title, year, imdbTitle);
   if (!results.length) {
-    log(`❌ No results found. Tried all queries.`);
     throw new Error(`No results found for "${title}"`);
   }
 
   log("All search results:");
   for (const item of results) {
-    log(`  "${item.t}" (${item.y}) id=${item.id}`);
+    log(`  "${item.t}" (year unknown) id=${item.id}`);
   }
 
-  // ---- STEP 1: FILTER BY YEAR - MUST MATCH ----
-  let candidates = [];
-  if (year) {
-    candidates = results.filter(item => item.y === year);
-    if (candidates.length === 0) {
-      const availableYears = [...new Set(results.map(r => r.y))].join(', ');
-      log(`❌ No results with year ${year}. Available: ${availableYears}`);
-      throw new Error(`No results found with year ${year}. Available years: ${availableYears}`);
+  // ---- STEP 1: Fetch year from post.php for each candidate ----
+  log(`Fetching year for ${results.length} candidates...`);
+  let candidatesWithYear = [];
+
+  for (const item of results) {
+    try {
+      const post = await getPost(item.id);
+      const itemYear = post.year || "";
+      log(`  "${item.t}" → year: "${itemYear}"`);
+      candidatesWithYear.push({
+        ...item,
+        y: itemYear,
+        post: post
+      });
+    } catch (e) {
+      log(`  Failed to get year for "${item.t}": ${e.message}`);
+      candidatesWithYear.push({
+        ...item,
+        y: "",
+        post: null
+      });
     }
-    log(`✅ Found ${candidates.length} results with year ${year}`);
-  } else {
-    candidates = results;
   }
 
-  // ---- STEP 2: WORD MATCHING ----
+  // ---- STEP 2: Filter by year (MUST MATCH) ----
+  let yearMatches = [];
+  if (year) {
+    yearMatches = candidatesWithYear.filter(item => item.y === year);
+    if (yearMatches.length === 0) {
+      const availableYears = [...new Set(candidatesWithYear.map(r => r.y).filter(y => y))].join(', ');
+      log(`❌ No results with year ${year}. Available: ${availableYears || 'none'}`);
+      throw new Error(`No results found with year ${year}.`);
+    }
+    log(`✅ Found ${yearMatches.length} results with year ${year}`);
+  } else {
+    yearMatches = candidatesWithYear;
+  }
+
+  // ---- STEP 3: Word matching among year matches ----
   let selected = null;
   let bestWordScore = -1;
+  // Use IMDb title for matching (most accurate)
   const matchTitle = imdbTitle || title;
   log(`Using match title: "${matchTitle}"`);
 
-  for (const item of candidates) {
+  for (const item of yearMatches) {
     const wordScore = wordMatchScore(matchTitle, item.t);
-    log(`  "${item.t}": word_score=${wordScore}`);
+    log(`  "${item.t}" (${item.y}): word_score=${wordScore}`);
     if (wordScore > bestWordScore) {
       bestWordScore = wordScore;
       selected = item;
@@ -352,13 +335,14 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }
 
   if (!selected) {
-    selected = candidates[0];
+    selected = yearMatches[0];
     log(`Using first matching year result: "${selected.t}" (${selected.y})`);
   } else {
     log(`✅ Selected: "${selected.t}" (${selected.y}) word_score=${bestWordScore}`);
   }
 
-  const post = await getPost(selected.id);
+  // Use the post we already fetched
+  const post = selected.post || await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
