@@ -269,6 +269,7 @@ async function getPlaylist(id, title) {
 }
 
 // ---------- Main getStreams ----------
+// ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
@@ -296,31 +297,42 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
   let candidates = [];
   if (year) {
+    // First, try to find results with matching year
     const existingYearMatches = results.filter(item => item.y === year);
     if (existingYearMatches.length > 0) {
       candidates = existingYearMatches;
       log(`✅ Found ${candidates.length} results with year ${year}`);
     } else {
+      // If no year matches, fetch year from post.php
       log(`Fetching year from post.php for ${results.length} candidates...`);
       for (const item of results) {
         try {
           const post = await getPost(item.id);
           const itemYear = post.year || "";
           log(`  "${item.t}" → year: "${itemYear}"`);
-          candidates.push({ ...item, y: itemYear, post: post });
+          if (itemYear === year) {
+            candidates.push({ ...item, y: itemYear, post: post });
+          } else {
+            // Store the post even if year doesn't match (fallback)
+            log(`  Year mismatch (${itemYear} != ${year}), but keeping as fallback`);
+            candidates.push({ ...item, y: itemYear, post: post });
+          }
         } catch (e) {
           log(`  Failed to get year for "${item.t}": ${e.message}`);
         }
       }
+      // If we have candidates, use them even if year doesn't match
       if (candidates.length === 0) {
         throw new Error(`No results found for "${title}"`);
       }
+      // Check if any have matching year
       const matchingYear = candidates.filter(item => item.y === year);
       if (matchingYear.length > 0) {
         candidates = matchingYear;
         log(`✅ Found ${candidates.length} results with year ${year}`);
       } else {
         log(`⚠️ No results with year ${year}, using all results (${candidates.length})`);
+        // Use all candidates, don't filter by year
       }
     }
   } else {
@@ -340,6 +352,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
   let contentId;
 
+  // Treat "t" as TV series
   const isMovie = (post.type === "m" || mediaType === "movie");
 
   if (isMovie) {
