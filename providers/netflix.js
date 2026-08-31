@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – Search only with IMDb title
+// mobile_nf.js – Netflix (nf) – IMDb Title Search Flowchart Implementation
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -30,13 +30,6 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
-function normalizeTitleForSearch(str) {
-  return String(str || "")
-    .replace(/[^a-zA-Z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 // ---------- Language priority ----------
 function langPriority(title) {
   var t = (title || "").toLowerCase();
@@ -60,6 +53,13 @@ function pickBestResult(results, year) {
     }
   }
   return best;
+}
+
+function normalizeTitleForSearch(str) {
+  return String(str || "")
+    .replace(/[^a-zA-Z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ---------- Get IMDb ID from TMDB ----------
@@ -96,6 +96,7 @@ async function getImdbTitle(imdbId) {
   return null;
 }
 
+// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -143,6 +144,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const headers = buildHeaders({}, "XMLHttpRequest");
@@ -151,12 +153,38 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-// ---- Search ONLY with IMDb title ----
-async function searchWithImdbTitle(imdbTitle) {
-  if (!imdbTitle) return [];
-  log(`Searching with IMDb title: "${imdbTitle}"`);
-  const results = await search(imdbTitle).catch(() => []);
-  log(`Found ${results.length} results`);
+// ---------- Search with IMDb title first, fallback to normalized ----------
+async function searchWithFallback(originalTitle, year, imdbTitle) {
+  // Step 1: Try IMDb title first
+  let searchTitle = imdbTitle || originalTitle;
+  let results = await search(searchTitle).catch(() => []);
+  
+  if (results.length > 0) {
+    log(`Found ${results.length} results with IMDb title: "${searchTitle}"`);
+    // Filter by year if available
+    if (year) {
+      const filtered = results.filter(item => item.y === year);
+      if (filtered.length > 0) {
+        log(`Filtered to ${filtered.length} results with year ${year}`);
+        return filtered;
+      }
+    }
+    return results;
+  }
+
+  // Step 2: Fallback to normalized title
+  const normalized = normalizeTitleForSearch(originalTitle);
+  log(`No results with IMDb title, trying normalized: "${normalized}"`);
+  results = await search(normalized).catch(() => []);
+  if (results.length === 0) return [];
+
+  if (year) {
+    const filtered = results.filter(item => item.y === year);
+    if (filtered.length > 0) {
+      log(`Filtered to ${filtered.length} results with year ${year}`);
+      return filtered;
+    }
+  }
   return results;
 }
 
@@ -199,6 +227,9 @@ async function getPlaylist(id, title) {
 
 // ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
+  // ============================================
+  // STEP 1: Token & Metadata
+  // ============================================
   await fetchToken();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
@@ -206,7 +237,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const year = tmdbInfo.year;
   log(`TMDB: "${title}" (${year})`);
 
-  // ---- Get IMDb title ----
+  // ============================================
+  // STEP 2: Get IMDb Title
+  // ============================================
   const imdbId = await getImdbId(tmdbId, mediaType);
   let imdbTitle = null;
   if (imdbId) {
@@ -214,78 +247,85 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     if (imdbTitle) {
       log(`IMDb title: "${imdbTitle}"`);
     } else {
-      log(`Could not get IMDb title for ${imdbId}`);
-      throw new Error(`No IMDb title found for ${title}`);
+      log(`Could not get IMDb title for ${imdbId}, using TMDB title`);
     }
   } else {
     log(`No IMDb ID found for ${title}`);
-    throw new Error(`No IMDb ID found for ${title}`);
   }
 
-  // ---- Search ONLY with IMDb title ----
-  const results = await searchWithImdbTitle(imdbTitle);
-  if (!results.length) throw new Error(`No results found for IMDb title "${imdbTitle}"`);
+  // ============================================
+  // STEP 3: Search Net52
+  // ============================================
+  const results = await searchWithFallback(title, year, imdbTitle);
+  if (!results.length) {
+    throw new Error(`No results found for "${title}"`);
+  }
 
   log("All search results:");
   for (const item of results) {
-    log(`  "${item.t}" (year unknown) id=${item.id}`);
+    log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
   }
 
-  // ---- Fetch year from post for each result ----
-  log(`Fetching year for ${results.length} candidates...`);
-  let candidatesWithYear = [];
-  for (const item of results) {
-    try {
-      const post = await getPost(item.id);
-      const itemYear = post.year || "";
-      log(`  "${item.t}" → year: "${itemYear}"`);
-      candidatesWithYear.push({
-        ...item,
-        y: itemYear,
-        post: post
-      });
-    } catch (e) {
-      log(`  Failed to get year for "${item.t}": ${e.message}`);
-      candidatesWithYear.push({
-        ...item,
-        y: "",
-        post: null
-      });
-    }
-  }
-
-  // ---- Filter by year ----
+  // ============================================
+  // STEP 4: Filter by Year (Fetch from post.php if needed)
+  // ============================================
   let candidates = [];
   if (year) {
-    candidates = candidatesWithYear.filter(item => item.y === year);
-    if (candidates.length === 0) {
-      const availableYears = [...new Set(candidatesWithYear.map(r => r.y).filter(y => y))].join(', ');
-      log(`❌ No results with year ${year}. Available: ${availableYears || 'none'}`);
-      throw new Error(`No results found with year ${year}.`);
+    // Check if any results already have the year
+    const existingYearMatches = results.filter(item => item.y === year);
+    if (existingYearMatches.length > 0) {
+      candidates = existingYearMatches;
+      log(`✅ Found ${candidates.length} results with year ${year}`);
+    } else {
+      // Fetch year from post.php for each result
+      log(`Fetching year from post.php for ${results.length} candidates...`);
+      for (const item of results) {
+        try {
+          const post = await getPost(item.id);
+          const itemYear = post.year || "";
+          log(`  "${item.t}" → year: "${itemYear}"`);
+          if (itemYear === year) {
+            candidates.push({ ...item, y: itemYear, post: post });
+          }
+        } catch (e) {
+          log(`  Failed to get year for "${item.t}": ${e.message}`);
+        }
+      }
+      if (candidates.length === 0) {
+        throw new Error(`No results found with year ${year}`);
+      }
+      log(`✅ Found ${candidates.length} results with year ${year}`);
     }
-    log(`✅ Found ${candidates.length} results with year ${year}`);
   } else {
-    candidates = candidatesWithYear;
+    candidates = results;
   }
 
-  // ---- Use language priority picker ----
+  // ============================================
+  // STEP 5: Language Priority Selection
+  // ============================================
   let selected = pickBestResult(candidates, year);
   if (!selected) {
     selected = candidates[0];
-    log(`No pick, using first: ${selected.t}`);
+    log(`No language pick, using first: "${selected.t}" (${selected.y})`);
   } else {
-    log(`Selected: ${selected.t} (${selected.y})`);
+    log(`Selected: "${selected.t}" (${selected.y})`);
   }
 
+  // Get post data (if not already fetched)
   const post = selected.post || await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
+  // ============================================
+  // STEP 6: Get Content ID (Movie or Series)
+  // ============================================
   let contentId;
 
   if (post.type === "m" || mediaType === "movie") {
+    // ---- MOVIE ----
     contentId = post.main_id || selected.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
+    // ---- SERIES ----
     const seasonList = post.season || [];
     let targetSeasonId = null;
     for (const s of seasonList) {
@@ -310,6 +350,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     contentId = targetEp.id;
   }
 
+  // ============================================
+  // STEP 7: Get Playlist (Full HD)
+  // ============================================
   const playlist = await getPlaylist(contentId, post.title || title);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
@@ -318,6 +361,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
   log(`Available qualities: ${qualities.join(', ')}`);
 
+  // ============================================
+  // STEP 8: Extract Subtitles
+  // ============================================
   const subtitles = [];
   if (playlist.tracks && playlist.tracks.length) {
     for (const track of playlist.tracks) {
@@ -333,6 +379,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
   }
 
+  // ============================================
+  // STEP 9: Return Streams
+  // ============================================
   return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
