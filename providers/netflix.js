@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – IMDb title first, year from post
+// mobile_nf.js – Netflix (nf) – Movies use IMDb, Series use TMDB
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -9,7 +9,7 @@ const BASE_URL = "https://net52.cc/mobile";
 // OMDb API key
 const OMDb_API_KEY = "8d6935ed";
 
-// ---- Hardcoded title mapping (fallback if OMDb fails) ----
+// ---- Hardcoded title mapping (for movies only) ----
 const TITLE_MAPPING = {
   "(MAD)²": "Mad Square",
   "MAD²": "Mad Square",
@@ -163,24 +163,28 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-async function searchWithFallback(originalTitle, year, imdbTitle) {
+async function searchWithFallback(originalTitle, year, imdbTitle, isMovie) {
   const normalized = normalizeTitleForSearch(originalTitle);
   let allResults = [];
   let queries = [];
 
-  // ---- Use IMDb title first (most likely to match Net52) ----
-  let mappedTitle = TITLE_MAPPING[originalTitle] || null;
+  // ---- For movies: use IMDb title first ----
+  // ---- For series: use TMDB title first ----
+  let searchTitle;
+  if (isMovie) {
+    let mappedTitle = TITLE_MAPPING[originalTitle] || null;
+    searchTitle = imdbTitle || mappedTitle || originalTitle;
+  } else {
+    // Series: use TMDB title
+    searchTitle = originalTitle;
+  }
   
-  // Priority: IMDb title > mapped title > original title
-  let searchTitle = imdbTitle || mappedTitle || originalTitle;
-  
-  // Always search with the best title
   queries.push(searchTitle);
   if (year) {
     queries.push(`${searchTitle} ${year}`);
   }
   
-  // Also try original as fallback
+  // Also try original as fallback (for series, this is the same)
   if (searchTitle !== originalTitle) {
     queries.push(originalTitle);
     queries.push(normalized);
@@ -257,20 +261,23 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
-  log(`TMDB: "${title}" (${year})`);
+  const isMovie = (mediaType === "movie");
+  log(`TMDB: "${title}" (${year}) [${isMovie ? 'Movie' : 'Series'}]`);
 
-  // ---- Get IMDb ID and title ----
-  const imdbId = await getImdbId(tmdbId, mediaType);
+  // ---- Get IMDb ID and title (only for movies) ----
   let imdbTitle = null;
-  if (imdbId) {
-    imdbTitle = await getImdbTitle(imdbId);
-    if (imdbTitle) {
-      log(`IMDb title: "${imdbTitle}"`);
+  if (isMovie) {
+    const imdbId = await getImdbId(tmdbId, mediaType);
+    if (imdbId) {
+      imdbTitle = await getImdbTitle(imdbId);
+      if (imdbTitle) {
+        log(`IMDb title: "${imdbTitle}"`);
+      }
     }
   }
 
-  // ---- Search with IMDb title first ----
-  const results = await searchWithFallback(title, year, imdbTitle);
+  // ---- Search with appropriate title ----
+  const results = await searchWithFallback(title, year, imdbTitle, isMovie);
   if (!results.length) {
     throw new Error(`No results found for "${title}"`);
   }
@@ -321,8 +328,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   // ---- STEP 3: Word matching among year matches ----
   let selected = null;
   let bestWordScore = -1;
-  // Use IMDb title for matching (most accurate)
-  const matchTitle = imdbTitle || title;
+  // For movies, use IMDb title; for series, use TMDB title
+  const matchTitle = (isMovie && imdbTitle) ? imdbTitle : title;
   log(`Using match title: "${matchTitle}"`);
 
   for (const item of yearMatches) {
@@ -351,6 +358,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     contentId = post.main_id || selected.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
+    // ---- SERIES ----
     const seasonList = post.season || [];
     let targetSeasonId = null;
     for (const s of seasonList) {
