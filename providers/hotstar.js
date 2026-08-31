@@ -378,7 +378,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
-      name: "Netflix",
+      name: "Hotstar",
       title: src.label || "Auto",
       url: fileUrl,
       quality: src.label || "Auto",
