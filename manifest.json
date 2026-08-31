@@ -11,6 +11,7 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/castle.js",
       "enabled": true,
+      "hasSettings": false,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en", "hi", "ta", "te"]
     },
@@ -23,6 +24,7 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/anikoto.js",
       "enabled": true,
+      "hasSettings": false,
       "formats": ["m3u8"],
       "contentLanguage": ["en", "ja"]
     },
@@ -35,6 +37,7 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/hotstar.js",
       "enabled": true,
+      "hasSettings": false,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     },
@@ -47,10 +50,11 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/netflix.js",
       "enabled": true,
+      "hasSettings": false,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     },
- {
+    {
       "id": "primevideo",
       "name": "Prime Video",
       "description": "primevideo + cruncyroll",
@@ -59,10 +63,11 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/primevideo.js",
       "enabled": true,
+      "hasSettings": false,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     },
-{
+    {
       "id": "moviebox",
       "name": "Movie Box",
       "description": "Moviebox for All cinema.",
@@ -71,10 +76,9 @@
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/moviebox.js",
       "enabled": true,
+      "hasSettings": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
     }
- 
-
   ]
 }
