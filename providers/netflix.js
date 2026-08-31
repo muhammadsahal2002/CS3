@@ -222,13 +222,15 @@ async function getPlaylist(id, title) {
 }
 
 // ---------- Main getStreams ----------
+// ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
-  log(`TMDB: "${title}" (${year})`);
+  const isMovieType = (mediaType === "movie");
+  log(`TMDB: "${title}" (${year}) [${isMovieType ? 'Movie' : 'Series'}]`);
 
   const imdbId = await getImdbId(tmdbId, mediaType);
   let imdbTitle = null;
@@ -247,14 +249,17 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
   }
 
+  // ---- YEAR FILTERING: Strict for Movies, Flexible for Series ----
   let candidates = [];
-  if (year) {
+  
+  if (isMovieType && year) {
+    // ---- MOVIE: Strict year matching ----
     const existingYearMatches = results.filter(item => item.y === year);
     if (existingYearMatches.length > 0) {
       candidates = existingYearMatches;
-      log(`✅ Found ${candidates.length} results with year ${year}`);
+      log(`✅ Found ${candidates.length} movie results with year ${year}`);
     } else {
-      log(`Fetching year from post.php for ${results.length} candidates...`);
+      log(`Fetching year from post.php for ${results.length} movie candidates...`);
       for (const item of results) {
         try {
           const post = await getPost(item.id);
@@ -268,12 +273,39 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         }
       }
       if (candidates.length === 0) {
-        throw new Error(`No results found with year ${year}`);
+        throw new Error(`No movies found with year ${year}`);
       }
-      log(`✅ Found ${candidates.length} results with year ${year}`);
+      log(`✅ Found ${candidates.length} movie results with year ${year}`);
     }
   } else {
+    // ---- SERIES: Flexible year (use all results) ----
+    log(`📺 Series mode: Year matching is flexible`);
     candidates = results;
+    
+    // Still fetch years for logging, but don't filter
+    for (const item of results) {
+      try {
+        const post = await getPost(item.id);
+        const itemYear = post.year || "";
+        log(`  "${item.t}" → year: "${itemYear}"`);
+        item.y = itemYear;
+        item.post = post;
+      } catch (e) {
+        log(`  Failed to get year for "${item.t}": ${e.message}`);
+      }
+    }
+    
+    // If there's a year match, prefer it (but don't reject others)
+    if (year) {
+      const yearMatches = results.filter(item => item.y === year);
+      if (yearMatches.length > 0) {
+        log(`✅ Found ${yearMatches.length} results with year ${year} (preferred)`);
+        // Keep all results, but put year matches first
+        candidates = [...yearMatches, ...results.filter(item => item.y !== year)];
+      } else {
+        log(`⚠️ No results with year ${year}, using all results`);
+      }
+    }
   }
 
   let selected = pickBestResult(candidates, year);
