@@ -31,7 +31,7 @@ function getHeaders() {
 }
 
 function fixImage(path) {
-    if (!path || path.isBlank()) return null;
+    if (!path) return null;
     if (path.startsWith("http")) return path;
     return CONFIG.BASE_URL + "/" + path;
 }
@@ -93,19 +93,19 @@ function getSession() {
         })
         .then(function(html) {
             // Try to extract session from page
-            var match = html.match(/session=([a-f0-9]{20,})/);
+            var match = html.match(/session=([a-f0-9]{40,})/);
             if (match) {
                 currentSession = match[1];
-                console.log("[ICC FTP] Session found in HTML:", currentSession);
+                console.log("[ICC FTP] Session found in HTML:", currentSession.substring(0, 20) + "...");
                 resolve(currentSession);
                 return;
             }
 
             // Try to get from cookies
-            var cookieMatch = html.match(/PHPSESSID=([a-f0-9]{20,})/);
+            var cookieMatch = html.match(/PHPSESSID=([a-f0-9]{32,})/);
             if (cookieMatch) {
                 currentSession = cookieMatch[1];
-                console.log("[ICC FTP] Session found in cookie:", currentSession);
+                console.log("[ICC FTP] Session found in cookie:", currentSession.substring(0, 20) + "...");
                 resolve(currentSession);
                 return;
             }
@@ -206,18 +206,19 @@ function searchICC(query) {
 
         getSession()
         .then(function(session) {
-            return getToken(session).then(function(token) {
-                var url = CONFIG.BASE_URL + "/dashboard.php?session=" + session;
-                var body = "token=" + encodeURIComponent(token) + "&psearch=" + encodeURIComponent(query.trim());
+            return getToken(session);
+        })
+        .then(function(token) {
+            var url = CONFIG.BASE_URL + "/dashboard.php?session=" + session;
+            var body = "token=" + encodeURIComponent(token) + "&psearch=" + encodeURIComponent(query.trim());
 
-                console.log("[ICC FTP] POST to:", url);
-                console.log("[ICC FTP] Body:", body);
+            console.log("[ICC FTP] POST to:", url);
+            console.log("[ICC FTP] Body:", body);
 
-                return fetch(url, {
-                    method: "POST",
-                    headers: getHeaders(),
-                    body: body
-                });
+            return fetch(url, {
+                method: "POST",
+                headers: getHeaders(),
+                body: body
             });
         })
         .then(function(r) {
@@ -449,13 +450,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
     console.log("[ICC FTP] Season:", season, "Episode:", episode);
     console.log("[ICC FTP] ========================================");
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
         getTmdbDetails(tmdbId, mediaType)
         .then(function(details) {
             if (!details) {
                 console.log("[ICC FTP] ❌ Failed to get TMDB details");
                 resolve([]);
-                return;
+                return null;
             }
 
             var title = details.title;
@@ -469,7 +470,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             if (!results || results.length === 0) {
                 console.log("[ICC FTP] ❌ No results found");
                 resolve([]);
-                return;
+                return null;
             }
 
             console.log("[ICC FTP] ✅ Found", results.length, "results");
@@ -484,7 +485,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             if (!data) {
                 console.log("[ICC FTP] ❌ Failed to load content");
                 resolve([]);
-                return;
+                return null;
             }
 
             console.log("[ICC FTP] ✅ Loaded:", data.title);
@@ -493,6 +494,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return loadLinks(data.url);
         })
         .then(function(streams) {
+            if (!streams) {
+                resolve([]);
+                return;
+            }
             console.log("[ICC FTP] ✅ Returning", streams.length, "streams");
             resolve(streams);
         })
