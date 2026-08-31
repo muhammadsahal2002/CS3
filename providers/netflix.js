@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – IMDb Title Search + Apostrophe Fix
+// mobile_nf.js – Netflix (nf) – IMDb Title Search + Year Fallback
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -46,13 +46,11 @@ function normalizeTitleForSearch(str) {
 }
 
 function fixApostropheForSearch(str) {
-  // Replace curly apostrophe with straight, and vice versa
   return String(str || "")
-    .replace(/[’']/g, "'")   // Replace all apostrophes with straight apostrophe
+    .replace(/[’']/g, "'")
     .trim();
 }
 
-// ---------- Language priority ----------
 function langPriority(title) {
   var t = (title || "").toLowerCase();
   if (/\bhindi\b/.test(t)) return 100;
@@ -77,7 +75,6 @@ function pickBestResult(results, year) {
   return best;
 }
 
-// ---------- Get IMDb ID from TMDB ----------
 async function getImdbId(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
@@ -90,7 +87,6 @@ async function getImdbId(tmdbId, mediaType) {
   }
 }
 
-// ---------- Get IMDb title using OMDb ----------
 async function getImdbTitle(imdbId) {
   if (!imdbId) return null;
   
@@ -111,7 +107,6 @@ async function getImdbTitle(imdbId) {
   return null;
 }
 
-// ---------- Token ----------
 async function fetchToken() {
   if (tokenCache) return tokenCache;
 
@@ -159,18 +154,14 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- Net52 API ----------
 async function search(query) {
-  // Build variations of the query
   let searchQueries = [query];
   
-  // Normalize apostrophes
   const normalized = fixApostropheForSearch(query);
   if (normalized !== query) {
     searchQueries.push(normalized);
   }
   
-  // If query has straight apostrophe, also try curly
   if (query.includes("'")) {
     const curlyVersion = query.replace(/'/g, "’");
     if (curlyVersion !== query) {
@@ -178,7 +169,6 @@ async function search(query) {
     }
   }
   
-  // If query has curly apostrophe, also try straight
   if (query.includes("’")) {
     const straightVersion = query.replace(/’/g, "'");
     if (straightVersion !== query) {
@@ -186,10 +176,8 @@ async function search(query) {
     }
   }
 
-  // Remove duplicates
   searchQueries = [...new Set(searchQueries)];
 
-  // Try each query
   for (const q of searchQueries) {
     const url = `${BASE_URL}/search.php?s=${encodeURIComponent(q)}&t=${getTimestamp()}&ADSearch=false`;
     const headers = buildHeaders({}, "XMLHttpRequest");
@@ -199,9 +187,7 @@ async function search(query) {
         log(`Search found ${data.searchResult.length} results with: "${q}"`);
         return data.searchResult;
       }
-    } catch (e) {
-      // Continue to next query
-    }
+    } catch (e) {}
   }
   
   log(`No results found for any variation of: "${query}"`);
@@ -211,14 +197,12 @@ async function search(query) {
 async function searchWithFallback(originalTitle, year, imdbTitle) {
   let searchTitle = imdbTitle || originalTitle;
   
-  // Check hardcoded mapping first
   let mappedTitle = TITLE_MAPPING[searchTitle] || null;
   if (mappedTitle) {
     log(`Using hardcoded mapping: "${searchTitle}" → "${mappedTitle}"`);
     searchTitle = mappedTitle;
   }
   
-  // Try search title
   let results = await search(searchTitle);
   if (results.length > 0) {
     log(`Found ${results.length} results with title: "${searchTitle}"`);
@@ -232,7 +216,6 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
     return results;
   }
 
-  // Fallback: try normalized
   const normalized = normalizeTitleForSearch(originalTitle);
   log(`No results, trying normalized: "${normalized}"`);
   results = await search(normalized);
@@ -324,17 +307,21 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           const post = await getPost(item.id);
           const itemYear = post.year || "";
           log(`  "${item.t}" → year: "${itemYear}"`);
-          if (itemYear === year) {
-            candidates.push({ ...item, y: itemYear, post: post });
-          }
+          candidates.push({ ...item, y: itemYear, post: post });
         } catch (e) {
           log(`  Failed to get year for "${item.t}": ${e.message}`);
         }
       }
       if (candidates.length === 0) {
-        throw new Error(`No results found with year ${year}`);
+        throw new Error(`No results found for "${title}"`);
       }
-      log(`✅ Found ${candidates.length} results with year ${year}`);
+      const matchingYear = candidates.filter(item => item.y === year);
+      if (matchingYear.length > 0) {
+        candidates = matchingYear;
+        log(`✅ Found ${candidates.length} results with year ${year}`);
+      } else {
+        log(`⚠️ No results with year ${year}, using all results (${candidates.length})`);
+      }
     }
   } else {
     candidates = results;
@@ -353,7 +340,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
   let contentId;
 
-  // Treat "t" as TV series
   const isMovie = (post.type === "m" || mediaType === "movie");
 
   if (isMovie) {
@@ -368,18 +354,28 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         break;
       }
     }
-    if (!targetSeasonId) throw new Error(`Season ${season} not found`);
+    if (!targetSeasonId) {
+      log(`Season ${season} not found, available seasons: ${seasonList.map(s => s.s).join(', ')}`);
+      throw new Error(`Season ${season} not found`);
+    }
     log(`Season ID: ${targetSeasonId}`);
 
     const episodes = await getEpisodes(targetSeasonId, selected.id);
-    if (!episodes.length) throw new Error(`No episodes for season ${season}`);
+    if (!episodes.length) {
+      log(`No episodes found for season ${season}`);
+      throw new Error(`No episodes for season ${season}`);
+    }
 
     let targetEp = null;
     for (const ep of episodes) {
       const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
       if (epNum === episode) { targetEp = ep; break; }
     }
-    if (!targetEp) throw new Error(`Episode ${episode} not found`);
+    if (!targetEp) {
+      const availableEps = episodes.map(ep => ep.ep).join(', ');
+      log(`Episode ${episode} not found, available episodes: ${availableEps}`);
+      throw new Error(`Episode ${episode} not found`);
+    }
     log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
     contentId = targetEp.id;
   }
