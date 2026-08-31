@@ -1,4 +1,4 @@
-// mobile_nf.js – Netflix (nf) – IMDb Title Search Flowchart Implementation
+// mobile_nf.js – Netflix (nf) – IMDb Title Search + Series Fix
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -153,15 +153,12 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-// ---------- Search with IMDb title first, fallback to normalized ----------
 async function searchWithFallback(originalTitle, year, imdbTitle) {
-  // Step 1: Try IMDb title first
   let searchTitle = imdbTitle || originalTitle;
   let results = await search(searchTitle).catch(() => []);
   
   if (results.length > 0) {
     log(`Found ${results.length} results with IMDb title: "${searchTitle}"`);
-    // Filter by year if available
     if (year) {
       const filtered = results.filter(item => item.y === year);
       if (filtered.length > 0) {
@@ -172,7 +169,6 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
     return results;
   }
 
-  // Step 2: Fallback to normalized title
   const normalized = normalizeTitleForSearch(originalTitle);
   log(`No results with IMDb title, trying normalized: "${normalized}"`);
   results = await search(normalized).catch(() => []);
@@ -227,9 +223,6 @@ async function getPlaylist(id, title) {
 
 // ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
-  // ============================================
-  // STEP 1: Token & Metadata
-  // ============================================
   await fetchToken();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
@@ -237,47 +230,30 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const year = tmdbInfo.year;
   log(`TMDB: "${title}" (${year})`);
 
-  // ============================================
-  // STEP 2: Get IMDb Title
-  // ============================================
   const imdbId = await getImdbId(tmdbId, mediaType);
   let imdbTitle = null;
   if (imdbId) {
     imdbTitle = await getImdbTitle(imdbId);
     if (imdbTitle) {
       log(`IMDb title: "${imdbTitle}"`);
-    } else {
-      log(`Could not get IMDb title for ${imdbId}, using TMDB title`);
     }
-  } else {
-    log(`No IMDb ID found for ${title}`);
   }
 
-  // ============================================
-  // STEP 3: Search Net52
-  // ============================================
   const results = await searchWithFallback(title, year, imdbTitle);
-  if (!results.length) {
-    throw new Error(`No results found for "${title}"`);
-  }
+  if (!results.length) throw new Error(`No results found for "${title}"`);
 
   log("All search results:");
   for (const item of results) {
     log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
   }
 
-  // ============================================
-  // STEP 4: Filter by Year (Fetch from post.php if needed)
-  // ============================================
   let candidates = [];
   if (year) {
-    // Check if any results already have the year
     const existingYearMatches = results.filter(item => item.y === year);
     if (existingYearMatches.length > 0) {
       candidates = existingYearMatches;
       log(`✅ Found ${candidates.length} results with year ${year}`);
     } else {
-      // Fetch year from post.php for each result
       log(`Fetching year from post.php for ${results.length} candidates...`);
       for (const item of results) {
         try {
@@ -300,9 +276,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     candidates = results;
   }
 
-  // ============================================
-  // STEP 5: Language Priority Selection
-  // ============================================
   let selected = pickBestResult(candidates, year);
   if (!selected) {
     selected = candidates[0];
@@ -311,21 +284,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     log(`Selected: "${selected.t}" (${selected.y})`);
   }
 
-  // Get post data (if not already fetched)
   const post = selected.post || await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
-  // ============================================
-  // STEP 6: Get Content ID (Movie or Series)
-  // ============================================
   let contentId;
 
-  if (post.type === "m" || mediaType === "movie") {
-    // ---- MOVIE ----
+  // ---- FIX: Treat "t" as TV series ----
+  const isMovie = (post.type === "m" || mediaType === "movie");
+
+  if (isMovie) {
     contentId = post.main_id || selected.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
-    // ---- SERIES ----
     const seasonList = post.season || [];
     let targetSeasonId = null;
     for (const s of seasonList) {
@@ -350,9 +320,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     contentId = targetEp.id;
   }
 
-  // ============================================
-  // STEP 7: Get Playlist (Full HD)
-  // ============================================
   const playlist = await getPlaylist(contentId, post.title || title);
   if (!playlist.sources || !playlist.sources.length) {
     throw new Error("No sources in playlist");
@@ -361,9 +328,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
   log(`Available qualities: ${qualities.join(', ')}`);
 
-  // ============================================
-  // STEP 8: Extract Subtitles
-  // ============================================
   const subtitles = [];
   if (playlist.tracks && playlist.tracks.length) {
     for (const track of playlist.tracks) {
@@ -379,9 +343,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
   }
 
-  // ============================================
-  // STEP 9: Return Streams
-  // ============================================
   return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
