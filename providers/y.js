@@ -263,7 +263,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             var yearMatches = updatedResults.filter(function(item) { return item.y === year; });
                             if (yearMatches.length > 0) {
                                 log("Found " + yearMatches.length + " results with year " + year + " (preferred)");
-                                // Put year matches first
                                 var nonMatches = updatedResults.filter(function(item) { return item.y !== year; });
                                 filteredResults = yearMatches.concat(nonMatches);
                             } else {
@@ -305,9 +304,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 log("No language pick, using first: " + selected.t + " (" + selected.y + ")");
             }
 
-            var post = selected.post || getPost(selected.id);
-            return post.then(function(postData) {
-                post = postData;
+            // ---- FIX: Handle post correctly ----
+            var postPromise;
+            if (selected.post) {
+                // If post is already attached, use it
+                postPromise = Promise.resolve(selected.post);
+            } else {
+                // Otherwise fetch it
+                postPromise = getPost(selected.id);
+            }
+            
+            return postPromise.then(function(postData) {
+                var post = postData;
                 return { title: title, selected: selected, post: post };
             });
         })
