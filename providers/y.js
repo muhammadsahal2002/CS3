@@ -205,6 +205,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(tmdbInfo) {
             var title = tmdbInfo.title;
             var year = tmdbInfo.year;
+            // ---- FIX: Check both mediaType and whether it's a movie ----
             var isMovieType = (mediaType === "movie");
             log("TMDB Title: " + title + " (" + year + ") [" + (isMovieType ? 'Movie' : 'Series') + "]");
             
@@ -220,7 +221,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         return item.y === year;
                     });
                     if (filteredResults.length === 0) {
-                        // Try fetching year from post.php
                         log("No movies with year " + year + " in search results, checking post.php...");
                         var fetchPromises = results.map(function(item) {
                             return getPost(item.id)
@@ -247,7 +247,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 } else {
                     // SERIES: Year matching is flexible
                     log("Series mode: Year matching is flexible");
-                    // Fetch years from post.php for better logging
                     var fetchPromises = results.map(function(item) {
                         return getPost(item.id)
                             .then(function(post) {
@@ -304,13 +303,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 log("No language pick, using first: " + selected.t + " (" + selected.y + ")");
             }
 
-            // ---- FIX: Handle post correctly ----
             var postPromise;
             if (selected.post) {
-                // If post is already attached, use it
                 postPromise = Promise.resolve(selected.post);
             } else {
-                // Otherwise fetch it
                 postPromise = getPost(selected.id);
             }
             
@@ -332,7 +328,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             log("Selected language: " + chosenLang);
 
-            if (post.type === "m" || mediaType === "movie") {
+            // ---- FIX: Check both post.type and mediaType ----
+            // "m" = Movie, anything else (including "t") = Series
+            var isMovie = (post.type === "m" || mediaType === "movie");
+
+            if (isMovie) {
                 log("Movie mode");
                 return getPlaylist(selected.id, post.title || title, chosenLang)
                     .then(function(playlist) {
@@ -340,6 +340,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     });
             }
 
+            // ---- SERIES (handles "t", "tv", etc.) ----
+            log("Series mode");
             var seasonList = post.season || [];
             var targetSeasonId = null;
             for (var i = 0; i < seasonList.length; i++) {
