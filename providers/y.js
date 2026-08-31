@@ -1,13 +1,9 @@
-// primevideo.js – net52.cc Prime Video (pv)
-// For Nuvio – ES5-compatible, uses fetch + Promises.
-// Fetches token from JSONBin, uses TMDB title, searches Net52.
-// Fixed: cookie has no lang, has hd=on; playlist uses lang=null & hd=on
-
+// primevideo.js – Prime Video (pv) with subtitles
 "use strict";
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var TOKEN_URL = "https://api.jsonbin.io/v3/b/6a8bc1edf5f4af5e293a7a1b/latest";
+var TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
@@ -24,6 +20,30 @@ function ts() {
     return Math.floor(Date.now() / 1000);
 }
 
+function normalizeTitle(str) {
+    return String(str || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function normalizeTitleForSearch(str) {
+    return String(str || "")
+        .replace(/[^a-zA-Z0-9\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+// ---------- Language priority (Hindi > English > others) ----------
+function langPriority(title) {
+    var t = (title || "").toLowerCase();
+    if (/\bhindi\b/.test(t)) return 100;
+    if (/\benglish\b/.test(t)) return 90;
+    if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
+    return 10;
+}
+
 function headers(xhr) {
     var h = {
         "User-Agent": UA,
@@ -37,7 +57,6 @@ function headers(xhr) {
     return h;
 }
 
-// ---------- Token ----------
 function fetchToken() {
     return fetch(TOKEN_URL)
         .then(function(r) {
@@ -54,12 +73,11 @@ function fetchToken() {
                 throw new Error("Invalid token format");
             }
 
-            // Cookie: NO lang, includes hd=on
             cookieHeader = "t_hash_t=" + t_hash_t;
             if (t_hash) {
                 cookieHeader += "; t_hash=" + t_hash;
             }
-            cookieHeader += "; ott=pv; hd=on";   // hd=on in cookie
+            cookieHeader += "; ott=pv; hd=on";
 
             log("Token OK: " + rawToken.substring(0, 30) + "...");
             log("Cookie: " + cookieHeader);
@@ -67,19 +85,20 @@ function fetchToken() {
         });
 }
 
-// ---------- TMDB ----------
-function getTmdbTitle(tmdbId, mediaType) {
+function getTmdbInfo(tmdbId, mediaType) {
     var url = TMDB_BASE + "/" + (mediaType === "movie" ? "movie" : "tv") +
         "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(d) {
             if (!d) throw new Error("TMDB failed");
-            return d.title || d.name;
+            var title = d.title || d.name;
+            var year = d.release_date ? d.release_date.substring(0,4) : 
+                       (d.first_air_date ? d.first_air_date.substring(0,4) : "");
+            return { title: title, year: year };
         });
 }
 
-// ---------- Net52 API ----------
 function search(query) {
     var url = PV + "/search.php?s=" + encodeURIComponent(query) +
         "&t=" + ts() + "&ADSearch=false";
@@ -87,9 +106,36 @@ function search(query) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data || !data.searchResult) {
-                throw new Error("Search failed (check token/cookies)");
+                return [];
             }
             return data.searchResult || [];
+        });
+}
+
+function searchWithFallback(originalTitle, year) {
+    var normalized = normalizeTitleForSearch(originalTitle);
+
+    return search(originalTitle)
+        .then(function(results) {
+            if (results && results.length > 0) {
+                return results;
+            }
+            log("No results for original title, trying normalized: " + normalized);
+            return search(normalized);
+        })
+        .then(function(results) {
+            if (!results || results.length === 0) {
+                return [];
+            }
+            if (year) {
+                var filtered = results.filter(function(item) {
+                    return item.y === year;
+                });
+                if (filtered.length > 0) {
+                    return filtered;
+                }
+            }
+            return results;
         });
 }
 
@@ -131,12 +177,11 @@ function getEpisodes(seasonId, seriesId) {
 }
 
 function getPlaylist(id, title, lang) {
-    // lang is ignored – we always use 'null' to enable Full HD
     var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
         "&t=" + encodeURIComponent(title) +
         "&tm=" + ts() +
-        "&lang=null" +          // <-- force null to get all qualities
-        "&hd=on" +              // <-- hd=on in URL
+        "&lang=null" +
+        "&hd=on" +
         "&userhash=" + encodeURIComponent(rawToken);
 
     return fetch(url, { headers: headers("app.netmirror.nmv2") })
@@ -149,24 +194,121 @@ function getPlaylist(id, title, lang) {
         });
 }
 
-// ---------- Main getStreams ----------
 function getStreams(tmdbId, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
     return fetchToken()
         .then(function() {
-            return getTmdbTitle(tmdbId, mediaType);
+            return getTmdbInfo(tmdbId, mediaType);
         })
-        .then(function(title) {
-            log("TMDB Title: " + title);
-            return search(title).then(function(results) {
+        .then(function(tmdbInfo) {
+            var title = tmdbInfo.title;
+            var year = tmdbInfo.year;
+            var isMovieType = (mediaType === "movie");
+            log("TMDB Title: " + title + " (" + year + ") [" + (isMovieType ? 'Movie' : 'Series') + "]");
+            
+            return searchWithFallback(title, year).then(function(results) {
                 if (!results.length) throw new Error("No results for " + title);
-                var selected = results[0];
-                log("Selected: " + selected.t + " (" + selected.id + ")");
-                return getPost(selected.id).then(function(post) {
-                    return { title: title, selected: selected, post: post };
-                });
+
+                // ---- Filter results based on movie/series ----
+                var filteredResults = results;
+                
+                if (isMovieType && year) {
+                    // MOVIE: Strict year matching
+                    filteredResults = results.filter(function(item) {
+                        return item.y === year;
+                    });
+                    if (filteredResults.length === 0) {
+                        // Try fetching year from post.php
+                        log("No movies with year " + year + " in search results, checking post.php...");
+                        var fetchPromises = results.map(function(item) {
+                            return getPost(item.id)
+                                .then(function(post) {
+                                    var itemYear = post.year || "";
+                                    if (itemYear === year) {
+                                        return { ...item, y: itemYear, post: post };
+                                    }
+                                    return null;
+                                })
+                                .catch(function() { return null; });
+                        });
+                        return Promise.all(fetchPromises).then(function(resultsWithYear) {
+                            var validResults = resultsWithYear.filter(function(item) { return item !== null; });
+                            if (validResults.length === 0) {
+                                throw new Error("No movies found with year " + year);
+                            }
+                            filteredResults = validResults;
+                            log("Found " + filteredResults.length + " movies with year " + year + " from post.php");
+                            return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
+                        });
+                    }
+                    log("Found " + filteredResults.length + " movies with year " + year);
+                } else {
+                    // SERIES: Year matching is flexible
+                    log("Series mode: Year matching is flexible");
+                    // Fetch years from post.php for better logging
+                    var fetchPromises = results.map(function(item) {
+                        return getPost(item.id)
+                            .then(function(post) {
+                                var itemYear = post.year || "";
+                                item.y = itemYear;
+                                item.post = post;
+                                return item;
+                            })
+                            .catch(function() { return item; });
+                    });
+                    return Promise.all(fetchPromises).then(function(updatedResults) {
+                        if (year) {
+                            var yearMatches = updatedResults.filter(function(item) { return item.y === year; });
+                            if (yearMatches.length > 0) {
+                                log("Found " + yearMatches.length + " results with year " + year + " (preferred)");
+                                // Put year matches first
+                                var nonMatches = updatedResults.filter(function(item) { return item.y !== year; });
+                                filteredResults = yearMatches.concat(nonMatches);
+                            } else {
+                                log("No results with year " + year + ", using all results");
+                                filteredResults = updatedResults;
+                            }
+                        }
+                        return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
+                    });
+                }
+                
+                return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
+            });
+        })
+        .then(function(ctx) {
+            var title = ctx.title;
+            var year = ctx.year;
+            var results = ctx.results;
+            var isMovieType = ctx.isMovieType;
+
+            // ---- Language priority selection ----
+            var best = null;
+            var bestScore = -1;
+
+            for (var i = 0; i < results.length; i++) {
+                var item = results[i];
+                var score = langPriority(item.t) * 10;
+                if (year && item.y === year) score += 5;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = item;
+                }
+            }
+
+            var selected = best || results[0];
+            if (best) {
+                log("Selected: " + selected.t + " (" + selected.y + ") score=" + bestScore);
+            } else {
+                log("No language pick, using first: " + selected.t + " (" + selected.y + ")");
+            }
+
+            var post = selected.post || getPost(selected.id);
+            return post.then(function(postData) {
+                post = postData;
+                return { title: title, selected: selected, post: post };
             });
         })
         .then(function(ctx) {
@@ -174,8 +316,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var selected = ctx.selected;
             var title = ctx.title;
 
-            // Language selection: not used in playlist URL (we force null)
-            // but we keep for logging and possible future use.
             var langList = post.lang || [];
             var chosenLang = "eng";
             if (langList.length) {
@@ -184,7 +324,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             log("Selected language: " + chosenLang);
 
-            // Movie
             if (post.type === "m" || mediaType === "movie") {
                 log("Movie mode");
                 return getPlaylist(selected.id, post.title || title, chosenLang)
@@ -193,7 +332,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     });
             }
 
-            // Series
             var seasonList = post.season || [];
             var targetSeasonId = null;
             for (var i = 0; i < seasonList.length; i++) {
@@ -233,6 +371,21 @@ function getStreams(tmdbId, mediaType, season, episode) {
         })
         .then(function(result) {
             var playlist = result.playlist;
+            var subtitles = [];
+            if (playlist.tracks && playlist.tracks.length) {
+                subtitles = playlist.tracks.map(function(track) {
+                    var url = track.file || "";
+                    if (url && url.indexOf("http") !== 0) {
+                        url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
+                    }
+                    return {
+                        url: url,
+                        language: track.label || "Unknown",
+                        default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
+                    };
+                });
+            }
+
             return playlist.sources.map(function(src) {
                 var file = src.file || "";
                 var url = file.indexOf("http") === 0 ? file : BASE + file;
@@ -246,7 +399,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         "Origin": BASE,
                         "User-Agent": UA,
                         "Cookie": cookieHeader
-                    }
+                    },
+                    subtitles: subtitles
                 };
             });
         })
