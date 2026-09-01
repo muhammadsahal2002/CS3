@@ -1,4 +1,4 @@
-// mobile_icc.js – ICC FTP Server (FAST)
+// mobile_icc.js – ICC FTP Server (FAST & ACCURATE)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -43,7 +43,6 @@ async function getSessionAndToken() {
   log("Getting session...");
 
   try {
-    // Get session from homepage
     const resp = await fetch(BASE_URL, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
@@ -54,7 +53,6 @@ async function getSessionAndToken() {
     if (!resp.ok) throw new Error("Failed to connect");
     const html = await resp.text();
 
-    // Extract session
     let session = "";
     var sessionMatch = html.match(/session=([a-f0-9]{40,})/);
     if (sessionMatch) {
@@ -67,7 +65,6 @@ async function getSessionAndToken() {
     sessionCache = session;
     log("Session: " + session.substring(0, 20) + "...");
 
-    // Get token from dashboard
     const dashUrl = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
     const dashResp = await fetch(dashUrl, {
       headers: {
@@ -108,7 +105,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   };
 }
 
-// ========== SEARCH (FAST) ==========
+// ========== SEARCH ==========
 async function searchICC(query) {
   if (!query || query.trim().length === 0) return [];
 
@@ -134,10 +131,28 @@ async function searchICC(query) {
     const results = [];
     const seenIds = new Set();
 
-    // Fast regex - find all play links with titles
-    const regex = /play=([^&"']+)[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
+    // ===== IMPORTANT: SKIP SLIDER / FEATURED SECTION =====
+    // Find the content section AFTER the slider
+    // The slider is in <div class="slider multipost"> or <div class="slider">
+    // Search results are in <div class="news-container"> or <div class="content news-gallery">
+    
+    let searchHtml = html;
+    
+    // Remove slider section to avoid picking featured movies
+    const sliderMatch = html.match(/<div[^>]*class="[^"]*slider[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>\s*<div[^>]*class="[^"]*news-container[^"]*"[^>]*>/i);
+    if (sliderMatch) {
+      // Extract only the part after the slider
+      const sliderEnd = sliderMatch.index + sliderMatch[0].length;
+      searchHtml = html.substring(sliderEnd);
+      log("Removed slider, using content after it");
+    }
+
+    // Now parse ONLY the search results (not the slider)
+    // Pattern: <div class="post"> with play=ID and title
+    const postRegex = /<div[^>]*class="[^"]*post[^"]*"[^>]*>[\s\S]*?<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
+    
     let match;
-    while ((match = regex.exec(html)) !== null) {
+    while ((match = postRegex.exec(searchHtml)) !== null) {
       const id = match[1].trim();
       if (!id || seenIds.has(id)) continue;
       seenIds.add(id);
@@ -147,18 +162,18 @@ async function searchICC(query) {
       
       const year = extractYearFromTitle(title);
       results.push({ id: id, t: title, y: year });
+      log("Result: " + title + " (ID: " + id + ")");
     }
 
-    // If no results, try simpler pattern
+    // If no results with the post regex, try a simpler pattern on the search HTML
     if (results.length === 0) {
       const simpleRegex = /play=([^&"']+)/g;
-      while ((match = simpleRegex.exec(html)) !== null) {
+      while ((match = simpleRegex.exec(searchHtml)) !== null) {
         const id = match[1].trim();
         if (!id || seenIds.has(id)) continue;
         seenIds.add(id);
         
-        // Get context for title
-        const ctx = html.substring(Math.max(0, match.index - 200), Math.min(html.length, match.index + 300));
+        const ctx = searchHtml.substring(Math.max(0, match.index - 200), Math.min(searchHtml.length, match.index + 300));
         let title = "";
         const tMatch = ctx.match(/<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/i);
         if (tMatch) title = tMatch[1].trim();
@@ -173,6 +188,7 @@ async function searchICC(query) {
       }
     }
 
+    log("Found " + results.length + " search results");
     return results;
 
   } catch (err) {
@@ -181,12 +197,11 @@ async function searchICC(query) {
   }
 }
 
-// ========== GET VIDEO URL (FAST) ==========
+// ========== GET VIDEO URL ==========
 async function getVideoUrl(id) {
   try {
     const { session } = await getSessionAndToken();
     
-    // Get player page
     const url = BASE_URL + "/player.php?session=" + session + "&play=" + id;
     const resp = await fetch(url, {
       headers: {
@@ -199,16 +214,15 @@ async function getVideoUrl(id) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    // Extract video URL from <source> tag
     let videoUrl = null;
     
-    // Pattern for source
+    // Source tag
     const sourceMatch = html.match(/<source[^>]*src=['"]([^'"]+)['"][^>]*>/i);
     if (sourceMatch) {
       videoUrl = sourceMatch[1];
     }
     
-    // If no source, try download link
+    // Download link
     if (!videoUrl) {
       const downloadMatch = html.match(/<a[^>]*href=['"]([^'"]*\.mp4[^'"]*)['"][^>]*download/i);
       if (downloadMatch) {
@@ -231,10 +245,11 @@ async function getVideoUrl(id) {
 
 // ========== MAIN ==========
 async function getStreams(tmdbId, mediaType, season, episode) {
+  log("========================================");
   log("Searching: " + tmdbId);
+  log("========================================");
 
   try {
-    // Get TMDB info
     const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
     const title = tmdbInfo.title;
     const targetYear = tmdbInfo.year;
@@ -249,13 +264,13 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     }
     
     if (!results || results.length === 0) {
-      log("No results");
+      log("No results found");
       return [];
     }
 
-    log("Found " + results.length + " results");
+    log("Found " + results.length + " search results");
 
-    // Find best match
+    // Find best match (prefer exact title + year)
     let best = results[0];
     let bestScore = -999;
     const targetTitle = title.toLowerCase();
@@ -266,9 +281,13 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       const itemNormalized = normalizeTitleForSearch(itemTitle);
       let score = 0;
 
+      // Exact match
       if (itemNormalized === targetNormalized) score = 100;
+      // Contains title
       else if (itemNormalized.includes(targetNormalized)) score = 80;
+      // Title contains item
       else if (targetNormalized.includes(itemNormalized)) score = 60;
+      // Partial words
       else {
         const words = targetNormalized.split(" ");
         let matched = 0;
@@ -278,9 +297,14 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         score = (matched / words.length) * 50;
       }
 
+      // Year bonus
       if (item.y === targetYear) score += 30;
       if (targetYear && item.y && item.y !== targetYear) score -= 40;
+      
+      // Penalty for wrong titles
       if (itemTitle.includes("666") || itemTitle.includes("resurrection")) score -= 50;
+
+      log('"' + item.t + '" score: ' + score);
 
       if (score > bestScore) {
         bestScore = score;
@@ -299,7 +323,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     log("Video URL: " + videoUrl);
 
-    // Return stream
+    // Quality
     let quality = "Auto";
     const lower = videoUrl.toLowerCase();
     if (lower.includes("1080p") || lower.includes("1920x1080")) quality = "Full HD";
