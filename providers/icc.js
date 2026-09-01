@@ -1,9 +1,19 @@
-// mobile_icc.js – ICC FTP Server (Simplified)
+// mobile_icc.js – ICC FTP Server
+// Follows the same pattern as mobile_nf.js
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const BASE_URL = "http://10.16.100.244";
+
+const DEFAULT_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+  "Referer": BASE_URL + "/",
+  "Connection": "keep-alive",
+  "X-Requested-With": "com.mycompany.app.soulbrowser"
+};
 
 let sessionCache = null;
 let tokenCache = null;
@@ -14,6 +24,7 @@ function getTimestamp() {
   return Math.floor(Date.now() / 1000);
 }
 
+// ========== HELPER FUNCTIONS ==========
 function extractId(url) {
   if (!url) return "";
   var after = url.split("play=");
@@ -43,7 +54,7 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ========== SESSION & TOKEN (using fetch) ==========
+// ========== SESSION & TOKEN (like fetchToken in Netflix) ==========
 async function fetchSessionAndToken() {
   if (sessionCache && tokenCache) {
     return { session: sessionCache, token: tokenCache };
@@ -52,24 +63,20 @@ async function fetchSessionAndToken() {
   log("Getting session and token...");
 
   try {
-    // Step 1: Get session from homepage
-    log("Fetching homepage: " + BASE_URL);
+    // Step 1: Get session from homepage (like Kotlin getSession)
     const resp = await fetch(BASE_URL, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
         "Referer": "http://10.16.100.202/"
       }
     });
     
-    if (!resp.ok) {
-      log("Homepage error: HTTP " + resp.status);
-      throw new Error("Failed to connect: HTTP " + resp.status);
-    }
+    if (!resp.ok) throw new Error("Failed to connect: HTTP " + resp.status);
     
     const html = await resp.text();
     log("Homepage length: " + html.length);
 
-    // Extract session
+    // Extract session (same as Kotlin regex)
     let session = "";
     const sessionMatch = html.match(/session=([a-f0-9]{40,})/);
     if (sessionMatch) {
@@ -83,36 +90,22 @@ async function fetchSessionAndToken() {
       }
     }
 
-    if (!session) {
-      log("No session found in HTML");
-      // Try to get session from the URL in the page
-      const urlMatch = html.match(/dashboard\.php\?session=([a-f0-9]+)/);
-      if (urlMatch) {
-        session = urlMatch[1];
-        log("Session from URL: " + session.substring(0, 20) + "...");
-      }
-    }
-
-    if (!session) {
-      throw new Error("Could not extract session");
-    }
+    if (!session) throw new Error("Could not extract session");
     sessionCache = session;
 
-    // Step 2: Get token from dashboard
+    // Step 2: Get token from dashboard (like Kotlin getToken)
     const dashboardUrl = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
-    log("Fetching dashboard: " + dashboardUrl);
+    log("Fetching dashboard...");
     
     const dashResp = await fetch(dashboardUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Accept": DEFAULT_HEADERS["Accept"],
+        "Referer": BASE_URL + "/"
       }
     });
     
-    if (!dashResp.ok) {
-      log("Dashboard error: HTTP " + dashResp.status);
-      throw new Error("Failed to get dashboard: HTTP " + dashResp.status);
-    }
+    if (!dashResp.ok) throw new Error("Failed to get dashboard: HTTP " + dashResp.status);
     
     const dashHtml = await dashResp.text();
     log("Dashboard length: " + dashHtml.length);
@@ -124,9 +117,7 @@ async function fetchSessionAndToken() {
       log("Token found: " + token);
     }
 
-    if (!token) {
-      throw new Error("Could not extract token");
-    }
+    if (!token) throw new Error("Could not extract token");
     tokenCache = token;
 
     log("Session and token ready");
@@ -138,7 +129,7 @@ async function fetchSessionAndToken() {
   }
 }
 
-// ========== TMDB HELPERS ==========
+// ========== TMDB HELPERS (like Netflix) ==========
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
@@ -151,11 +142,11 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ========== SEARCH ==========
+// ========== ICC FTP SEARCH (like search in Netflix) ==========
 async function searchICC(query) {
   if (!query || query.trim().length === 0) return [];
 
-  log("Searching: " + query);
+  log("Searching ICC FTP for: " + query);
 
   try {
     const { session, token } = await fetchSessionAndToken();
@@ -166,8 +157,10 @@ async function searchICC(query) {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
-        "Referer": BASE_URL + "/"
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Origin": BASE_URL,
+        "Referer": url,
+        "X-Requested-With": DEFAULT_HEADERS["X-Requested-With"]
       },
       body: body
     });
@@ -180,53 +173,38 @@ async function searchICC(query) {
     const html = await resp.text();
     log("Search response length: " + html.length);
 
-    // Parse with regex to avoid cheerio dependency issues
+    // Parse results (same as Kotlin selectors)
     const results = [];
-    
-    // Find all play links
-    const playRegex = /<a[^>]*href=["'][^"']*play=([^"']+)["'][^>]*>/gi;
-    let match;
-    const foundIds = new Set();
-    
-    while ((match = playRegex.exec(html)) !== null) {
-      const fullId = match[1];
-      const id = fullId.split("&")[0];
-      if (!id || foundIds.has(id)) continue;
-      foundIds.add(id);
-      
-      // Try to find title near this link
-      let title = "";
-      const linkStart = match.index;
-      const searchEnd = Math.min(linkStart + 500, html.length);
-      const searchStart = Math.max(0, linkStart - 500);
-      const context = html.substring(searchStart, searchEnd);
-      
-      // Look for title in nearby text
-      const titleMatch = context.match(/<div[^>]*class=["'][^"']*title["'][^>]*>([^<]+)<\/div>/i);
-      if (titleMatch) {
-        title = titleMatch[1].trim();
-      }
-      if (!title) {
-        const altMatch = context.match(/alt=["']([^"']+)["']/i);
-        if (altMatch) title = altMatch[1].trim();
-      }
-      if (!title) {
-        // Try to find text between <a> tags
-        const textMatch = context.match(/>([^<]+)<\/a>/i);
-        if (textMatch) title = textMatch[1].trim();
-      }
-      
-      if (title) {
-        log("Found: " + title + " (ID: " + id + ")");
-        results.push({
-          id: id,
-          t: title,
-          y: null
-        });
-      }
-    }
+    const cheerio = require("cheerio-without-node-native");
+    const $ = cheerio.load(html);
 
-    log("Found " + results.length + " results");
+    $(".post a.image[href*='play='], .post-wrapper > a[href*='play=']").each(function() {
+      const a = $(this);
+      const href = a.attr("href") || "";
+      const id = extractId(href);
+      if (!id) return;
+
+      const post = a.closest(".post");
+      let title = post ? post.find(".title").text().trim() : "";
+      if (!title) title = a.find("img").attr("alt") || "";
+      if (!title) return;
+
+      const image = a.find("img").attr("src") || "";
+
+      // Try to extract year from title
+      let year = null;
+      const yearMatch = title.match(/\((\d{4})\)/);
+      if (yearMatch) year = yearMatch[1];
+
+      results.push({
+        id: id,
+        t: title,
+        y: year,
+        image: fixImage(image)
+      });
+    });
+
+    log("Found " + results.length + " results for: " + query);
     return results;
 
   } catch (err) {
@@ -236,15 +214,38 @@ async function searchICC(query) {
 }
 
 async function searchWithFallback(originalTitle, year) {
+  // Try exact title first
   let results = await searchICC(originalTitle);
-  if (results.length > 0) return results;
+  if (results.length > 0) {
+    log("Found " + results.length + " results with title: " + originalTitle);
+    // Filter by year if available
+    if (year) {
+      const filtered = results.filter(item => item.y === year);
+      if (filtered.length > 0) {
+        log("Filtered to " + filtered.length + " results with year " + year);
+        return filtered;
+      }
+    }
+    return results;
+  }
 
+  // Try normalized title
   const normalized = normalizeTitleForSearch(originalTitle);
   log("No results, trying normalized: " + normalized);
-  return await searchICC(normalized);
+  results = await searchICC(normalized);
+  if (results.length === 0) return [];
+
+  if (year) {
+    const filtered = results.filter(item => item.y === year);
+    if (filtered.length > 0) {
+      log("Filtered to " + filtered.length + " results with year " + year);
+      return filtered;
+    }
+  }
+  return results;
 }
 
-// ========== LOAD ==========
+// ========== ICC FTP LOAD (like getPost in Netflix) ==========
 async function getPost(id) {
   log("Loading ID: " + id);
 
@@ -254,7 +255,7 @@ async function getPost(id) {
     
     const resp = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
         "Referer": BASE_URL + "/"
       }
     });
@@ -267,53 +268,78 @@ async function getPost(id) {
     const html = await resp.text();
     log("Player HTML length: " + html.length);
 
-    // Extract video URLs using regex
-    const videoUrls = [];
-    const videoRegex = /<a[^>]*href=["']([^"']*\.(mp4|mkv|avi)[^"']*)["']/gi;
-    let match;
-    while ((match = videoRegex.exec(html)) !== null) {
-      let url = match[1];
-      if (!url.startsWith("http")) {
-        url = BASE_URL + "/" + url;
-      }
-      videoUrls.push(url);
-      log("Found video: " + url);
+    const cheerio = require("cheerio-without-node-native");
+    const $ = cheerio.load(html);
+    const modal = $(".modal-dialog");
+
+    // Extract title (like Kotlin)
+    let title = modal.find(".modal-title").text().trim();
+    if (!title) {
+      title = $("title").text().replace("ICC FTP SERVER", "").trim();
     }
+
+    // Extract metadata (like Kotlin table parsing)
+    let year = null;
+    let genre = "";
+    let description = "";
+    let category = "";
+    const videoUrls = [];
+
+    modal.find("table.ewTable tr").each(function() {
+      const cells = $(this).find("td");
+      if (cells.length >= 2) {
+        const label = $(cells[0]).text().trim().replace(":", "");
+        const value = $(cells[1]).text().trim();
+        switch (label) {
+          case "Generic Name": genre = value; break;
+          case "Category": category = value; break;
+          case "Year": year = parseInt(value) || null; break;
+          case "Discription":
+          case "Description": description = value; break;
+        }
+      }
+    });
+
+    // Extract poster
+    let poster = "";
+    const img = modal.find("img");
+    if (img.length) poster = fixImage(img.attr("src"));
+
+    // Extract video URLs (like Kotlin)
+    modal.find("a[href]").each(function() {
+      const href = $(this).attr("href") || "";
+      if (href.includes(".mp4") || href.includes(".mkv") || href.includes(".avi")) {
+        const full = href.startsWith("http") ? href : BASE_URL + "/" + href;
+        videoUrls.push(full);
+        log("Found video: " + full);
+      }
+    });
 
     // Also check video tags
-    const videoTagRegex = /<video[^>]*src=["']([^"']+)["']/gi;
-    while ((match = videoTagRegex.exec(html)) !== null) {
-      let url = match[1];
-      if (!url.startsWith("http")) {
-        url = BASE_URL + "/" + url;
-      }
-      if (videoUrls.indexOf(url) === -1) {
-        videoUrls.push(url);
-        log("Found video (tag): " + url);
-      }
+    if (videoUrls.length === 0) {
+      $("video source, video").each(function() {
+        const src = $(this).attr("src") || $(this).attr("data-src") || "";
+        if (src) {
+          const full = src.startsWith("http") ? src : BASE_URL + "/" + src;
+          videoUrls.push(full);
+          log("Found video (tag): " + full);
+        }
+      });
     }
 
-    // Extract title
-    let title = "";
-    const titleMatch = html.match(/<div[^>]*class=["'][^"']*modal-title["'][^>]*>([^<]+)<\/div>/i);
-    if (titleMatch) {
-      title = titleMatch[1].trim();
-    }
-    if (!title) {
-      const pageTitle = html.match(/<title>([^<]+)<\/title>/i);
-      if (pageTitle) {
-        title = pageTitle[1].replace("ICC FTP SERVER", "").trim();
-      }
-    }
-
-    // Determine if series
-    const isSeries = title.toLowerCase().includes("season") || 
-                     title.toLowerCase().includes("episode") ||
-                     html.toLowerCase().includes("serials");
+    // Determine if series (like Kotlin)
+    const isSeries = title.toLowerCase().includes("season") ||
+      title.toLowerCase().includes("episode") ||
+      category.toLowerCase().includes("serials");
 
     return {
       id: id,
-      title: title || "Unknown",
+      title: title,
+      year: year,
+      poster: poster,
+      description: description,
+      genre: genre,
+      category: category,
       type: isSeries ? "t" : "m",
       videoUrls: videoUrls,
       main_id: null
@@ -325,7 +351,7 @@ async function getPost(id) {
   }
 }
 
-// ========== MAIN ==========
+// ========== MAIN getStreams (like Netflix) ==========
 async function getStreams(tmdbId, mediaType, season, episode) {
   log("========================================");
   log("Searching for TMDB ID: " + tmdbId);
@@ -333,21 +359,49 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   log("========================================");
 
   try {
+    // Step 1: Get title from TMDB (like Netflix)
     const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
-    log('TMDB: "' + tmdbInfo.title + '" (' + tmdbInfo.year + ')');
+    const title = tmdbInfo.title;
+    const year = tmdbInfo.year;
+    const isMovieType = (mediaType === "movie");
+    log('TMDB: "' + title + '" (' + year + ') [' + (isMovieType ? 'Movie' : 'Series') + ']');
 
-    const results = await searchWithFallback(tmdbInfo.title, tmdbInfo.year);
+    // Step 2: Search ICC FTP with the title (like Netflix searchWithFallback)
+    const results = await searchWithFallback(title, year);
     if (!results || results.length === 0) {
-      log("No results found");
+      log("No results found for: " + title);
       return [];
     }
 
     log("Found " + results.length + " results");
 
-    // Pick first result
-    const selected = results[0];
+    // Step 3: Select best match (like Netflix pickBestResult)
+    let selected = results[0];
+    let bestScore = -1;
+    const targetTitle = title.toLowerCase();
+
+    for (const item of results) {
+      const itemTitle = item.t.toLowerCase();
+      let score = 0;
+      
+      // Exact match
+      if (itemTitle === targetTitle) score = 100;
+      // Contains title
+      else if (itemTitle.includes(targetTitle)) score = 70;
+      // Title contains item
+      else if (targetTitle.includes(itemTitle)) score = 50;
+      // Year match
+      if (item.y === year && year) score += 10;
+
+      if (score > bestScore) {
+        bestScore = score;
+        selected = item;
+      }
+    }
+
     log('Selected: "' + selected.t + '" (ID: ' + selected.id + ')');
 
+    // Step 4: Load the content (like Netflix getPost)
     const post = await getPost(selected.id);
     log('Type: ' + post.type + ', title: ' + post.title);
     log('Video URLs: ' + post.videoUrls.length);
@@ -357,7 +411,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       return [];
     }
 
-    // Build streams
+    // Step 5: Build streams (like Netflix playlist.sources.map)
     const streams = post.videoUrls.map(function(url) {
       let quality = "Auto";
       const lower = url.toLowerCase();
@@ -372,7 +426,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         quality: quality,
         headers: {
           "Referer": BASE_URL + "/",
-          "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+          "User-Agent": DEFAULT_HEADERS["User-Agent"],
           "Range": "bytes=0-"
         }
       };
