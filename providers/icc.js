@@ -1,4 +1,4 @@
-// mobile_icc.js – ICC FTP Server (with ID validation)
+// mobile_icc.js – ICC FTP Server (Final – ignores slider completely)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -9,13 +9,6 @@ let sessionCache = null;
 let tokenCache = null;
 
 function log(msg) { console.log("[ICCFTP] " + msg); }
-
-function extractId(url) {
-  if (!url) return "";
-  var after = url.split("play=");
-  if (after.length < 2) return "";
-  return after[1].split("&")[0] || "";
-}
 
 function extractYearFromTitle(title) {
   if (!title) return null;
@@ -130,14 +123,27 @@ async function searchICC(query) {
     const results = [];
     const seenIds = new Set();
 
-    // Remove slider section
+    // ========== CRITICAL FIX: Remove EVERYTHING before the news-container ==========
+    // The slider is in <div class="slider multipost"> and we want to skip it entirely
     let searchHtml = html;
-    const sliderMatch = html.match(/<div[^>]*class="[^"]*slider[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>\s*<div[^>]*class="[^"]*news-container[^"]*"[^>]*>/i);
-    if (sliderMatch) {
-      const sliderEnd = sliderMatch.index + sliderMatch[0].length;
-      searchHtml = html.substring(sliderEnd);
+    
+    // Find the news-container (where search results are)
+    const newsContainerMatch = html.match(/<div[^>]*class="[^"]*news-container[^"]*"[^>]*>/i);
+    if (newsContainerMatch) {
+      const startIndex = newsContainerMatch.index;
+      searchHtml = html.substring(startIndex);
+      log("Found news-container, removing slider");
+    } else {
+      // Fallback: try to remove slider manually
+      const sliderMatch = html.match(/<div[^>]*class="[^"]*slider[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/i);
+      if (sliderMatch) {
+        const sliderEnd = sliderMatch.index + sliderMatch[0].length;
+        searchHtml = html.substring(sliderEnd);
+        log("Removed slider manually");
+      }
     }
 
+    // Now parse ONLY the search results
     const postRegex = /<div[^>]*class="[^"]*post[^"]*"[^>]*>[\s\S]*?<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
@@ -151,6 +157,7 @@ async function searchICC(query) {
       
       const year = extractYearFromTitle(title);
       results.push({ id: id, t: title, y: year });
+      log("Search result: " + title + " (ID: " + id + ")");
     }
 
     return results;
@@ -161,7 +168,6 @@ async function searchICC(query) {
   }
 }
 
-// ========== GET PLAYER TITLE AND VIDEO URL ==========
 async function getPlayerInfo(id) {
   try {
     const { session } = await getSessionAndToken();
@@ -215,7 +221,6 @@ async function getPlayerInfo(id) {
   }
 }
 
-// ========== MAIN ==========
 async function getStreams(tmdbId, mediaType, season, episode) {
   log("========================================");
   log("Searching: " + tmdbId);
@@ -231,6 +236,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     let results = await searchICC(title);
     if (!results || results.length === 0) {
       const normalized = normalizeTitleForSearch(title);
+      log("No results, trying normalized: " + normalized);
       results = await searchICC(normalized);
     }
     
@@ -239,7 +245,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       return [];
     }
 
-    log("Found " + results.length + " results");
+    log("Found " + results.length + " search results");
 
     // Score and sort
     const targetNormalized = normalizeTitleForSearch(title);
@@ -277,7 +283,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     let videoUrl = null;
     let selected = null;
 
-    // Try each result and check if the player page title matches
+    // Try each result
     for (const item of scoredResults) {
       if (item.score < 0) {
         log('Skipping "' + item.t + '" (score too low: ' + item.score + ')');
@@ -294,7 +300,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
       log('  Player title: "' + playerInfo.title + '"');
       
-      // Check if the player title matches the expected title
       if (isTitleMatch(playerInfo.title, title)) {
         log('  ✅ Title matches!');
         videoUrl = playerInfo.videoUrl;
@@ -305,7 +310,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       }
     }
 
-    // If no match found, try the first result anyway (as fallback)
+    // Fallback
     if (!videoUrl && scoredResults.length > 0) {
       log("No valid title match, trying first result as fallback");
       const playerInfo = await getPlayerInfo(scoredResults[0].id);
