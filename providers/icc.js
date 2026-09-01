@@ -1,5 +1,4 @@
-// mobile_icc.js – ICC FTP Server
-// Working version – extracts video URLs correctly
+// mobile_icc.js – ICC FTP Server (Final)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -64,7 +63,6 @@ async function getSessionAndToken() {
     }
     if (!session) throw new Error("No session");
     sessionCache = session;
-    log("Session: " + session.substring(0, 20) + "...");
 
     const dashUrl = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
     const dashResp = await fetch(dashUrl, {
@@ -80,7 +78,6 @@ async function getSessionAndToken() {
     var tokenMatch = dashHtml.match(/name="token"\s+value="([^"]+)"/);
     if (tokenMatch) {
       tokenCache = tokenMatch[1];
-      log("Token: " + tokenCache);
     }
     if (!tokenCache) throw new Error("No token");
 
@@ -164,8 +161,8 @@ async function searchICC(query) {
   }
 }
 
-// ========== GET VIDEO URL ==========
-async function getVideoUrl(id) {
+// ========== GET VIDEO URL WITH VALIDATION ==========
+async function getVideoUrl(id, expectedTitle) {
   try {
     const { session } = await getSessionAndToken();
     
@@ -181,19 +178,47 @@ async function getVideoUrl(id) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    // Extract video URL from <source> tag
-    const sourceMatch = html.match(/<source[^>]*src=['"]([^'"]+)['"][^>]*>/i);
-    if (sourceMatch) {
-      return sourceMatch[1];
+    // Extract the actual title from the player page
+    let actualTitle = "";
+    const titleMatch = html.match(/<span[^>]*style="[^"]*font-size: 30px[^"]*"[^>]*>([^<]*)<\/span>/i);
+    if (titleMatch) {
+      actualTitle = titleMatch[1].trim();
     }
-    
-    // Fallback: download link
-    const downloadMatch = html.match(/<a[^>]*href=['"]([^'"]*\.mp4[^'"]*)['"][^>]*download/i);
-    if (downloadMatch) {
-      return downloadMatch[1];
+    if (!actualTitle) {
+      const pageTitle = html.match(/<title>([^<]*)<\/title>/i);
+      if (pageTitle) {
+        actualTitle = pageTitle[1].replace("ICC FTP SERVER", "").trim();
+      }
     }
 
-    return null;
+    // Extract video URL
+    let videoUrl = null;
+    const sourceMatch = html.match(/<source[^>]*src=['"]([^'"]+)['"][^>]*>/i);
+    if (sourceMatch) {
+      videoUrl = sourceMatch[1];
+    }
+    
+    if (!videoUrl) {
+      const downloadMatch = html.match(/<a[^>]*href=['"]([^'"]*\.mp4[^'"]*)['"][^>]*download/i);
+      if (downloadMatch) {
+        videoUrl = downloadMatch[1];
+      }
+    }
+
+    if (!videoUrl) return null;
+
+    // Validate: Check if the actual title matches the expected title
+    if (expectedTitle && actualTitle) {
+      const expectedNorm = normalizeTitleForSearch(expectedTitle);
+      const actualNorm = normalizeTitleForSearch(actualTitle);
+      
+      if (expectedNorm !== actualNorm && !actualNorm.includes(expectedNorm) && !expectedNorm.includes(actualNorm)) {
+        log("Title mismatch: expected '" + expectedTitle + "', got '" + actualTitle + "'");
+        return null;
+      }
+    }
+
+    return videoUrl;
 
   } catch (err) {
     log("Get video error: " + err.message);
@@ -217,6 +242,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     let results = await searchICC(title);
     if (!results || results.length === 0) {
       const normalized = normalizeTitleForSearch(title);
+      log("No results, trying normalized: " + normalized);
       results = await searchICC(normalized);
     }
     
@@ -227,12 +253,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     log("Found " + results.length + " results");
 
-    // Find best match
-    let best = results[0];
-    let bestScore = -999;
+    // Score and sort results
     const targetNormalized = normalizeTitleForSearch(title);
-
-    for (const item of results) {
+    let scoredResults = results.map(function(item) {
       const itemNormalized = normalizeTitleForSearch(item.t);
       let score = 0;
 
@@ -251,29 +274,65 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       if (item.y === targetYear) score += 30;
       if (targetYear && item.y && item.y !== targetYear) score -= 40;
 
-      if (score > bestScore) {
-        bestScore = score;
-        best = item;
+      // Penalize known wrong mappings
+      if (item.t.toLowerCase().includes("dc") || 
+          item.t.toLowerCase().includes("666") || 
+          item.t.toLowerCase().includes("resurrection")) {
+        score -= 100;
+      }
+
+      return { ...item, score };
+    });
+
+    // Sort by score descending
+    scoredResults.sort(function(a, b) { return b.score - a.score; });
+
+    // Try each result until we find one with a matching video
+    let videoUrl = null;
+    let selected = null;
+
+    for (const item of scoredResults) {
+      log('Trying: "' + item.t + '" (ID: ' + item.id + ', Score: ' + item.score + ')');
+      
+      // Skip very low scores
+      if (item.score < 0) {
+        log('Skipping: score too low');
+        continue;
+      }
+      
+      const url = await getVideoUrl(item.id, title);
+      if (url) {
+        videoUrl = url;
+        selected = item;
+        log('✅ Valid video found!');
+        break;
       }
     }
 
-    log('Selected: "' + best.t + '" (ID: ' + best.id + ')');
+    // If no valid URL found, try the first result anyway (as fallback)
+    if (!videoUrl && scoredResults.length > 0) {
+      log("No valid URL found with validation, trying first result as fallback");
+      const url = await getVideoUrl(scoredResults[0].id, null);
+      if (url) {
+        videoUrl = url;
+        selected = scoredResults[0];
+      }
+    }
 
-    // Get video URL
-    const videoUrl = await getVideoUrl(best.id);
-    if (!videoUrl) {
-      log("No video URL found");
+    if (!videoUrl || !selected) {
+      log("No valid video URL found");
       return [];
     }
 
+    log('Selected: "' + selected.t + '" (ID: ' + selected.id + ')');
     log("Video URL: " + videoUrl);
 
     // Quality
     let quality = "Auto";
     const lower = videoUrl.toLowerCase();
-    if (lower.includes("1080p")) quality = "Full HD";
-    else if (lower.includes("720p")) quality = "Mid HD";
-    else if (lower.includes("480p")) quality = "Low HD";
+    if (lower.includes("1080p") || lower.includes("1920x1080")) quality = "Full HD";
+    else if (lower.includes("720p") || lower.includes("1280x720")) quality = "Mid HD";
+    else if (lower.includes("480p") || lower.includes("854x480")) quality = "Low HD";
 
     return [{
       name: "ICC FTP",
