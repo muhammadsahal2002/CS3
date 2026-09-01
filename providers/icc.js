@@ -1,4 +1,5 @@
-// mobile_icc.js – ICC FTP Server (FAST & ACCURATE)
+// mobile_icc.js – ICC FTP Server
+// Working version – extracts video URLs correctly
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -34,7 +35,7 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ========== SESSION & TOKEN (CACHED) ==========
+// ========== SESSION & TOKEN ==========
 async function getSessionAndToken() {
   if (sessionCache && tokenCache) {
     return { session: sessionCache, token: tokenCache };
@@ -131,24 +132,15 @@ async function searchICC(query) {
     const results = [];
     const seenIds = new Set();
 
-    // ===== IMPORTANT: SKIP SLIDER / FEATURED SECTION =====
-    // Find the content section AFTER the slider
-    // The slider is in <div class="slider multipost"> or <div class="slider">
-    // Search results are in <div class="news-container"> or <div class="content news-gallery">
-    
+    // Remove slider section
     let searchHtml = html;
-    
-    // Remove slider section to avoid picking featured movies
     const sliderMatch = html.match(/<div[^>]*class="[^"]*slider[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>\s*<div[^>]*class="[^"]*news-container[^"]*"[^>]*>/i);
     if (sliderMatch) {
-      // Extract only the part after the slider
       const sliderEnd = sliderMatch.index + sliderMatch[0].length;
       searchHtml = html.substring(sliderEnd);
-      log("Removed slider, using content after it");
     }
 
-    // Now parse ONLY the search results (not the slider)
-    // Pattern: <div class="post"> with play=ID and title
+    // Parse search results
     const postRegex = /<div[^>]*class="[^"]*post[^"]*"[^>]*>[\s\S]*?<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
@@ -162,33 +154,8 @@ async function searchICC(query) {
       
       const year = extractYearFromTitle(title);
       results.push({ id: id, t: title, y: year });
-      log("Result: " + title + " (ID: " + id + ")");
     }
 
-    // If no results with the post regex, try a simpler pattern on the search HTML
-    if (results.length === 0) {
-      const simpleRegex = /play=([^&"']+)/g;
-      while ((match = simpleRegex.exec(searchHtml)) !== null) {
-        const id = match[1].trim();
-        if (!id || seenIds.has(id)) continue;
-        seenIds.add(id);
-        
-        const ctx = searchHtml.substring(Math.max(0, match.index - 200), Math.min(searchHtml.length, match.index + 300));
-        let title = "";
-        const tMatch = ctx.match(/<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/i);
-        if (tMatch) title = tMatch[1].trim();
-        if (!title) {
-          const aMatch = ctx.match(/alt=["']([^"']+)["']/i);
-          if (aMatch) title = aMatch[1].trim();
-        }
-        if (!title) continue;
-        
-        const year = extractYearFromTitle(title);
-        results.push({ id: id, t: title, y: year });
-      }
-    }
-
-    log("Found " + results.length + " search results");
     return results;
 
   } catch (err) {
@@ -214,28 +181,19 @@ async function getVideoUrl(id) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    let videoUrl = null;
-    
-    // Source tag
+    // Extract video URL from <source> tag
     const sourceMatch = html.match(/<source[^>]*src=['"]([^'"]+)['"][^>]*>/i);
     if (sourceMatch) {
-      videoUrl = sourceMatch[1];
+      return sourceMatch[1];
     }
     
-    // Download link
-    if (!videoUrl) {
-      const downloadMatch = html.match(/<a[^>]*href=['"]([^'"]*\.mp4[^'"]*)['"][^>]*download/i);
-      if (downloadMatch) {
-        videoUrl = downloadMatch[1];
-      }
+    // Fallback: download link
+    const downloadMatch = html.match(/<a[^>]*href=['"]([^'"]*\.mp4[^'"]*)['"][^>]*download/i);
+    if (downloadMatch) {
+      return downloadMatch[1];
     }
 
-    // Make absolute URL
-    if (videoUrl && !videoUrl.startsWith("http")) {
-      videoUrl = BASE_URL + "/" + videoUrl;
-    }
-
-    return videoUrl;
+    return null;
 
   } catch (err) {
     log("Get video error: " + err.message);
@@ -255,11 +213,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const targetYear = tmdbInfo.year;
     log('TMDB: "' + title + '" (' + targetYear + ')');
 
-    // Search ICC FTP
+    // Search
     let results = await searchICC(title);
     if (!results || results.length === 0) {
       const normalized = normalizeTitleForSearch(title);
-      log("Trying normalized: " + normalized);
       results = await searchICC(normalized);
     }
     
@@ -268,26 +225,20 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       return [];
     }
 
-    log("Found " + results.length + " search results");
+    log("Found " + results.length + " results");
 
-    // Find best match (prefer exact title + year)
+    // Find best match
     let best = results[0];
     let bestScore = -999;
-    const targetTitle = title.toLowerCase();
-    const targetNormalized = normalizeTitleForSearch(targetTitle);
+    const targetNormalized = normalizeTitleForSearch(title);
 
     for (const item of results) {
-      const itemTitle = item.t.toLowerCase();
-      const itemNormalized = normalizeTitleForSearch(itemTitle);
+      const itemNormalized = normalizeTitleForSearch(item.t);
       let score = 0;
 
-      // Exact match
       if (itemNormalized === targetNormalized) score = 100;
-      // Contains title
       else if (itemNormalized.includes(targetNormalized)) score = 80;
-      // Title contains item
       else if (targetNormalized.includes(itemNormalized)) score = 60;
-      // Partial words
       else {
         const words = targetNormalized.split(" ");
         let matched = 0;
@@ -297,14 +248,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         score = (matched / words.length) * 50;
       }
 
-      // Year bonus
       if (item.y === targetYear) score += 30;
       if (targetYear && item.y && item.y !== targetYear) score -= 40;
-      
-      // Penalty for wrong titles
-      if (itemTitle.includes("666") || itemTitle.includes("resurrection")) score -= 50;
-
-      log('"' + item.t + '" score: ' + score);
 
       if (score > bestScore) {
         bestScore = score;
@@ -326,9 +271,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     // Quality
     let quality = "Auto";
     const lower = videoUrl.toLowerCase();
-    if (lower.includes("1080p") || lower.includes("1920x1080")) quality = "Full HD";
-    else if (lower.includes("720p") || lower.includes("1280x720")) quality = "Mid HD";
-    else if (lower.includes("480p") || lower.includes("854x480")) quality = "Low HD";
+    if (lower.includes("1080p")) quality = "Full HD";
+    else if (lower.includes("720p")) quality = "Mid HD";
+    else if (lower.includes("480p")) quality = "Low HD";
 
     return [{
       name: "ICC FTP",
