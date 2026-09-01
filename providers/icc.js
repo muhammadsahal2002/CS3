@@ -1,4 +1,4 @@
-// mobile_icc.js – ICC FTP Server (JavaScript version of Kotlin plugin)
+// mobile_icc.js – ICC FTP Server (Final Working)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -17,15 +17,6 @@ function extractId(url) {
   var after = url.split("play=");
   if (after.length < 2) return "";
   return after[1].split("&")[0] || "";
-}
-
-function createLink(id) {
-  if (!id) return "";
-  var session = sessionCache || "";
-  if (session) {
-    return BASE_URL + "/player.php?session=" + session + "&play=" + id;
-  }
-  return BASE_URL + "/player.php?play=" + id;
 }
 
 function fixImage(path) {
@@ -50,14 +41,7 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-function isTitleMatch(title1, title2) {
-  if (!title1 || !title2) return false;
-  const n1 = normalizeTitleForSearch(title1);
-  const n2 = normalizeTitleForSearch(title2);
-  return n1 === n2 || n1.includes(n2) || n2.includes(n1);
-}
-
-// ========== SESSION & TOKEN (exactly like Kotlin) ==========
+// ========== SESSION & TOKEN ==========
 async function getSession() {
   if (sessionCache && sessionCache.length > 0) {
     return sessionCache;
@@ -66,7 +50,7 @@ async function getSession() {
   try {
     const resp = await fetch(BASE_URL, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
         "Referer": "http://10.16.100.202/"
       }
     });
@@ -74,7 +58,6 @@ async function getSession() {
     if (!resp.ok) throw new Error("Failed to connect");
     const html = await resp.text();
 
-    // Extract session using regex (same as Kotlin)
     let session = "";
     const sessionMatch = html.match(/session=([a-f0-9]{40,})/);
     if (sessionMatch) {
@@ -111,7 +94,6 @@ async function getToken(session) {
     if (!resp.ok) throw new Error("Failed to get dashboard");
     const html = await resp.text();
 
-    // Extract token from hidden input (same as Kotlin)
     const tokenMatch = html.match(/name="token"\s+value="([^"]+)"/);
     tokenCache = tokenMatch ? tokenMatch[1] : "";
     return tokenCache;
@@ -136,9 +118,10 @@ async function getTmdbInfo(tmdbId, mediaType) {
   };
 }
 
-// ========== SEARCH (exactly like Kotlin) ==========
+// ========== SEARCH (Fixed) ==========
 async function searchICC(query) {
-  if (query.isBlank()) return [];
+  // FIX: Replace query.isBlank() with proper JavaScript check
+  if (!query || query.trim().length === 0) return [];
 
   try {
     const session = await getSession();
@@ -165,15 +148,10 @@ async function searchICC(query) {
     if (!resp.ok) return [];
     const html = await resp.text();
 
-    // Parse using cheerio or regex
-    // The Kotlin plugin uses: .post a.image[href*='play=']
-    // This selects search results, NOT the slider
-    
     const results = [];
     const seenIds = new Set();
-    
-    // Use regex to find .post a.image with play=ID
-    // Pattern: <a class="image" href="...play=ID..."> <img> <div class="title">TITLE</div>
+
+    // Parse .post a.image (like Kotlin plugin)
     const postRegex = /<a[^>]*class="[^"]*image[^"]*"[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
@@ -187,22 +165,7 @@ async function searchICC(query) {
       
       const year = extractYearFromTitle(title);
       results.push({ id: id, t: title, y: year });
-    }
-
-    // If no results, try the Kotlin selector pattern
-    if (results.length === 0) {
-      const kotlinRegex = /<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<img[^>]*src="[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
-      while ((match = kotlinRegex.exec(html)) !== null) {
-        const id = match[1].trim();
-        if (!id || seenIds.has(id)) continue;
-        seenIds.add(id);
-        
-        let title = match[2] ? match[2].trim() : "";
-        if (!title) continue;
-        
-        const year = extractYearFromTitle(title);
-        results.push({ id: id, t: title, y: year });
-      }
+      log("Search result: " + title + " (ID: " + id + ")");
     }
 
     return results;
@@ -213,13 +176,13 @@ async function searchICC(query) {
   }
 }
 
-// ========== LOAD (exactly like Kotlin) ==========
+// ========== LOAD ==========
 async function loadICC(id) {
   try {
     const session = await getSession();
     if (!session) return null;
 
-    // Visit command (like Kotlin)
+    // Visit command
     try {
       await fetch(BASE_URL + "/command.php", {
         method: "POST",
@@ -233,7 +196,7 @@ async function loadICC(id) {
       });
     } catch (_) { /* ignore */ }
 
-    // Player page (like Kotlin)
+    // Player page
     const playerUrl = BASE_URL + "/player.php?session=" + session + "&play=" + id;
     const resp = await fetch(playerUrl, {
       headers: {
@@ -247,7 +210,7 @@ async function loadICC(id) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    // Extract title (like Kotlin modal-title)
+    // Extract title
     let title = "";
     const titleMatch = html.match(/<h3[^>]*class="[^"]*modal-title[^"]*"[^>]*>([^<]*)<\/h3>/i);
     if (titleMatch) {
@@ -260,28 +223,28 @@ async function loadICC(id) {
       }
     }
 
-    // Extract year (like Kotlin table parsing)
+    // Extract year
     let year = null;
     const yearMatch = html.match(/<td>Year:<\/td>\s*<td>(\d{4})<\/td>/i);
     if (yearMatch) {
       year = parseInt(yearMatch[1]);
     }
 
-    // Extract category (like Kotlin)
+    // Extract category
     let category = "";
     const categoryMatch = html.match(/<td>Category:<\/td>\s*<td>([^<]*)<\/td>/i);
     if (categoryMatch) {
       category = categoryMatch[1].trim();
     }
 
-    // Extract poster (like Kotlin)
+    // Extract poster
     let poster = "";
     const posterMatch = html.match(/<img[^>]*src="([^"]*)"[^>]*>/i);
     if (posterMatch) {
       poster = fixImage(posterMatch[1]);
     }
 
-    // Extract video URLs (like Kotlin)
+    // Extract video URLs
     const videoUrls = [];
     const videoRegex = /<a[^>]*href="([^"]*\.(mp4|mkv|avi)[^"]*)"[^>]*>/gi;
     let match;
@@ -295,7 +258,6 @@ async function loadICC(id) {
       }
     }
 
-    // Also check video tags (like Kotlin)
     if (videoUrls.length === 0) {
       const tagRegex = /<video[^>]*src="([^"]*)"[^>]*>/gi;
       while ((match = tagRegex.exec(html)) !== null) {
@@ -309,7 +271,6 @@ async function loadICC(id) {
       }
     }
 
-    // Determine if series (like Kotlin)
     const isSeries = title.toLowerCase().includes("season") ||
       title.toLowerCase().includes("episode") ||
       category.toLowerCase().includes("serials");
@@ -330,7 +291,7 @@ async function loadICC(id) {
   }
 }
 
-// ========== MAIN getStreams ==========
+// ========== MAIN ==========
 async function getStreams(tmdbId, mediaType, season, episode) {
   log("========================================");
   log("Searching: " + tmdbId);
@@ -399,7 +360,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     log('Loaded: "' + data.title + '"');
     log('Video URLs: ' + data.videoUrls.length);
 
-    // Build streams (like Kotlin loadLinks)
+    // Build streams
     const streams = data.videoUrls.map(function(url) {
       let quality = "Auto";
       const lower = url.toLowerCase();
