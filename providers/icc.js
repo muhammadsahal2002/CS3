@@ -1,4 +1,4 @@
-// mobile_icc.js – ICC FTP Server (No Cheerio, Pure Regex)
+// mobile_icc.js – ICC FTP Server (Fixed)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -18,10 +18,6 @@ let sessionCache = null;
 let tokenCache = null;
 
 function log(msg) { console.log("[ICCFTP] " + msg); }
-
-function getTimestamp() {
-  return Math.floor(Date.now() / 1000);
-}
 
 // ========== HELPER FUNCTIONS ==========
 function extractId(url) {
@@ -53,6 +49,16 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
+function extractYearFromTitle(title) {
+  if (!title) return null;
+  const match = title.match(/\((\d{4})\)/);
+  if (match) return match[1];
+  // Also try "1997" without parentheses
+  const match2 = title.match(/\b(19\d{2}|20\d{2})\b/);
+  if (match2) return match2[1];
+  return null;
+}
+
 // ========== SESSION & TOKEN ==========
 async function fetchSessionAndToken() {
   if (sessionCache && tokenCache) {
@@ -62,7 +68,6 @@ async function fetchSessionAndToken() {
   log("Getting session and token...");
 
   try {
-    // Step 1: Get session from homepage
     const resp = await fetch(BASE_URL, {
       headers: {
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -75,27 +80,20 @@ async function fetchSessionAndToken() {
     const html = await resp.text();
     log("Homepage length: " + html.length);
 
-    // Extract session using regex
     let session = "";
     const sessionMatch = html.match(/session=([a-f0-9]{40,})/);
     if (sessionMatch) {
       session = sessionMatch[1];
-      log("Session found: " + session.substring(0, 20) + "...");
     } else {
       const cookieMatch = html.match(/PHPSESSID=([a-f0-9]{32,})/);
-      if (cookieMatch) {
-        session = cookieMatch[1];
-        log("Session from cookie: " + session.substring(0, 20) + "...");
-      }
+      if (cookieMatch) session = cookieMatch[1];
     }
 
     if (!session) throw new Error("Could not extract session");
     sessionCache = session;
+    log("Session: " + session.substring(0, 20) + "...");
 
-    // Step 2: Get token from dashboard
     const dashboardUrl = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
-    log("Fetching dashboard...");
-    
     const dashResp = await fetch(dashboardUrl, {
       headers: {
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -113,13 +111,12 @@ async function fetchSessionAndToken() {
     const tokenMatch = dashHtml.match(/name="token"\s+value="([^"]+)"/);
     if (tokenMatch) {
       token = tokenMatch[1];
-      log("Token found: " + token);
+      log("Token: " + token);
     }
 
     if (!token) throw new Error("Could not extract token");
     tokenCache = token;
 
-    log("Session and token ready");
     return { session, token };
 
   } catch (err) {
@@ -141,7 +138,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ========== ICC FTP SEARCH (Pure Regex - No Cheerio) ==========
+// ========== ICC FTP SEARCH ==========
 async function searchICC(query) {
   if (!query || query.trim().length === 0) return [];
 
@@ -172,12 +169,10 @@ async function searchICC(query) {
     const html = await resp.text();
     log("Search response length: " + html.length);
 
-    // Parse using pure regex (no cheerio)
     const results = [];
     const seenIds = new Set();
 
-    // Pattern to find all play links with their surrounding context
-    // Example: <a href="...?play=123&..." class="image">
+    // Parse using regex
     const playRegex = /<a[^>]*href=[^>]*play=([^&"]+)[^>]*>[\s\S]*?<img[^>]*src="([^"]*)"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
@@ -189,7 +184,6 @@ async function searchICC(query) {
       const image = match[2] || "";
       let title = match[3] || "";
       
-      // If no title found, try alternative pattern
       if (!title) {
         const altMatch = html.substring(Math.max(0, match.index - 200), match.index + 500).match(/alt=["']([^"']+)["']/);
         if (altMatch) title = altMatch[1];
@@ -198,12 +192,9 @@ async function searchICC(query) {
       if (!title) continue;
       title = title.trim();
       
-      // Try to extract year from title
-      let year = null;
-      const yearMatch = title.match(/\((\d{4})\)/);
-      if (yearMatch) year = yearMatch[1];
+      const year = extractYearFromTitle(title);
       
-      log("Found: " + title + " (ID: " + id + ")");
+      log("Found: " + title + " (ID: " + id + ", Year: " + (year || 'unknown') + ")");
       
       results.push({
         id: id,
@@ -213,11 +204,8 @@ async function searchICC(query) {
       });
     }
 
-    // If no results found with the primary pattern, try a simpler one
     if (results.length === 0) {
-      log("Trying fallback regex pattern...");
-      
-      // Simpler pattern: just find all play links
+      // Fallback pattern
       const simplePlayRegex = /play=([^&"']+)/g;
       let simpleMatch;
       while ((simpleMatch = simplePlayRegex.exec(html)) !== null) {
@@ -225,7 +213,6 @@ async function searchICC(query) {
         if (!id || seenIds.has(id)) continue;
         seenIds.add(id);
         
-        // Look for title near this position
         const context = html.substring(Math.max(0, simpleMatch.index - 300), Math.min(html.length, simpleMatch.index + 500));
         let title = "";
         
@@ -241,9 +228,7 @@ async function searchICC(query) {
         
         if (!title) continue;
         
-        let year = null;
-        const yearMatch = title.match(/\((\d{4})\)/);
-        if (yearMatch) year = yearMatch[1];
+        const year = extractYearFromTitle(title);
         
         log("Found (fallback): " + title + " (ID: " + id + ")");
         
@@ -265,38 +250,7 @@ async function searchICC(query) {
   }
 }
 
-async function searchWithFallback(originalTitle, year) {
-  // Try exact title first
-  let results = await searchICC(originalTitle);
-  if (results.length > 0) {
-    log("Found " + results.length + " results with title: " + originalTitle);
-    if (year) {
-      const filtered = results.filter(item => item.y === year);
-      if (filtered.length > 0) {
-        log("Filtered to " + filtered.length + " results with year " + year);
-        return filtered;
-      }
-    }
-    return results;
-  }
-
-  // Try normalized title
-  const normalized = normalizeTitleForSearch(originalTitle);
-  log("No results, trying normalized: " + normalized);
-  results = await searchICC(normalized);
-  if (results.length === 0) return [];
-
-  if (year) {
-    const filtered = results.filter(item => item.y === year);
-    if (filtered.length > 0) {
-      log("Filtered to " + filtered.length + " results with year " + year);
-      return filtered;
-    }
-  }
-  return results;
-}
-
-// ========== ICC FTP LOAD (Pure Regex - No Cheerio) ==========
+// ========== ICC FTP LOAD ==========
 async function getPost(id) {
   log("Loading ID: " + id);
 
@@ -319,7 +273,7 @@ async function getPost(id) {
     const html = await resp.text();
     log("Player HTML length: " + html.length);
 
-    // Extract title using regex
+    // Extract title
     let title = "";
     const titleMatch = html.match(/<div[^>]*class="[^"]*modal-title[^"]*"[^>]*>([^<]*)<\/div>/i);
     if (titleMatch) {
@@ -346,13 +300,6 @@ async function getPost(id) {
       category = categoryMatch[1].trim();
     }
 
-    // Extract description
-    let description = "";
-    const descMatch = html.match(/<td>Discription<\/td>\s*<td>([^<]*)<\/td>/i);
-    if (descMatch) {
-      description = descMatch[1].trim();
-    }
-
     // Extract poster
     let poster = "";
     const posterMatch = html.match(/<img[^>]*src="([^"]*)"[^>]*>/i);
@@ -360,7 +307,7 @@ async function getPost(id) {
       poster = fixImage(posterMatch[1]);
     }
 
-    // Extract video URLs using regex
+    // Extract video URLs
     const videoUrls = [];
     const videoRegex = /<a[^>]*href="([^"]*\.(mp4|mkv|avi)[^"]*)"[^>]*>/gi;
     let match;
@@ -375,7 +322,6 @@ async function getPost(id) {
       }
     }
 
-    // Also check video tags
     if (videoUrls.length === 0) {
       const videoTagRegex = /<video[^>]*src="([^"]*)"[^>]*>/gi;
       while ((match = videoTagRegex.exec(html)) !== null) {
@@ -400,11 +346,9 @@ async function getPost(id) {
       title: title || "Unknown",
       year: year,
       poster: poster,
-      description: description,
       category: category,
       type: isSeries ? "t" : "m",
-      videoUrls: videoUrls,
-      main_id: null
+      videoUrls: videoUrls
     };
 
   } catch (err) {
@@ -421,46 +365,111 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   log("========================================");
 
   try {
-    // Step 1: Get title from TMDB
     const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
     const title = tmdbInfo.title;
-    const year = tmdbInfo.year;
+    const targetYear = tmdbInfo.year;
     const isMovieType = (mediaType === "movie");
-    log('TMDB: "' + title + '" (' + year + ') [' + (isMovieType ? 'Movie' : 'Series') + ']');
+    log('TMDB: "' + title + '" (' + targetYear + ') [' + (isMovieType ? 'Movie' : 'Series') + ']');
 
-    // Step 2: Search ICC FTP with the title
-    const results = await searchWithFallback(title, year);
+    // Search
+    let results = await searchICC(title);
     if (!results || results.length === 0) {
-      log("No results found for: " + title);
+      const normalized = normalizeTitleForSearch(title);
+      log("No results, trying normalized: " + normalized);
+      results = await searchICC(normalized);
+    }
+    
+    if (!results || results.length === 0) {
+      log("No results found");
       return [];
     }
 
-    log("Found " + results.length + " results");
+    log("Found " + results.length + " total results");
 
-    // Step 3: Select best match
-    let selected = results[0];
-    let bestScore = -1;
+    // ====== BETTER MATCHING ======
+    // Step 1: Filter by year first (most important)
+    let yearMatches = [];
+    if (targetYear) {
+      yearMatches = results.filter(item => item.y === targetYear);
+      log("Year matches (" + targetYear + "): " + yearMatches.length);
+    }
+
+    // Step 2: If year matches exist, use those
+    let candidates = yearMatches.length > 0 ? yearMatches : results;
+
+    // Step 3: Score each candidate
     const targetTitle = title.toLowerCase();
+    const targetNormalized = normalizeTitleForSearch(targetTitle);
 
-    for (const item of results) {
+    let bestMatch = null;
+    let bestScore = -999;
+
+    for (const item of candidates) {
       const itemTitle = item.t.toLowerCase();
+      const itemNormalized = normalizeTitleForSearch(itemTitle);
       let score = 0;
-      
-      if (itemTitle === targetTitle) score = 100;
-      else if (itemTitle.includes(targetTitle)) score = 70;
-      else if (targetTitle.includes(itemTitle)) score = 50;
-      if (item.y === year && year) score += 10;
+
+      // Exact match (highest priority)
+      if (itemTitle === targetTitle || itemNormalized === targetNormalized) {
+        score = 100;
+      }
+      // Contains the full title
+      else if (itemNormalized.includes(targetNormalized)) {
+        score = 80;
+      }
+      // Title is contained in the result
+      else if (targetNormalized.includes(itemNormalized)) {
+        score = 60;
+      }
+      // Partial word matches
+      else {
+        const words = targetNormalized.split(" ");
+        let matched = 0;
+        for (const word of words) {
+          if (word.length > 2 && itemNormalized.includes(word)) {
+            matched++;
+          }
+        }
+        score = (matched / words.length) * 50;
+      }
+
+      // Bonus for year match
+      if (item.y === targetYear) {
+        score += 20;
+      }
+
+      // Penalty for wrong year (if year is known)
+      if (targetYear && item.y && item.y !== targetYear) {
+        score -= 30;
+      }
+
+      // Bonus for titles with "English" or "Hindi" (often better quality)
+      if (itemTitle.includes("english") || itemTitle.includes("hindi")) {
+        score += 5;
+      }
+
+      // Penalty for titles with "666", "Resurrection", etc. (often unrelated)
+      if (itemTitle.includes("666") || itemTitle.includes("resurrection")) {
+        score -= 40;
+      }
+
+      log('Score for "' + item.t + '": ' + score);
 
       if (score > bestScore) {
         bestScore = score;
-        selected = item;
+        bestMatch = item;
       }
     }
 
-    log('Selected: "' + selected.t + '" (ID: ' + selected.id + ')');
+    if (!bestMatch) {
+      log("No match found, using first result");
+      bestMatch = candidates[0];
+    }
 
-    // Step 4: Load the content
-    const post = await getPost(selected.id);
+    log('Selected: "' + bestMatch.t + '" (ID: ' + bestMatch.id + ', Score: ' + bestScore + ')');
+
+    // Load the content
+    const post = await getPost(bestMatch.id);
     log('Type: ' + post.type + ', title: ' + post.title);
     log('Video URLs: ' + post.videoUrls.length);
 
@@ -469,7 +478,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       return [];
     }
 
-    // Step 5: Build streams
+    // Build streams
     const streams = post.videoUrls.map(function(url) {
       let quality = "Auto";
       const lower = url.toLowerCase();
