@@ -1,4 +1,5 @@
-// mobile_icc.js – ICC FTP Server (Fixed)
+// mobile_icc.js – ICC FTP Server
+// Based on captured requests from the working app
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -19,7 +20,11 @@ let tokenCache = null;
 
 function log(msg) { console.log("[ICCFTP] " + msg); }
 
-// ========== HELPER FUNCTIONS ==========
+function getTimestamp() {
+  return Math.floor(Date.now() / 1000);
+}
+
+// ========== HELPERS ==========
 function extractId(url) {
   if (!url) return "";
   var after = url.split("play=");
@@ -51,10 +56,9 @@ function normalizeTitleForSearch(str) {
 
 function extractYearFromTitle(title) {
   if (!title) return null;
-  const match = title.match(/\((\d{4})\)/);
+  var match = title.match(/\((\d{4})\)/);
   if (match) return match[1];
-  // Also try "1997" without parentheses
-  const match2 = title.match(/\b(19\d{2}|20\d{2})\b/);
+  var match2 = title.match(/\b(19\d{2}|20\d{2})\b/);
   if (match2) return match2[1];
   return null;
 }
@@ -68,6 +72,7 @@ async function fetchSessionAndToken() {
   log("Getting session and token...");
 
   try {
+    // Step 1: Get session from homepage
     const resp = await fetch(BASE_URL, {
       headers: {
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -80,12 +85,13 @@ async function fetchSessionAndToken() {
     const html = await resp.text();
     log("Homepage length: " + html.length);
 
+    // Extract session (like Kotlin regex)
     let session = "";
-    const sessionMatch = html.match(/session=([a-f0-9]{40,})/);
+    var sessionMatch = html.match(/session=([a-f0-9]{40,})/);
     if (sessionMatch) {
       session = sessionMatch[1];
     } else {
-      const cookieMatch = html.match(/PHPSESSID=([a-f0-9]{32,})/);
+      var cookieMatch = html.match(/PHPSESSID=([a-f0-9]{32,})/);
       if (cookieMatch) session = cookieMatch[1];
     }
 
@@ -93,6 +99,7 @@ async function fetchSessionAndToken() {
     sessionCache = session;
     log("Session: " + session.substring(0, 20) + "...");
 
+    // Step 2: Get token from dashboard
     const dashboardUrl = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
     const dashResp = await fetch(dashboardUrl, {
       headers: {
@@ -108,7 +115,7 @@ async function fetchSessionAndToken() {
     log("Dashboard length: " + dashHtml.length);
 
     let token = "";
-    const tokenMatch = dashHtml.match(/name="token"\s+value="([^"]+)"/);
+    var tokenMatch = dashHtml.match(/name="token"\s+value="([^"]+)"/);
     if (tokenMatch) {
       token = tokenMatch[1];
       log("Token: " + token);
@@ -138,7 +145,7 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ========== ICC FTP SEARCH ==========
+// ========== SEARCH ==========
 async function searchICC(query) {
   if (!query || query.trim().length === 0) return [];
 
@@ -172,25 +179,26 @@ async function searchICC(query) {
     const results = [];
     const seenIds = new Set();
 
-    // Parse using regex
-    const playRegex = /<a[^>]*href=[^>]*play=([^&"]+)[^>]*>[\s\S]*?<img[^>]*src="([^"]*)"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
+    // Parse .post items (like the HTML shows)
+    // Pattern: <div class="post"> <a href="...play=ID"> <img src="image"> <div class="title">TITLE</div>
+    const postRegex = /<div[^>]*class="[^"]*post[^"]*"[^>]*>[\s\S]*?<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<img[^>]*src="([^"]*)"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
-    while ((match = playRegex.exec(html)) !== null) {
+    while ((match = postRegex.exec(html)) !== null) {
       const id = match[1].trim();
       if (!id || seenIds.has(id)) continue;
       seenIds.add(id);
       
       const image = match[2] || "";
-      let title = match[3] || "";
+      let title = match[3] ? match[3].trim() : "";
       
       if (!title) {
+        // Try to get from alt attribute
         const altMatch = html.substring(Math.max(0, match.index - 200), match.index + 500).match(/alt=["']([^"']+)["']/);
         if (altMatch) title = altMatch[1];
       }
       
       if (!title) continue;
-      title = title.trim();
       
       const year = extractYearFromTitle(title);
       
@@ -204,11 +212,12 @@ async function searchICC(query) {
       });
     }
 
+    // Fallback: simpler pattern
     if (results.length === 0) {
-      // Fallback pattern
-      const simplePlayRegex = /play=([^&"']+)/g;
+      log("Trying fallback pattern...");
+      const simpleRegex = /play=([^&"']+)/g;
       let simpleMatch;
-      while ((simpleMatch = simplePlayRegex.exec(html)) !== null) {
+      while ((simpleMatch = simpleRegex.exec(html)) !== null) {
         const id = simpleMatch[1].trim();
         if (!id || seenIds.has(id)) continue;
         seenIds.add(id);
@@ -241,7 +250,7 @@ async function searchICC(query) {
       }
     }
 
-    log("Found " + results.length + " results for: " + query);
+    log("Found " + results.length + " results");
     return results;
 
   } catch (err) {
@@ -250,18 +259,35 @@ async function searchICC(query) {
   }
 }
 
-// ========== ICC FTP LOAD ==========
-async function getPost(id) {
+// ========== LOAD ==========
+async function loadICC(id) {
   log("Loading ID: " + id);
 
   try {
+    // Step 1: Send visit command (like the working app)
     const { session } = await fetchSessionAndToken();
-    const url = BASE_URL + "/player.php?session=" + session + "&play=" + id;
     
-    const resp = await fetch(url, {
+    await fetch(BASE_URL + "/command.php", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "User-Agent": DEFAULT_HEADERS["User-Agent"],
+        "Referer": BASE_URL + "/dashboard.php?session=" + session,
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: "id=" + id + "&type=visit"
+    }).catch(function() { return null; });
+
+    // Step 2: Get player page
+    const playerUrl = BASE_URL + "/player.php?session=" + session + "&play=" + id;
+    log("Player URL: " + playerUrl);
+    
+    const resp = await fetch(playerUrl, {
       headers: {
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
-        "Referer": BASE_URL + "/"
+        "Accept": DEFAULT_HEADERS["Accept"],
+        "X-Requested-With": "com.mycompany.app.soulbrowser",
+        "Referer": BASE_URL + "/dashboard.php?session=" + session
       }
     });
 
@@ -273,67 +299,63 @@ async function getPost(id) {
     const html = await resp.text();
     log("Player HTML length: " + html.length);
 
-    // Extract title
-    let title = "";
-    const titleMatch = html.match(/<div[^>]*class="[^"]*modal-title[^"]*"[^>]*>([^<]*)<\/div>/i);
-    if (titleMatch) {
-      title = titleMatch[1].trim();
-    }
-    if (!title) {
-      const pageTitleMatch = html.match(/<title>([^<]*)<\/title>/i);
-      if (pageTitleMatch) {
-        title = pageTitleMatch[1].replace("ICC FTP SERVER", "").trim();
+    // Extract video URL from <source> tag (like the working app)
+    // <source src='http://10.16.100.212/.../Titanic%20(1997)%201080p%20BluRay.mp4'>
+    const videoUrls = [];
+    
+    // Pattern for video source
+    const sourceRegex = /<source[^>]*src='([^']*)'[^>]*>/gi;
+    let match;
+    while ((match = sourceRegex.exec(html)) !== null) {
+      let url = match[1];
+      if (url && url.includes(".mp4")) {
+        if (!url.startsWith("http")) {
+          url = BASE_URL + "/" + url;
+        }
+        videoUrls.push(url);
+        log("Found video source: " + url);
       }
     }
 
-    // Extract year
-    let year = null;
-    const yearMatch = html.match(/<td>Year<\/td>\s*<td>(\d{4})<\/td>/i);
-    if (yearMatch) {
-      year = parseInt(yearMatch[1]);
-    }
-
-    // Extract category
-    let category = "";
-    const categoryMatch = html.match(/<td>Category<\/td>\s*<td>([^<]*)<\/td>/i);
-    if (categoryMatch) {
-      category = categoryMatch[1].trim();
-    }
-
-    // Extract poster
-    let poster = "";
-    const posterMatch = html.match(/<img[^>]*src="([^"]*)"[^>]*>/i);
-    if (posterMatch) {
-      poster = fixImage(posterMatch[1]);
-    }
-
-    // Extract video URLs
-    const videoUrls = [];
-    const videoRegex = /<a[^>]*href="([^"]*\.(mp4|mkv|avi)[^"]*)"[^>]*>/gi;
-    let match;
-    while ((match = videoRegex.exec(html)) !== null) {
+    // Also check for download link (like the modal shows)
+    // <a href="http://10.16.100.212/.../Titanic%20(1997)%201080p%20BluRay.mp4" download>
+    const downloadRegex = /<a[^>]*href=["']([^"']*\.mp4[^"']*)["'][^>]*download/i;
+    while ((match = downloadRegex.exec(html)) !== null) {
       let url = match[1];
       if (!url.startsWith("http")) {
         url = BASE_URL + "/" + url;
       }
       if (videoUrls.indexOf(url) === -1) {
         videoUrls.push(url);
-        log("Found video: " + url);
+        log("Found download link: " + url);
       }
     }
 
-    if (videoUrls.length === 0) {
-      const videoTagRegex = /<video[^>]*src="([^"]*)"[^>]*>/gi;
-      while ((match = videoTagRegex.exec(html)) !== null) {
-        let url = match[1];
-        if (!url.startsWith("http")) {
-          url = BASE_URL + "/" + url;
-        }
-        if (videoUrls.indexOf(url) === -1) {
-          videoUrls.push(url);
-          log("Found video (tag): " + url);
-        }
+    // Extract title
+    let title = "";
+    const titleMatch = html.match(/<span[^>]*style="[^"]*font-size: 30px[^"]*"[^>]*>([^<]*)<\/span>/i);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    }
+    if (!title) {
+      const pageTitle = html.match(/<title>([^<]*)<\/title>/i);
+      if (pageTitle) {
+        title = pageTitle[1].replace("ICC FTP SERVER", "").trim();
       }
+    }
+
+    // Extract year
+    let year = null;
+    const yearMatch = html.match(/<td>Year:<\/td>\s*<td>(\d{4})<\/td>/i);
+    if (yearMatch) {
+      year = parseInt(yearMatch[1]);
+    }
+
+    // Extract category
+    let category = "";
+    const categoryMatch = html.match(/<td>Category:<\/td>\s*<td>([^<]*)<\/td>/i);
+    if (categoryMatch) {
+      category = categoryMatch[1].trim();
     }
 
     // Determine if series
@@ -345,7 +367,6 @@ async function getPost(id) {
       id: id,
       title: title || "Unknown",
       year: year,
-      poster: poster,
       category: category,
       type: isSeries ? "t" : "m",
       videoUrls: videoUrls
@@ -386,30 +407,19 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     log("Found " + results.length + " total results");
 
-    // ====== BETTER MATCHING ======
-    // Step 1: Filter by year first (most important)
-    let yearMatches = [];
-    if (targetYear) {
-      yearMatches = results.filter(item => item.y === targetYear);
-      log("Year matches (" + targetYear + "): " + yearMatches.length);
-    }
-
-    // Step 2: If year matches exist, use those
-    let candidates = yearMatches.length > 0 ? yearMatches : results;
-
-    // Step 3: Score each candidate
-    const targetTitle = title.toLowerCase();
-    const targetNormalized = normalizeTitleForSearch(targetTitle);
-
+    // Score and select best match
+    let candidates = results;
     let bestMatch = null;
     let bestScore = -999;
+    const targetTitle = title.toLowerCase();
+    const targetNormalized = normalizeTitleForSearch(targetTitle);
 
     for (const item of candidates) {
       const itemTitle = item.t.toLowerCase();
       const itemNormalized = normalizeTitleForSearch(itemTitle);
       let score = 0;
 
-      // Exact match (highest priority)
+      // Exact match
       if (itemTitle === targetTitle || itemNormalized === targetNormalized) {
         score = 100;
       }
@@ -435,22 +445,17 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
       // Bonus for year match
       if (item.y === targetYear) {
-        score += 20;
+        score += 30;
       }
 
       // Penalty for wrong year (if year is known)
       if (targetYear && item.y && item.y !== targetYear) {
-        score -= 30;
-      }
-
-      // Bonus for titles with "English" or "Hindi" (often better quality)
-      if (itemTitle.includes("english") || itemTitle.includes("hindi")) {
-        score += 5;
-      }
-
-      // Penalty for titles with "666", "Resurrection", etc. (often unrelated)
-      if (itemTitle.includes("666") || itemTitle.includes("resurrection")) {
         score -= 40;
+      }
+
+      // Penalty for unrelated titles
+      if (itemTitle.includes("666") || itemTitle.includes("resurrection")) {
+        score -= 50;
       }
 
       log('Score for "' + item.t + '": ' + score);
@@ -469,7 +474,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     log('Selected: "' + bestMatch.t + '" (ID: ' + bestMatch.id + ', Score: ' + bestScore + ')');
 
     // Load the content
-    const post = await getPost(bestMatch.id);
+    const post = await loadICC(bestMatch.id);
     log('Type: ' + post.type + ', title: ' + post.title);
     log('Video URLs: ' + post.videoUrls.length);
 
