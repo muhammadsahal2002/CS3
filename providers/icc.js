@@ -1,4 +1,4 @@
-// mobile_icc.js – ICC FTP Server (Final – ignores slider completely)
+// mobile_icc.js – ICC FTP Server (JavaScript version of Kotlin plugin)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -9,6 +9,30 @@ let sessionCache = null;
 let tokenCache = null;
 
 function log(msg) { console.log("[ICCFTP] " + msg); }
+
+function getTimestamp() { return Math.floor(Date.now() / 1000); }
+
+function extractId(url) {
+  if (!url) return "";
+  var after = url.split("play=");
+  if (after.length < 2) return "";
+  return after[1].split("&")[0] || "";
+}
+
+function createLink(id) {
+  if (!id) return "";
+  var session = sessionCache || "";
+  if (session) {
+    return BASE_URL + "/player.php?session=" + session + "&play=" + id;
+  }
+  return BASE_URL + "/player.php?play=" + id;
+}
+
+function fixImage(path) {
+  if (!path) return null;
+  if (path.startsWith("http")) return path;
+  return BASE_URL + "/" + path;
+}
 
 function extractYearFromTitle(title) {
   if (!title) return null;
@@ -33,15 +57,16 @@ function isTitleMatch(title1, title2) {
   return n1 === n2 || n1.includes(n2) || n2.includes(n1);
 }
 
-async function getSessionAndToken() {
-  if (sessionCache && tokenCache) {
-    return { session: sessionCache, token: tokenCache };
+// ========== SESSION & TOKEN (exactly like Kotlin) ==========
+async function getSession() {
+  if (sessionCache && sessionCache.length > 0) {
+    return sessionCache;
   }
 
   try {
     const resp = await fetch(BASE_URL, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36",
         "Referer": "http://10.16.100.202/"
       }
     });
@@ -49,42 +74,55 @@ async function getSessionAndToken() {
     if (!resp.ok) throw new Error("Failed to connect");
     const html = await resp.text();
 
+    // Extract session using regex (same as Kotlin)
     let session = "";
-    var sessionMatch = html.match(/session=([a-f0-9]{40,})/);
+    const sessionMatch = html.match(/session=([a-f0-9]{40,})/);
     if (sessionMatch) {
       session = sessionMatch[1];
     } else {
-      var cookieMatch = html.match(/PHPSESSID=([a-f0-9]{32,})/);
+      const cookieMatch = html.match(/PHPSESSID=([a-f0-9]{32,})/);
       if (cookieMatch) session = cookieMatch[1];
     }
-    if (!session) throw new Error("No session");
-    sessionCache = session;
+    
+    sessionCache = session || "";
+    return sessionCache;
 
-    const dashUrl = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
-    const dashResp = await fetch(dashUrl, {
+  } catch (err) {
+    log("Session error: " + err.message);
+    return "";
+  }
+}
+
+async function getToken(session) {
+  if (tokenCache && tokenCache.length > 0) {
+    return tokenCache;
+  }
+
+  try {
+    const url = BASE_URL + "/dashboard.php?session=" + session + "&category=0";
+    const resp = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Referer": BASE_URL + "/"
       }
     });
     
-    if (!dashResp.ok) throw new Error("Failed to get dashboard");
-    const dashHtml = await dashResp.text();
+    if (!resp.ok) throw new Error("Failed to get dashboard");
+    const html = await resp.text();
 
-    var tokenMatch = dashHtml.match(/name="token"\s+value="([^"]+)"/);
-    if (tokenMatch) {
-      tokenCache = tokenMatch[1];
-    }
-    if (!tokenCache) throw new Error("No token");
-
-    return { session: sessionCache, token: tokenCache };
+    // Extract token from hidden input (same as Kotlin)
+    const tokenMatch = html.match(/name="token"\s+value="([^"]+)"/);
+    tokenCache = tokenMatch ? tokenMatch[1] : "";
+    return tokenCache;
 
   } catch (err) {
-    log("Error: " + err.message);
-    throw err;
+    log("Token error: " + err.message);
+    return "";
   }
 }
 
+// ========== TMDB ==========
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
@@ -98,11 +136,17 @@ async function getTmdbInfo(tmdbId, mediaType) {
   };
 }
 
+// ========== SEARCH (exactly like Kotlin) ==========
 async function searchICC(query) {
-  if (!query || query.trim().length === 0) return [];
+  if (query.isBlank()) return [];
 
   try {
-    const { session, token } = await getSessionAndToken();
+    const session = await getSession();
+    if (!session) return [];
+
+    const token = await getToken(session);
+    if (!token) return [];
+
     const url = BASE_URL + "/dashboard.php?session=" + session;
     const body = "token=" + encodeURIComponent(token) + "&psearch=" + encodeURIComponent(query.trim());
 
@@ -111,6 +155,7 @@ async function searchICC(query) {
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+        "Origin": BASE_URL,
         "Referer": url,
         "X-Requested-With": "com.mycompany.app.soulbrowser"
       },
@@ -120,34 +165,19 @@ async function searchICC(query) {
     if (!resp.ok) return [];
     const html = await resp.text();
 
+    // Parse using cheerio or regex
+    // The Kotlin plugin uses: .post a.image[href*='play=']
+    // This selects search results, NOT the slider
+    
     const results = [];
     const seenIds = new Set();
-
-    // ========== CRITICAL FIX: Remove EVERYTHING before the news-container ==========
-    // The slider is in <div class="slider multipost"> and we want to skip it entirely
-    let searchHtml = html;
     
-    // Find the news-container (where search results are)
-    const newsContainerMatch = html.match(/<div[^>]*class="[^"]*news-container[^"]*"[^>]*>/i);
-    if (newsContainerMatch) {
-      const startIndex = newsContainerMatch.index;
-      searchHtml = html.substring(startIndex);
-      log("Found news-container, removing slider");
-    } else {
-      // Fallback: try to remove slider manually
-      const sliderMatch = html.match(/<div[^>]*class="[^"]*slider[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/i);
-      if (sliderMatch) {
-        const sliderEnd = sliderMatch.index + sliderMatch[0].length;
-        searchHtml = html.substring(sliderEnd);
-        log("Removed slider manually");
-      }
-    }
-
-    // Now parse ONLY the search results
-    const postRegex = /<div[^>]*class="[^"]*post[^"]*"[^>]*>[\s\S]*?<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
+    // Use regex to find .post a.image with play=ID
+    // Pattern: <a class="image" href="...play=ID..."> <img> <div class="title">TITLE</div>
+    const postRegex = /<a[^>]*class="[^"]*image[^"]*"[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
-    while ((match = postRegex.exec(searchHtml)) !== null) {
+    while ((match = postRegex.exec(html)) !== null) {
       const id = match[1].trim();
       if (!id || seenIds.has(id)) continue;
       seenIds.add(id);
@@ -157,7 +187,22 @@ async function searchICC(query) {
       
       const year = extractYearFromTitle(title);
       results.push({ id: id, t: title, y: year });
-      log("Search result: " + title + " (ID: " + id + ")");
+    }
+
+    // If no results, try the Kotlin selector pattern
+    if (results.length === 0) {
+      const kotlinRegex = /<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<img[^>]*src="[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
+      while ((match = kotlinRegex.exec(html)) !== null) {
+        const id = match[1].trim();
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+        
+        let title = match[2] ? match[2].trim() : "";
+        if (!title) continue;
+        
+        const year = extractYearFromTitle(title);
+        results.push({ id: id, t: title, y: year });
+      }
     }
 
     return results;
@@ -168,14 +213,32 @@ async function searchICC(query) {
   }
 }
 
-async function getPlayerInfo(id) {
+// ========== LOAD (exactly like Kotlin) ==========
+async function loadICC(id) {
   try {
-    const { session } = await getSessionAndToken();
-    
-    const url = BASE_URL + "/player.php?session=" + session + "&play=" + id;
-    const resp = await fetch(url, {
+    const session = await getSession();
+    if (!session) return null;
+
+    // Visit command (like Kotlin)
+    try {
+      await fetch(BASE_URL + "/command.php", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+          "Referer": BASE_URL + "/dashboard.php?session=" + session,
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        body: "id=" + id + "&type=visit"
+      });
+    } catch (_) { /* ignore */ }
+
+    // Player page (like Kotlin)
+    const playerUrl = BASE_URL + "/player.php?session=" + session + "&play=" + id;
+    const resp = await fetch(playerUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Referer": BASE_URL + "/dashboard.php?session=" + session,
         "X-Requested-With": "com.mycompany.app.soulbrowser"
       }
@@ -184,43 +247,90 @@ async function getPlayerInfo(id) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    // Extract actual title from player page
-    let actualTitle = "";
-    const titleMatch = html.match(/<span[^>]*style="[^"]*font-size: 30px[^"]*"[^>]*>([^<]*)<\/span>/i);
+    // Extract title (like Kotlin modal-title)
+    let title = "";
+    const titleMatch = html.match(/<h3[^>]*class="[^"]*modal-title[^"]*"[^>]*>([^<]*)<\/h3>/i);
     if (titleMatch) {
-      actualTitle = titleMatch[1].trim();
+      title = titleMatch[1].trim();
     }
-    if (!actualTitle) {
+    if (!title) {
       const pageTitle = html.match(/<title>([^<]*)<\/title>/i);
       if (pageTitle) {
-        actualTitle = pageTitle[1].replace("ICC FTP SERVER", "").trim();
+        title = pageTitle[1].replace("ICC FTP SERVER", "").trim();
       }
     }
 
-    // Extract video URL
-    let videoUrl = null;
-    const sourceMatch = html.match(/<source[^>]*src=['"]([^'"]+)['"][^>]*>/i);
-    if (sourceMatch) {
-      videoUrl = sourceMatch[1];
+    // Extract year (like Kotlin table parsing)
+    let year = null;
+    const yearMatch = html.match(/<td>Year:<\/td>\s*<td>(\d{4})<\/td>/i);
+    if (yearMatch) {
+      year = parseInt(yearMatch[1]);
     }
-    
-    if (!videoUrl) {
-      const downloadMatch = html.match(/<a[^>]*href=['"]([^'"]*\.mp4[^'"]*)['"][^>]*download/i);
-      if (downloadMatch) {
-        videoUrl = downloadMatch[1];
+
+    // Extract category (like Kotlin)
+    let category = "";
+    const categoryMatch = html.match(/<td>Category:<\/td>\s*<td>([^<]*)<\/td>/i);
+    if (categoryMatch) {
+      category = categoryMatch[1].trim();
+    }
+
+    // Extract poster (like Kotlin)
+    let poster = "";
+    const posterMatch = html.match(/<img[^>]*src="([^"]*)"[^>]*>/i);
+    if (posterMatch) {
+      poster = fixImage(posterMatch[1]);
+    }
+
+    // Extract video URLs (like Kotlin)
+    const videoUrls = [];
+    const videoRegex = /<a[^>]*href="([^"]*\.(mp4|mkv|avi)[^"]*)"[^>]*>/gi;
+    let match;
+    while ((match = videoRegex.exec(html)) !== null) {
+      let url = match[1];
+      if (!url.startsWith("http")) {
+        url = BASE_URL + "/" + url;
+      }
+      if (videoUrls.indexOf(url) === -1) {
+        videoUrls.push(url);
       }
     }
 
-    if (!videoUrl) return null;
+    // Also check video tags (like Kotlin)
+    if (videoUrls.length === 0) {
+      const tagRegex = /<video[^>]*src="([^"]*)"[^>]*>/gi;
+      while ((match = tagRegex.exec(html)) !== null) {
+        let url = match[1];
+        if (!url.startsWith("http")) {
+          url = BASE_URL + "/" + url;
+        }
+        if (videoUrls.indexOf(url) === -1) {
+          videoUrls.push(url);
+        }
+      }
+    }
 
-    return { title: actualTitle, videoUrl: videoUrl };
+    // Determine if series (like Kotlin)
+    const isSeries = title.toLowerCase().includes("season") ||
+      title.toLowerCase().includes("episode") ||
+      category.toLowerCase().includes("serials");
+
+    return {
+      id: id,
+      title: title || "Unknown",
+      year: year,
+      poster: poster,
+      category: category,
+      type: isSeries ? "t" : "m",
+      videoUrls: videoUrls
+    };
 
   } catch (err) {
-    log("Get player info error: " + err.message);
+    log("Load error: " + err.message);
     return null;
   }
 }
 
+// ========== MAIN getStreams ==========
 async function getStreams(tmdbId, mediaType, season, episode) {
   log("========================================");
   log("Searching: " + tmdbId);
@@ -245,11 +355,14 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       return [];
     }
 
-    log("Found " + results.length + " search results");
+    log("Found " + results.length + " results");
 
-    // Score and sort
+    // Find best match
+    let best = results[0];
+    let bestScore = -999;
     const targetNormalized = normalizeTitleForSearch(title);
-    let scoredResults = results.map(function(item) {
+
+    for (const item of results) {
       const itemNormalized = normalizeTitleForSearch(item.t);
       let score = 0;
 
@@ -268,84 +381,47 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       if (item.y === targetYear) score += 30;
       if (targetYear && item.y && item.y !== targetYear) score -= 40;
 
-      // Penalize known wrong mappings
-      if (item.t.toLowerCase().includes("dc") || 
-          item.t.toLowerCase().includes("666") || 
-          item.t.toLowerCase().includes("resurrection")) {
-        score -= 100;
-      }
-
-      return { ...item, score };
-    });
-
-    scoredResults.sort(function(a, b) { return b.score - a.score; });
-
-    let videoUrl = null;
-    let selected = null;
-
-    // Try each result
-    for (const item of scoredResults) {
-      if (item.score < 0) {
-        log('Skipping "' + item.t + '" (score too low: ' + item.score + ')');
-        continue;
-      }
-      
-      log('Checking ID ' + item.id + ' ("' + item.t + '", score: ' + item.score + ')');
-      
-      const playerInfo = await getPlayerInfo(item.id);
-      if (!playerInfo) {
-        log('  ❌ Failed to load player page');
-        continue;
-      }
-
-      log('  Player title: "' + playerInfo.title + '"');
-      
-      if (isTitleMatch(playerInfo.title, title)) {
-        log('  ✅ Title matches!');
-        videoUrl = playerInfo.videoUrl;
-        selected = item;
-        break;
-      } else {
-        log('  ❌ Title mismatch: expected "' + title + '", got "' + playerInfo.title + '"');
+      if (score > bestScore) {
+        bestScore = score;
+        best = item;
       }
     }
 
-    // Fallback
-    if (!videoUrl && scoredResults.length > 0) {
-      log("No valid title match, trying first result as fallback");
-      const playerInfo = await getPlayerInfo(scoredResults[0].id);
-      if (playerInfo) {
-        videoUrl = playerInfo.videoUrl;
-        selected = scoredResults[0];
-        log('Fallback using: "' + playerInfo.title + '"');
-      }
-    }
+    log('Selected: "' + best.t + '" (ID: ' + best.id + ')');
 
-    if (!videoUrl || !selected) {
-      log("No valid video URL found");
+    // Load the content
+    const data = await loadICC(best.id);
+    if (!data || !data.videoUrls || data.videoUrls.length === 0) {
+      log("No video URLs found");
       return [];
     }
 
-    log('Selected: "' + selected.t + '" (ID: ' + selected.id + ')');
-    log("Video URL: " + videoUrl);
+    log('Loaded: "' + data.title + '"');
+    log('Video URLs: ' + data.videoUrls.length);
 
-    let quality = "Auto";
-    const lower = videoUrl.toLowerCase();
-    if (lower.includes("1080p") || lower.includes("1920x1080")) quality = "Full HD";
-    else if (lower.includes("720p") || lower.includes("1280x720")) quality = "Mid HD";
-    else if (lower.includes("480p") || lower.includes("854x480")) quality = "Low HD";
+    // Build streams (like Kotlin loadLinks)
+    const streams = data.videoUrls.map(function(url) {
+      let quality = "Auto";
+      const lower = url.toLowerCase();
+      if (lower.includes("1080p") || lower.includes("1920x1080")) quality = "Full HD";
+      else if (lower.includes("720p") || lower.includes("1280x720")) quality = "Mid HD";
+      else if (lower.includes("480p") || lower.includes("854x480")) quality = "Low HD";
 
-    return [{
-      name: "ICC FTP",
-      title: quality,
-      url: videoUrl,
-      quality: quality,
-      headers: {
-        "Referer": BASE_URL + "/",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
-        "Range": "bytes=0-"
-      }
-    }];
+      return {
+        name: "ICC FTP",
+        title: quality,
+        url: url,
+        quality: quality,
+        headers: {
+          "Referer": BASE_URL + "/",
+          "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36",
+          "Range": "bytes=0-"
+        }
+      };
+    });
+
+    log("Returning " + streams.length + " streams");
+    return streams;
 
   } catch (err) {
     log("Error: " + err.message);
