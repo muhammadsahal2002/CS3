@@ -1,4 +1,4 @@
-// mobile_icc.js – ICC FTP Server (Final)
+// mobile_icc.js – ICC FTP Server (with ID validation)
 "use strict";
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -10,7 +10,6 @@ let tokenCache = null;
 
 function log(msg) { console.log("[ICCFTP] " + msg); }
 
-// ========== HELPERS ==========
 function extractId(url) {
   if (!url) return "";
   var after = url.split("play=");
@@ -34,13 +33,17 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ========== SESSION & TOKEN ==========
+function isTitleMatch(title1, title2) {
+  if (!title1 || !title2) return false;
+  const n1 = normalizeTitleForSearch(title1);
+  const n2 = normalizeTitleForSearch(title2);
+  return n1 === n2 || n1.includes(n2) || n2.includes(n1);
+}
+
 async function getSessionAndToken() {
   if (sessionCache && tokenCache) {
     return { session: sessionCache, token: tokenCache };
   }
-
-  log("Getting session...");
 
   try {
     const resp = await fetch(BASE_URL, {
@@ -89,7 +92,6 @@ async function getSessionAndToken() {
   }
 }
 
-// ========== TMDB ==========
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = TMDB_BASE + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
@@ -103,7 +105,6 @@ async function getTmdbInfo(tmdbId, mediaType) {
   };
 }
 
-// ========== SEARCH ==========
 async function searchICC(query) {
   if (!query || query.trim().length === 0) return [];
 
@@ -137,7 +138,6 @@ async function searchICC(query) {
       searchHtml = html.substring(sliderEnd);
     }
 
-    // Parse search results
     const postRegex = /<div[^>]*class="[^"]*post[^"]*"[^>]*>[\s\S]*?<a[^>]*href="[^"]*play=([^&"]+)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/gi;
     
     let match;
@@ -161,8 +161,8 @@ async function searchICC(query) {
   }
 }
 
-// ========== GET VIDEO URL WITH VALIDATION ==========
-async function getVideoUrl(id, expectedTitle) {
+// ========== GET PLAYER TITLE AND VIDEO URL ==========
+async function getPlayerInfo(id) {
   try {
     const { session } = await getSessionAndToken();
     
@@ -178,7 +178,7 @@ async function getVideoUrl(id, expectedTitle) {
     if (!resp.ok) return null;
     const html = await resp.text();
 
-    // Extract the actual title from the player page
+    // Extract actual title from player page
     let actualTitle = "";
     const titleMatch = html.match(/<span[^>]*style="[^"]*font-size: 30px[^"]*"[^>]*>([^<]*)<\/span>/i);
     if (titleMatch) {
@@ -207,21 +207,10 @@ async function getVideoUrl(id, expectedTitle) {
 
     if (!videoUrl) return null;
 
-    // Validate: Check if the actual title matches the expected title
-    if (expectedTitle && actualTitle) {
-      const expectedNorm = normalizeTitleForSearch(expectedTitle);
-      const actualNorm = normalizeTitleForSearch(actualTitle);
-      
-      if (expectedNorm !== actualNorm && !actualNorm.includes(expectedNorm) && !expectedNorm.includes(actualNorm)) {
-        log("Title mismatch: expected '" + expectedTitle + "', got '" + actualTitle + "'");
-        return null;
-      }
-    }
-
-    return videoUrl;
+    return { title: actualTitle, videoUrl: videoUrl };
 
   } catch (err) {
-    log("Get video error: " + err.message);
+    log("Get player info error: " + err.message);
     return null;
   }
 }
@@ -242,7 +231,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     let results = await searchICC(title);
     if (!results || results.length === 0) {
       const normalized = normalizeTitleForSearch(title);
-      log("No results, trying normalized: " + normalized);
       results = await searchICC(normalized);
     }
     
@@ -253,7 +241,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     log("Found " + results.length + " results");
 
-    // Score and sort results
+    // Score and sort
     const targetNormalized = normalizeTitleForSearch(title);
     let scoredResults = results.map(function(item) {
       const itemNormalized = normalizeTitleForSearch(item.t);
@@ -284,38 +272,47 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       return { ...item, score };
     });
 
-    // Sort by score descending
     scoredResults.sort(function(a, b) { return b.score - a.score; });
 
-    // Try each result until we find one with a matching video
     let videoUrl = null;
     let selected = null;
 
+    // Try each result and check if the player page title matches
     for (const item of scoredResults) {
-      log('Trying: "' + item.t + '" (ID: ' + item.id + ', Score: ' + item.score + ')');
-      
-      // Skip very low scores
       if (item.score < 0) {
-        log('Skipping: score too low');
+        log('Skipping "' + item.t + '" (score too low: ' + item.score + ')');
         continue;
       }
       
-      const url = await getVideoUrl(item.id, title);
-      if (url) {
-        videoUrl = url;
+      log('Checking ID ' + item.id + ' ("' + item.t + '", score: ' + item.score + ')');
+      
+      const playerInfo = await getPlayerInfo(item.id);
+      if (!playerInfo) {
+        log('  ❌ Failed to load player page');
+        continue;
+      }
+
+      log('  Player title: "' + playerInfo.title + '"');
+      
+      // Check if the player title matches the expected title
+      if (isTitleMatch(playerInfo.title, title)) {
+        log('  ✅ Title matches!');
+        videoUrl = playerInfo.videoUrl;
         selected = item;
-        log('✅ Valid video found!');
         break;
+      } else {
+        log('  ❌ Title mismatch: expected "' + title + '", got "' + playerInfo.title + '"');
       }
     }
 
-    // If no valid URL found, try the first result anyway (as fallback)
+    // If no match found, try the first result anyway (as fallback)
     if (!videoUrl && scoredResults.length > 0) {
-      log("No valid URL found with validation, trying first result as fallback");
-      const url = await getVideoUrl(scoredResults[0].id, null);
-      if (url) {
-        videoUrl = url;
+      log("No valid title match, trying first result as fallback");
+      const playerInfo = await getPlayerInfo(scoredResults[0].id);
+      if (playerInfo) {
+        videoUrl = playerInfo.videoUrl;
         selected = scoredResults[0];
+        log('Fallback using: "' + playerInfo.title + '"');
       }
     }
 
@@ -327,7 +324,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     log('Selected: "' + selected.t + '" (ID: ' + selected.id + ')');
     log("Video URL: " + videoUrl);
 
-    // Quality
     let quality = "Auto";
     const lower = videoUrl.toLowerCase();
     if (lower.includes("1080p") || lower.includes("1920x1080")) quality = "Full HD";
