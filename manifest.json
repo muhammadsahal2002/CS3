@@ -73,6 +73,30 @@
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
+    },
+{
+      "id": "ebox",
+      "name": "Box",
+      "description": "Moviebox for All cinema.",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/ts.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
+    },
+{
+      "id": "moebox",
+      "name": "ox",
+      "description": "Moviebox for All cinema.",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/vidnet.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
     }
 
 
