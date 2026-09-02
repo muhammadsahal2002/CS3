@@ -1,4 +1,3 @@
-// ====== Constants ======
 const PROVIDER_NAME = "🟡 PlayIMDb";
 const BASE_API = "https://streamdata.vaplayer.ru/api.php";
 const TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706";
@@ -10,7 +9,6 @@ const HEADERS = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 };
 
-// ====== Helper: fetch with timeout ======
 async function fetchWithTimeout(url, options = {}) {
   const timeoutMs = 10000;
   const signal =
@@ -27,7 +25,6 @@ async function fetchWithTimeout(url, options = {}) {
   return fetch(url, requestOptions);
 }
 
-// ====== Helper: fetch JSON ======
 async function fetchJson(url, options = {}) {
   try {
     const res = await fetchWithTimeout(url, options);
@@ -39,7 +36,6 @@ async function fetchJson(url, options = {}) {
   }
 }
 
-// ====== TMDB metadata (title, year, duration) ======
 async function getTmdbMetadata(tmdbId, mediaType, season, episode) {
   let title = "Unknown Title";
   let duration = mediaType === "tv" ? "45 min" : "90 min";
@@ -76,7 +72,6 @@ async function getTmdbMetadata(tmdbId, mediaType, season, episode) {
   }
 }
 
-// ====== Main function: getStreams ======
 async function getStreams(tmdbId, mediaType, season, episode) {
   const streams = [];
 
@@ -191,15 +186,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   return streams;
 }
 
-// ====== Export ======
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { getStreams };
 } else {
   global.getStreams = getStreams;
 }
-
-// ====== EXAMPLE TEST CALL ======
-// Replace with a real TMDB ID. Example: 550 = Fight Club (movie)
-getStreams(550, "movie", null, null).then((streams) => {
-  console.log("Streams:", JSON.stringify(streams, null, 2));
-});
