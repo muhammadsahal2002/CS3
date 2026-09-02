@@ -34,7 +34,7 @@ async function fetchJson(url, options = {}) {
     if (res.ok) return await res.json();
     return null;
   } catch (err) {
-    console.log(`[${PROVIDER_NAME}] Error:`, err);
+    console.log(`[${PROVIDER_NAME}] fetchJson error:`, err);
     return null;
   }
 }
@@ -42,7 +42,7 @@ async function fetchJson(url, options = {}) {
 // ====== TMDB metadata (title, year, duration) ======
 async function getTmdbMetadata(tmdbId, mediaType, season, episode) {
   let title = "Unknown Title";
-  let duration = mediaType === "tv" ? "45 min" : "2 hr";
+  let duration = mediaType === "tv" ? "45 min" : "90 min";
 
   try {
     const tmdbType = mediaType === "movie" ? "movie" : "tv";
@@ -113,7 +113,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
       if (fileName.includes("2160p") || fileName.includes("4k")) {
         qualityLabel = "4K UHD";
-        qualityShort = "4K";
+        qualityShort = "2160P";
       } else if (fileName.includes("1080p")) {
         qualityLabel = "1080p FHD";
         qualityShort = "1080P";
@@ -130,7 +130,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         (fileName.includes("multi") && fileName.includes("english"))
       ) {
         audioLabel = "Dual-Audio";
-        audioShort = "Dual-Audio";
+        audioShort = "English • Hindi";
       } else if (fileName.includes("multi")) {
         audioLabel = "Multi-Audio";
         audioShort = "Multilingual";
@@ -148,16 +148,16 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       data.data.stream_urls.forEach((url, index) => {
         const lowerUrl = url.toLowerCase();
         const serverName = "Server " + (index + 1);
-        let format = "Direct";
+        let format = "MKV";
         if (lowerUrl.includes(".mp4")) format = "MP4";
-        if (lowerUrl.includes(".m3u8")) format = "HLS";
+        if (lowerUrl.includes(".m3u8")) format = "M3U8";
 
-        const streamName = `${PROVIDER_NAME} - ${qualityLabel} - ${audioLabel}`;
+        const streamName = `${PROVIDER_NAME} | ${qualityLabel} - ${audioLabel}`;
         const streamTitle = isTv
-          ? `📺 ${showTitle} - S${season}E${episode} (${year})`
+          ? `🎬 ${showTitle} - S${season}E${episode} (${year})`
           : `🎬 ${showTitle} - ${year}`;
         const qualityInfo = `💎 ${qualityShort} | 🌍 ${audioShort}`;
-        const formatInfo = `🎞️ ${format} | ⏱️ ${metadata.duration} | ${serverName}`;
+        const formatInfo = `🎞️ ${format} | ⏱️ ${metadata.duration} | 📌 ${serverName}`;
         const fullTitle = `${streamTitle}\n${qualityInfo}\n${formatInfo}`;
 
         const streamObj = {
@@ -200,6 +200,6 @@ if (typeof module !== "undefined" && module.exports) {
 
 // ====== EXAMPLE TEST CALL ======
 // Replace with a real TMDB ID. Example: 550 = Fight Club (movie)
-getStreams(597, "movie", null, null).then((streams) => {
+getStreams(550, "movie", null, null).then((streams) => {
   console.log("Streams:", JSON.stringify(streams, null, 2));
 });
