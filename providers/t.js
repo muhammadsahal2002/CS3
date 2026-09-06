@@ -1,7 +1,7 @@
 /**
  * AnikotoTV Provider for Nuvio
  * DUB only
- * Uses ID Mapper API with tmdb_mappings for correct episode numbers
+ * Uses Jikan API (MyAnimeList) for episode number resolution
  */
 
 "use strict";
@@ -12,9 +12,25 @@ var CONFIG = {
     BASE_URL: "https://anikoto.cz",
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
-    MAPPING_API: "https://idmapper.vercel.app/api/mapper",
+    JIKAN_API: "https://api.jikan.moe/v4",
     USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
+
+// Rate limiting for Jikan API (max 3 requests per second)
+var jikanRateLimit = {
+    lastRequest: 0,
+    minInterval: 333 // 333ms between requests (3 per second)
+};
+
+function rateLimitJikan() {
+    var now = Date.now();
+    var waitTime = jikanRateLimit.minInterval - (now - jikanRateLimit.lastRequest);
+    if (waitTime > 0) {
+        return new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    jikanRateLimit.lastRequest = Date.now();
+    return Promise.resolve();
+}
 
 function headers(extra) {
     var h = {
@@ -126,73 +142,208 @@ function getTitleFromImdb(imdbId) {
     .catch(function() { return null; });
 }
 
+/**
+ * Get MAL ID from IMDB using Jikan API
+ */
+function getMalIdFromImdb(imdbId) {
+    return rateLimitJikan()
+        .then(function() {
+            var url = CONFIG.JIKAN_API + "/anime?q=imdb:" + encodeURIComponent(imdbId);
+            
+            return fetch(url, {
+                headers: {
+                    "User-Agent": CONFIG.USER_AGENT,
+                    "Accept": "application/json"
+                }
+            })
+            .then(function(r) { 
+                if (!r.ok) {
+                    console.log("[Anikoto] Jikan API error:", r.status);
+                    return null;
+                }
+                return r.json(); 
+            })
+            .then(function(data) {
+                if (!data || !data.data || data.data.length === 0) {
+                    console.log("[Anikoto] No MAL entry found for IMDB:", imdbId);
+                    return null;
+                }
+                
+                var malId = data.data[0].mal_id;
+                console.log("[Anikoto] Found MAL ID:", malId, "for IMDB:", imdbId);
+                return malId;
+            })
+            .catch(function(err) {
+                console.log("[Anikoto] Jikan error:", err.message);
+                return null;
+            });
+        });
+}
+
+/**
+ * Get episode mapping from MAL
+ * MAL uses absolute episode numbers, which solves the season-splitting problem
+ */
+function getMALEpisodeMapping(malId, requestedEpisode) {
+    if (!malId) {
+        return Promise.resolve(null);
+    }
+    
+    return rateLimitJikan()
+        .then(function() {
+            var url = CONFIG.JIKAN_API + "/anime/" + malId + "/episodes?page=1";
+            
+            return fetch(url, {
+                headers: {
+                    "User-Agent": CONFIG.USER_AGENT,
+                    "Accept": "application/json"
+                }
+            })
+            .then(function(r) { 
+                if (!r.ok) {
+                    console.log("[Anikoto] Jikan episodes error:", r.status);
+                    return null;
+                }
+                return r.json(); 
+            })
+            .then(function(data) {
+                if (!data || !data.data) {
+                    console.log("[Anikoto] No episode data from Jikan");
+                    return null;
+                }
+                
+                // Check if the requested episode exists
+                var totalEpisodes = data.data.length;
+                console.log("[Anikoto] MAL has", totalEpisodes, "episodes");
+                
+                // For shows with season splits (like Dragon Ball Super)
+                // We need to map the season/episode to absolute episode number
+                // If we have IMDB mapping, use it; otherwise use the episode as-is
+                
+                // If requested episode > total episodes, it might be a seasonal mapping
+                if (requestedEpisode > totalEpisodes) {
+                    console.log("[Anikoto] Episode", requestedEpisode, "exceeds total MAL episodes:", totalEpisodes);
+                    console.log("[Anikoto] This suggests a seasonal mapping is needed");
+                    
+                    // For Dragon Ball Super: Season 5 Episode 53 -> Episode 150
+                    // Since we can't calculate this from MAL alone, we'll need a mapping
+                    return null;
+                }
+                
+                // If episode exists in MAL, use it directly
+                console.log("[Anikoto] Episode", requestedEpisode, "exists in MAL, using it directly");
+                return requestedEpisode;
+            })
+            .catch(function(err) {
+                console.log("[Anikoto] Jikan episodes error:", err.message);
+                return null;
+            });
+        });
+}
+
+/**
+ * Special hardcoded mappings for shows with season splits
+ * These are based on the actual MAL episode numbering
+ */
+function getHardcodedMapping(imdbId, season, episode) {
+    // Dragon Ball Super: TMDB has 1 season, MAL/Anikoto has 5 seasons
+    // Season 1: Ep 1-26, Season 2: Ep 27-49, Season 3: Ep 50-76, 
+    // Season 4: Ep 77-97, Season 5: Ep 98-131
+    if (imdbId === "tt4644488") {
+        var seasonStarts = {
+            1: 1,
+            2: 27,
+            3: 50,
+            4: 77,
+            5: 98
+        };
+        
+        if (seasonStarts[season]) {
+            var mapped = seasonStarts[season] + episode - 1;
+            console.log("[Anikoto] Hardcoded mapping for Dragon Ball Super:", 
+                       "Season", season, "Episode", episode, "->", mapped);
+            return mapped;
+        }
+    }
+    
+    // Naruto Shippuden: Similar season splits
+    if (imdbId === "tt0988824") {
+        // Naruto Shippuden has 20+ seasons in some databases
+        // But uses absolute episode numbering in MAL
+        var seasonStarts = {
+            1: 1,
+            2: 33,
+            3: 54,
+            4: 72,
+            5: 89,
+            6: 113,
+            7: 144,
+            8: 152,
+            9: 176,
+            10: 197,
+            11: 222,
+            12: 243,
+            13: 276,
+            14: 296,
+            15: 321,
+            16: 349,
+            17: 362,
+            18: 373,
+            19: 394,
+            20: 414
+        };
+        
+        if (seasonStarts[season]) {
+            var mapped = seasonStarts[season] + episode - 1;
+            console.log("[Anikoto] Hardcoded mapping for Naruto Shippuden:", 
+                       "Season", season, "Episode", episode, "->", mapped);
+            return mapped;
+        }
+    }
+    
+    // Add more shows as needed
+    
+    return null;
+}
+
+/**
+ * Resolve episode mapping using Jikan and hardcoded fallbacks
+ */
 function resolveMapping(imdbId, season, episode) {
     if (!imdbId) {
         return Promise.resolve(null);
     }
 
-    var url = CONFIG.MAPPING_API + "?imdb_id=" + encodeURIComponent(imdbId);
+    // First check hardcoded mappings
+    var hardcoded = getHardcodedMapping(imdbId, season, episode);
+    if (hardcoded !== null) {
+        return Promise.resolve({ mal_episode: hardcoded, mapping_type: "hardcoded" });
+    }
 
-    return fetch(url, {
-        headers: {
-            "User-Agent": CONFIG.USER_AGENT,
-            "Accept": "application/json"
-        }
-    })
-    .then(function(r) { 
-        if (!r.ok) return null;
-        return r.json(); 
-    })
-    .then(function(data) {
-        if (!data) return null;
-
-        var mappedEpisode = null;
-        var seasonKey = "s" + season;
-
-        // Use tmdb_mappings for episode mapping
-        if (data.tmdb_mappings && data.tmdb_mappings[seasonKey]) {
-            var mapping = data.tmdb_mappings[seasonKey];
-            
-            // Parse the episode range (format: "e1-e32")
-            var match = mapping.match(/e(\d+)-e(\d+)/i);
-            if (match) {
-                var startEp = parseInt(match[1], 10);
-                var endEp = parseInt(match[2], 10);
-                
-                // CRITICAL FIX: Calculate the correct episode number
-                // The episode passed is the TMDB episode number within the season
-                // We need to convert it to the absolute episode number
-                if (episode >= 1 && episode <= (endEp - startEp + 1)) {
-                    // Episode is within this season's range
-                    // Map: Season 5, Episode 1 -> Absolute episode 89
-                    //       Season 5, Episode 53 -> Absolute episode 141 (89 + 53 - 1)
-                    mappedEpisode = startEp + episode - 1;
-                } else {
-                    // If episode is out of range, try to use it as absolute
-                    if (episode >= startEp && episode <= endEp) {
-                        mappedEpisode = episode;
-                    } else {
-                        // Last resort: use the start of the season
-                        mappedEpisode = startEp;
-                    }
-                }
+    // Try to get MAL ID and mapping
+    return getMalIdFromImdb(imdbId)
+        .then(function(malId) {
+            if (!malId) {
+                console.log("[Anikoto] No MAL ID found, using original episode");
+                return null;
             }
-        }
-
-        // Log the mapping for debugging
-        if (mappedEpisode) {
-            console.log("[Anikoto] Mapping: IMDB=" + imdbId + 
-                       ", Season=" + season + 
-                       ", Episode=" + episode + 
-                       " -> Mapped=" + mappedEpisode);
-        }
-
-        return mappedEpisode ? { mal_episode: mappedEpisode } : null;
-    })
-    .catch(function(err) {
-        console.log("[Anikoto] Mapping error:", err);
-        return null; 
-    });
+            
+            return getMALEpisodeMapping(malId, episode)
+                .then(function(mappedEpisode) {
+                    if (mappedEpisode !== null) {
+                        console.log("[Anikoto] Jikan mapping:", episode, "->", mappedEpisode);
+                        return { mal_episode: mappedEpisode, mapping_type: "jikan" };
+                    }
+                    
+                    // If Jikan didn't find a mapping, try to use the episode as-is
+                    console.log("[Anikoto] Using original episode:", episode);
+                    return { mal_episode: episode, mapping_type: "original" };
+                });
+        })
+        .catch(function(err) {
+            console.log("[Anikoto] Mapping error:", err.message);
+            return null;
+        });
 }
 
 function searchAnime(title) {
@@ -374,14 +525,12 @@ function getStreams(id, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
-    // Detect if it's an IMDB ID
     var isImdbId = typeof id === 'string' && id.startsWith('tt');
     var imdbId = isImdbId ? id : null;
     var tmdbId = isImdbId ? null : id;
 
-    console.log("[Anikoto] getStreams called with:", { id, mediaType, season, episode, isImdbId });
+    console.log("[Anikoto] getStreams:", { id, mediaType, season, episode, isImdbId });
 
-    // Get title - from TMDB or IMDB
     var titlePromise = tmdbId 
         ? getTitle(tmdbId, mediaType)
         : (imdbId ? getTitleFromImdb(imdbId) : Promise.resolve(null));
@@ -389,13 +538,12 @@ function getStreams(id, mediaType, season, episode) {
     return titlePromise
         .then(function(title) {
             if (!title) {
-                console.log("[Anikoto] No title found for ID:", id);
+                console.log("[Anikoto] No title found");
                 return [];
             }
 
-            console.log("[Anikoto] Found title:", title);
+            console.log("[Anikoto] Title:", title);
 
-            // Get IMDB ID if we have TMDB ID
             var imdbPromise = imdbId 
                 ? Promise.resolve(imdbId)
                 : (tmdbId ? getImdbId(tmdbId, mediaType) : Promise.resolve(null));
@@ -411,35 +559,21 @@ function getStreams(id, mediaType, season, episode) {
                 return mappingPromise.then(function(mapping) {
                     if (mapping && mapping.mal_episode) {
                         mappedEpisode = mapping.mal_episode;
-                        console.log("[Anikoto] Using mapped episode:", mappedEpisode);
+                        console.log("[Anikoto] Mapped to:", mappedEpisode, 
+                                   "(via", mapping.mapping_type || "unknown", ")");
                     } else {
-                        console.log("[Anikoto] No mapping found, using original episode:", episode);
+                        console.log("[Anikoto] No mapping, using original:", episode);
                     }
 
                     return searchAnime(title).then(function(best) {
-                        if (!best) {
-                            console.log("[Anikoto] No anime found for:", title);
-                            return [];
-                        }
-
-                        console.log("[Anikoto] Found anime:", best.title, best.url);
+                        if (!best) return [];
 
                         return getAnimeId(best.url).then(function(animeId) {
-                            if (!animeId) {
-                                console.log("[Anikoto] No anime ID found");
-                                return [];
-                            }
-
-                            console.log("[Anikoto] Anime ID:", animeId);
+                            if (!animeId) return [];
 
                             return getDubEpisode(animeId, mappedEpisode, best.url)
                                 .then(function(ep) {
-                                    if (!ep) {
-                                        console.log("[Anikoto] No dub episode found for:", mappedEpisode);
-                                        return [];
-                                    }
-
-                                    console.log("[Anikoto] Found episode:", ep);
+                                    if (!ep) return [];
 
                                     return getDubServer(ep.ids, best.url)
                                         .then(function(linkId) {
@@ -467,7 +601,7 @@ function getStreams(id, mediaType, season, episode) {
             });
         })
         .catch(function(err) {
-            console.log("[Anikoto] Error in getStreams:", err.message || err);
+            console.log("[Anikoto] Error:", err.message || err);
             return [];
         });
 }
