@@ -72,6 +72,60 @@ function getTitle(tmdbId, mediaType) {
         .catch(function() { return null; });
 }
 
+function getTmdbIdFromImdb(imdbId) {
+    var url = CONFIG.TMDB_BASE + "/find/" + encodeURIComponent(imdbId) + 
+        "?api_key=" + CONFIG.TMDB_API_KEY + "&external_source=imdb_id";
+    
+    return fetch(url, {
+        headers: {
+            "User-Agent": CONFIG.USER_AGENT,
+            "Accept": "application/json"
+        }
+    })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(data) {
+        if (!data) return null;
+        
+        if (data.tv_results && data.tv_results.length > 0) {
+            return data.tv_results[0].id;
+        }
+        
+        if (data.movie_results && data.movie_results.length > 0) {
+            return data.movie_results[0].id;
+        }
+        
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
+function getTitleFromImdb(imdbId) {
+    var url = CONFIG.TMDB_BASE + "/find/" + encodeURIComponent(imdbId) + 
+        "?api_key=" + CONFIG.TMDB_API_KEY + "&external_source=imdb_id";
+    
+    return fetch(url, {
+        headers: {
+            "User-Agent": CONFIG.USER_AGENT,
+            "Accept": "application/json"
+        }
+    })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(data) {
+        if (!data) return null;
+        
+        if (data.tv_results && data.tv_results.length > 0) {
+            return data.tv_results[0].name || data.tv_results[0].original_name;
+        }
+        
+        if (data.movie_results && data.movie_results.length > 0) {
+            return data.movie_results[0].title || data.movie_results[0].original_title;
+        }
+        
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
 function resolveMapping(imdbId, season, episode) {
     if (!imdbId) {
         return Promise.resolve(null);
@@ -105,28 +159,38 @@ function resolveMapping(imdbId, season, episode) {
                 var startEp = parseInt(match[1], 10);
                 var endEp = parseInt(match[2], 10);
                 
-                // Calculate the correct episode number
-                if (episode === 1) {
-                    // First episode of the season maps to the start
-                    mappedEpisode = startEp;
-                } else if (episode >= startEp && episode <= endEp) {
-                    // Episode is already in the correct range
-                    mappedEpisode = episode;
-                } else {
-                    // Calculate offset from season start
+                // CRITICAL FIX: Calculate the correct episode number
+                // The episode passed is the TMDB episode number within the season
+                // We need to convert it to the absolute episode number
+                if (episode >= 1 && episode <= (endEp - startEp + 1)) {
+                    // Episode is within this season's range
+                    // Map: Season 5, Episode 1 -> Absolute episode 89
+                    //       Season 5, Episode 53 -> Absolute episode 141 (89 + 53 - 1)
                     mappedEpisode = startEp + episode - 1;
-                }
-                
-                // Ensure we don't go beyond the season end
-                if (mappedEpisode > endEp) {
-                    mappedEpisode = endEp;
+                } else {
+                    // If episode is out of range, try to use it as absolute
+                    if (episode >= startEp && episode <= endEp) {
+                        mappedEpisode = episode;
+                    } else {
+                        // Last resort: use the start of the season
+                        mappedEpisode = startEp;
+                    }
                 }
             }
         }
 
+        // Log the mapping for debugging
+        if (mappedEpisode) {
+            console.log("[Anikoto] Mapping: IMDB=" + imdbId + 
+                       ", Season=" + season + 
+                       ", Episode=" + episode + 
+                       " -> Mapped=" + mappedEpisode);
+        }
+
         return mappedEpisode ? { mal_episode: mappedEpisode } : null;
     })
-    .catch(function() { 
+    .catch(function(err) {
+        console.log("[Anikoto] Mapping error:", err);
         return null; 
     });
 }
@@ -306,63 +370,104 @@ function resolveMegaplay(embed) {
     .catch(function() { return null; });
 }
 
-function getStreams(tmdbId, mediaType, season, episode) {
+function getStreams(id, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
-    return getTitle(tmdbId, mediaType)
+    // Detect if it's an IMDB ID
+    var isImdbId = typeof id === 'string' && id.startsWith('tt');
+    var imdbId = isImdbId ? id : null;
+    var tmdbId = isImdbId ? null : id;
+
+    console.log("[Anikoto] getStreams called with:", { id, mediaType, season, episode, isImdbId });
+
+    // Get title - from TMDB or IMDB
+    var titlePromise = tmdbId 
+        ? getTitle(tmdbId, mediaType)
+        : (imdbId ? getTitleFromImdb(imdbId) : Promise.resolve(null));
+
+    return titlePromise
         .then(function(title) {
-            if (!title) return [];
+            if (!title) {
+                console.log("[Anikoto] No title found for ID:", id);
+                return [];
+            }
 
-            return getImdbId(tmdbId, mediaType)
-                .then(function(imdbId) {
-                    var mappedEpisode = episode;
+            console.log("[Anikoto] Found title:", title);
 
-                    var mappingPromise = imdbId
-                        ? resolveMapping(imdbId, season, episode)
-                        : Promise.resolve(null);
+            // Get IMDB ID if we have TMDB ID
+            var imdbPromise = imdbId 
+                ? Promise.resolve(imdbId)
+                : (tmdbId ? getImdbId(tmdbId, mediaType) : Promise.resolve(null));
 
-                    return mappingPromise.then(function(mapping) {
-                        if (mapping && mapping.mal_episode) {
-                            mappedEpisode = mapping.mal_episode;
+            return imdbPromise.then(function(resolvedImdbId) {
+                console.log("[Anikoto] IMDB ID:", resolvedImdbId);
+                
+                var mappedEpisode = episode;
+                var mappingPromise = resolvedImdbId
+                    ? resolveMapping(resolvedImdbId, season, episode)
+                    : Promise.resolve(null);
+
+                return mappingPromise.then(function(mapping) {
+                    if (mapping && mapping.mal_episode) {
+                        mappedEpisode = mapping.mal_episode;
+                        console.log("[Anikoto] Using mapped episode:", mappedEpisode);
+                    } else {
+                        console.log("[Anikoto] No mapping found, using original episode:", episode);
+                    }
+
+                    return searchAnime(title).then(function(best) {
+                        if (!best) {
+                            console.log("[Anikoto] No anime found for:", title);
+                            return [];
                         }
 
-                        return searchAnime(title).then(function(best) {
-                            if (!best) return [];
+                        console.log("[Anikoto] Found anime:", best.title, best.url);
 
-                            return getAnimeId(best.url).then(function(animeId) {
-                                if (!animeId) return [];
+                        return getAnimeId(best.url).then(function(animeId) {
+                            if (!animeId) {
+                                console.log("[Anikoto] No anime ID found");
+                                return [];
+                            }
 
-                                return getDubEpisode(animeId, mappedEpisode, best.url)
-                                    .then(function(ep) {
-                                        if (!ep) return [];
+                            console.log("[Anikoto] Anime ID:", animeId);
 
-                                        return getDubServer(ep.ids, best.url)
-                                            .then(function(linkId) {
-                                                if (!linkId) return [];
-                                                return getEmbed(linkId, best.url);
-                                            })
-                                            .then(function(embed) {
-                                                if (!embed || embed.indexOf("megaplay") === -1) return [];
-                                                return resolveMegaplay(embed);
-                                            })
-                                            .then(function(stream) {
-                                                if (!stream) return [];
-                                                return [{
-                                                    name: "AnikotoTV",
-                                                    title: "1080p DUB",
-                                                    url: stream.url,
-                                                    quality: "1080p",
-                                                    headers: stream.headers
-                                                }];
-                                            });
-                                    });
-                            });
+                            return getDubEpisode(animeId, mappedEpisode, best.url)
+                                .then(function(ep) {
+                                    if (!ep) {
+                                        console.log("[Anikoto] No dub episode found for:", mappedEpisode);
+                                        return [];
+                                    }
+
+                                    console.log("[Anikoto] Found episode:", ep);
+
+                                    return getDubServer(ep.ids, best.url)
+                                        .then(function(linkId) {
+                                            if (!linkId) return [];
+                                            return getEmbed(linkId, best.url);
+                                        })
+                                        .then(function(embed) {
+                                            if (!embed || embed.indexOf("megaplay") === -1) return [];
+                                            return resolveMegaplay(embed);
+                                        })
+                                        .then(function(stream) {
+                                            if (!stream) return [];
+                                            return [{
+                                                name: "AnikotoTV",
+                                                title: "1080p DUB",
+                                                url: stream.url,
+                                                quality: "1080p",
+                                                headers: stream.headers
+                                            }];
+                                        });
+                                });
                         });
                     });
                 });
+            });
         })
-        .catch(function() {
+        .catch(function(err) {
+            console.log("[Anikoto] Error in getStreams:", err.message || err);
             return [];
         });
 }
