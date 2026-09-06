@@ -21,7 +21,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/anikoto.js",
+      "filename": "providers/ooooo.js",
       "enabled": true,
       "formats": ["m3u8"],
       "contentLanguage": ["en", "ja"]
@@ -73,21 +73,6 @@
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
-    },
-
-{
-  "id": "test",
-  "name": "Anikoto test",
-  "description": "Anime.",
-  "version": "1.0.0",
-  "author": "You",
-  "supportedTypes": ["movie", "tv", "series"],
-  "filename": "providers/t.js",
-  "enabled": true,
-  "formats": ["mp4", "m3u8"],
-  "contentLanguage": ["en", "ja"]
-}
-
-
+    }
   ]
 }
