@@ -403,9 +403,12 @@ function resolveMegaplay(embed) {
 
         var m = html.match(/data-id=["'](\d+)["']/);
         if (!m) {
-            log("resolveMegaplay: no data-id found on embed page");
+            log("resolveMegaplay: no data-id found on embed page. First 300 chars: " + html.slice(0, 300));
             return null;
         }
+
+        log("resolveMegaplay: extracted id=" + m[1] + " from embed page (embed url id was " +
+            (embed.match(/\/(\d+)\//) ? embed.match(/\/(\d+)\//)[1] : "n/a") + ")");
 
         return fetch("https://megaplay.buzz/stream/getSources?id=" + m[1], {
             headers: {
@@ -416,7 +419,16 @@ function resolveMegaplay(embed) {
             }
         }).then(function(r) {
             if (!r.ok) log("resolveMegaplay: getSources HTTP " + r.status);
-            return r.ok ? r.json() : null;
+            return r.ok ? r.text() : null;
+        }).then(function(rawText) {
+            if (!rawText) return null;
+            log("resolveMegaplay: getSources raw response: " + rawText.slice(0, 500));
+            try {
+                return JSON.parse(rawText);
+            } catch (e) {
+                log("resolveMegaplay: getSources response is not valid JSON - " + e.message);
+                return null;
+            }
         });
     })
     .then(function(data) {
@@ -427,7 +439,7 @@ function resolveMegaplay(embed) {
 
         var file = data.sources.file || (data.sources[0] && data.sources[0].file);
         if (!file) {
-            log("resolveMegaplay: sources present but no file url");
+            log("resolveMegaplay: sources present but no file url - " + JSON.stringify(data.sources));
             return null;
         }
 
