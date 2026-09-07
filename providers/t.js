@@ -14,7 +14,7 @@ var CONFIG = {
     TMDB_BASE: "https://api.themoviedb.org/3",
     MAPPING_API: "https://idmapper.vercel.app/api/mapper",
     USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36",
-    MAPPING_TIMEOUT: 5000 // 5 second timeout for mapping API
+    MAPPING_TIMEOUT: 5000
 };
 
 function headers(extra) {
@@ -89,7 +89,6 @@ function resolveMapping(imdbId, season, episode) {
     var url = CONFIG.MAPPING_API +
         "?imdb_id=" + encodeURIComponent(imdbId);
 
-    // Add cache-busting to prevent browser caching issues
     var cacheBuster = "&_=" + Date.now();
     url += cacheBuster;
 
@@ -108,19 +107,16 @@ function resolveMapping(imdbId, season, episode) {
     .then(function(data) {
         if (!data) return null;
         
-        // Check if we have TMDB mappings
         if (data.tmdb_mappings) {
             var seasonKey = "s" + season;
             var mapping = data.tmdb_mappings[seasonKey];
             
             if (mapping) {
-                // Parse the episode range (e.g., "e1-e32")
                 var parts = mapping.split('-');
                 if (parts.length === 2) {
                     var startEp = parseInt(parts[0].replace('e', ''), 10);
                     var endEp = parseInt(parts[1].replace('e', ''), 10);
                     
-                    // Check if episode is within range and calculate offset
                     if (episode >= 1 && episode <= (endEp - startEp + 1)) {
                         var malEpisode = startEp + episode - 1;
                         return {
@@ -132,7 +128,6 @@ function resolveMapping(imdbId, season, episode) {
                 }
             }
             
-            // If no mapping found or episode out of range, try to find if this is a valid season
             var allSeasons = Object.keys(data.tmdb_mappings);
             for (var i = 0; i < allSeasons.length; i++) {
                 var sKey = allSeasons[i];
@@ -143,7 +138,6 @@ function resolveMapping(imdbId, season, episode) {
                     if (sParts.length === 2) {
                         var sStart = parseInt(sParts[0].replace('e', ''), 10);
                         var sEnd = parseInt(sParts[1].replace('e', ''), 10);
-                        // Check if this season's episode range might contain our episode
                         if (episode >= 1 && episode <= (sEnd - sStart + 1)) {
                             var malEp = sStart + episode - 1;
                             return {
@@ -157,11 +151,9 @@ function resolveMapping(imdbId, season, episode) {
             }
         }
         
-        // If no mapping found, return null
         return null;
     })
     .catch(function(err) {
-        // Log the error but don't fail - return null so we fall back to using original episode number
         console.log("Mapping API error:", err.message);
         return null;
     });
@@ -303,43 +295,151 @@ function resolveMegaplay(embed) {
         embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
     }
 
+    console.log("Fetching megaplay page:", embed);
+
     return fetch(embed, {
         headers: headers({
             "Referer": CONFIG.BASE_URL,
             "Origin": CONFIG.BASE_URL
         })
     })
-    .then(function(r) { return r.ok ? r.text() : null; })
+    .then(function(r) { 
+        if (!r.ok) {
+            console.log("Megaplay page fetch failed:", r.status);
+            return null;
+        }
+        return r.text(); 
+    })
     .then(function(html) {
-        if (!html) return null;
+        if (!html) {
+            console.log("Megaplay page returned empty");
+            return null;
+        }
 
+        console.log("Megaplay page loaded, looking for video ID...");
+
+        // Extract video ID from the page
+        var videoId = null;
         var m = html.match(/data-id=["'](\d+)["']/);
-        if (!m) return null;
+        if (m) {
+            videoId = m[1];
+        } else {
+            m = html.match(/player\s*:\s*\{[^}]*id\s*:\s*["']?(\d+)["']?/i);
+            if (m) videoId = m[1];
+        }
 
-        return fetch("https://megaplay.buzz/stream/getSources?id=" + m[1], {
-            headers: {
-                "User-Agent": CONFIG.USER_AGENT,
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": embed,
-                "Accept": "application/json"
+        if (!videoId) {
+            console.log("Could not find video ID in megaplay page");
+            console.log("HTML preview:", html.substring(0, 500));
+            return null;
+        }
+
+        console.log("Found video ID:", videoId);
+
+        // Try different API endpoints to get the stream URL
+        var apiUrls = [
+            "https://megaplay.buzz/stream/getSources?id=" + videoId,
+            "https://megaplay.buzz/getSources?id=" + videoId,
+            "https://megaplay.buzz/api/source/" + videoId
+        ];
+
+        function tryEndpoints(index) {
+            if (index >= apiUrls.length) {
+                console.log("All megaplay API endpoints failed");
+                return null;
             }
-        }).then(function(r) { return r.ok ? r.json() : null; });
-    })
-    .then(function(data) {
-        if (!data || !data.sources) return null;
 
-        var file = data.sources.file || (data.sources[0] && data.sources[0].file);
-        if (!file) return null;
+            var apiUrl = apiUrls[index];
+            console.log("Trying API endpoint:", apiUrl);
 
-        return {
-            url: file,
-            headers: {
-                "Referer": "https://megaplay.buzz/",
-                "Origin": "https://megaplay.buzz"
-            }
-        };
+            return fetch(apiUrl, {
+                headers: {
+                    "User-Agent": CONFIG.USER_AGENT,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": embed,
+                    "Accept": "application/json"
+                }
+            })
+            .then(function(r) { 
+                if (!r.ok) {
+                    console.log("API returned status:", r.status, "for", apiUrl);
+                    return tryEndpoints(index + 1);
+                }
+                return r.json(); 
+            })
+            .then(function(data) {
+                if (!data) {
+                    console.log("API returned empty for", apiUrl);
+                    return tryEndpoints(index + 1);
+                }
+
+                console.log("API response keys:", Object.keys(data));
+
+                var file = null;
+
+                // Try all possible response formats
+                if (data.sources) {
+                    if (data.sources.file) {
+                        file = data.sources.file;
+                    } else if (data.sources[0] && data.sources[0].file) {
+                        file = data.sources[0].file;
+                    } else if (typeof data.sources === 'string') {
+                        file = data.sources;
+                    } else if (Array.isArray(data.sources)) {
+                        for (var i = 0; i < data.sources.length; i++) {
+                            if (data.sources[i].file) {
+                                file = data.sources[i].file;
+                                break;
+                            }
+                            if (data.sources[i].url) {
+                                file = data.sources[i].url;
+                                break;
+                            }
+                        }
+                    }
+                } else if (data.file) {
+                    file = data.file;
+                } else if (data.url) {
+                    file = data.url;
+                } else if (data.data && data.data.file) {
+                    file = data.data.file;
+                } else if (data.result && data.result.file) {
+                    file = data.result.file;
+                } else if (data.result && data.result.url) {
+                    file = data.result.url;
+                } else if (data.source) {
+                    if (data.source.file) file = data.source.file;
+                    else if (data.source.url) file = data.source.url;
+                }
+
+                if (!file) {
+                    console.log("No file URL found in API response for", apiUrl);
+                    console.log("Response:", JSON.stringify(data).substring(0, 500));
+                    return tryEndpoints(index + 1);
+                }
+
+                console.log("Found file URL:", file);
+
+                return {
+                    url: file,
+                    headers: {
+                        "Referer": "https://megaplay.buzz/",
+                        "Origin": "https://megaplay.buzz"
+                    }
+                };
+            })
+            .catch(function(err) {
+                console.log("API error for", apiUrl, ":", err.message);
+                return tryEndpoints(index + 1);
+            });
+        }
+
+        return tryEndpoints(0);
     })
-    .catch(function() { return null; });
+    .catch(function(err) {
+        console.log("Megaplay resolution error:", err.message);
+        return null;
+    });
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
