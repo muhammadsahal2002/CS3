@@ -334,28 +334,66 @@ function getDubEpisode(animeId, episodeNum, referer) {
         });
 }
 
-function getDubServer(ids, referer) {
+function getDubServers(ids, referer) {
     var url = CONFIG.BASE_URL + "/ajax/server/list?servers=" + encodeURIComponent(ids);
 
     return fetch(url, { headers: ajaxHeaders(referer) })
         .then(function(r) {
-            if (!r.ok) log("getDubServer: HTTP " + r.status + " for ids " + ids);
+            if (!r.ok) log("getDubServers: HTTP " + r.status + " for ids " + ids);
             return r.ok ? r.json() : null;
         })
         .then(function(data) {
             if (!data || !data.result) {
-                log("getDubServer: empty ajax result for ids " + ids);
-                return null;
+                log("getDubServers: empty ajax result for ids " + ids);
+                return [];
             }
+
             var $ = cheerio.load(data.result);
-            var linkId = $('div.type[data-type="dub"] li[data-link-id]').first().attr("data-link-id") || null;
-            log("getDubServer: " + (linkId || "no dub server link found"));
-            return linkId;
+            var linkIds = [];
+
+            $('div.type[data-type="dub"] li[data-link-id]').each(function(i, el) {
+                var id = $(el).attr("data-link-id");
+                if (id) linkIds.push(id);
+            });
+
+            log("getDubServers: found " + linkIds.length + " dub server(s): [" + linkIds.join(",") + "]");
+            return linkIds;
         })
         .catch(function(e) {
-            log("getDubServer: error - " + e.message);
-            return null;
+            log("getDubServers: error - " + e.message);
+            return [];
         });
+}
+
+/**
+ * Tries each dub server link in order (megaplay.buzz mirrors can have
+ * subtitle tracks cached but no active video source for a given
+ * episode on any one server) and returns the first working stream.
+ */
+function tryDubServers(linkIds, referer, idx) {
+    idx = idx || 0;
+
+    if (idx >= linkIds.length) {
+        log("tryDubServers: exhausted all " + linkIds.length + " server(s), none had a source");
+        return Promise.resolve(null);
+    }
+
+    log("tryDubServers: trying server " + (idx + 1) + "/" + linkIds.length + " (linkId=" + linkIds[idx] + ")");
+
+    return getEmbed(linkIds[idx], referer).then(function(embed) {
+        if (!embed || embed.indexOf("megaplay") === -1) {
+            log("tryDubServers: server " + (idx + 1) + " embed not usable, trying next");
+            return tryDubServers(linkIds, referer, idx + 1);
+        }
+
+        return resolveMegaplay(embed).then(function(stream) {
+            if (!stream) {
+                log("tryDubServers: server " + (idx + 1) + " had no source, trying next");
+                return tryDubServers(linkIds, referer, idx + 1);
+            }
+            return stream;
+        });
+    });
 }
 
 function getEmbed(linkId, referer) {
@@ -494,19 +532,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                 return getDubEpisode(animeId, mappedEpisode, best.url).then(function(ep) {
                                     if (!ep) return [];
 
-                                    return getDubServer(ep.ids, best.url)
-                                        .then(function(linkId) {
-                                            if (!linkId) return [];
-                                            return getEmbed(linkId, best.url);
-                                        })
-                                        .then(function(embed) {
-                                            if (!embed || embed.indexOf("megaplay") === -1) {
-                                                log("getStreams: embed is not a megaplay url, skipping - " + embed);
-                                                return [];
-                                            }
-                                            return resolveMegaplay(embed);
-                                        })
-                                        .then(function(stream) {
+                                    return getDubServers(ep.ids, best.url).then(function(linkIds) {
+                                        if (!linkIds.length) return [];
+
+                                        return tryDubServers(linkIds, best.url).then(function(stream) {
                                             if (!stream) return [];
                                             return [{
                                                 name: "AnikotoTV",
@@ -516,6 +545,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                                 headers: stream.headers
                                             }];
                                         });
+                                    });
                                 });
                             });
                         });
