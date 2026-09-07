@@ -1,7 +1,6 @@
 /**
  * AnikotoTV Provider for Nuvio
- * DUB only
- * Uses MAL mapping API for correct episode numbers
+ * DUB only - Returns megaplay embed URL for WebView playback
  */
 
 "use strict";
@@ -13,8 +12,7 @@ var CONFIG = {
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
     MAPPING_API: "https://idmapper.vercel.app/api/mapper",
-    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36",
-    MAPPING_TIMEOUT: 5000
+    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
 
 function headers(extra) {
@@ -46,30 +44,6 @@ function normalize(str) {
         .trim();
 }
 
-function fetchWithTimeout(url, options, timeout) {
-    timeout = timeout || CONFIG.MAPPING_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Request timeout"));
-            }, timeout);
-        })
-    ]);
-}
-
-function getImdbId(tmdbId, mediaType) {
-    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
-        "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
-
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            return data && data.imdb_id ? data.imdb_id : null;
-        })
-        .catch(function() { return null; });
-}
-
 function getTitle(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
         "?api_key=" + CONFIG.TMDB_API_KEY;
@@ -85,78 +59,48 @@ function getTitle(tmdbId, mediaType) {
         .catch(function() { return null; });
 }
 
+function getImdbId(tmdbId, mediaType) {
+    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
+        "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
+
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            return data && data.imdb_id ? data.imdb_id : null;
+        })
+        .catch(function() { return null; });
+}
+
 function resolveMapping(imdbId, season, episode) {
-    var url = CONFIG.MAPPING_API +
-        "?imdb_id=" + encodeURIComponent(imdbId);
+    var url = CONFIG.MAPPING_API + "?imdb_id=" + encodeURIComponent(imdbId);
 
-    var cacheBuster = "&_=" + Date.now();
-    url += cacheBuster;
-
-    return fetchWithTimeout(url, {
+    return fetch(url, {
         headers: {
             "User-Agent": CONFIG.USER_AGENT,
             "Accept": "application/json"
         }
     })
-    .then(function(r) { 
-        if (!r.ok) {
-            throw new Error("API responded with status: " + r.status);
-        }
-        return r.json(); 
-    })
+    .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(data) {
-        if (!data) return null;
+        if (!data || !data.tmdb_mappings) return null;
         
-        if (data.tmdb_mappings) {
-            var seasonKey = "s" + season;
-            var mapping = data.tmdb_mappings[seasonKey];
-            
-            if (mapping) {
-                var parts = mapping.split('-');
-                if (parts.length === 2) {
-                    var startEp = parseInt(parts[0].replace('e', ''), 10);
-                    var endEp = parseInt(parts[1].replace('e', ''), 10);
-                    
-                    if (episode >= 1 && episode <= (endEp - startEp + 1)) {
-                        var malEpisode = startEp + episode - 1;
-                        return {
-                            mal_episode: malEpisode,
-                            season: season,
-                            episode: episode
-                        };
-                    }
-                }
-            }
-            
-            var allSeasons = Object.keys(data.tmdb_mappings);
-            for (var i = 0; i < allSeasons.length; i++) {
-                var sKey = allSeasons[i];
-                if (sKey !== seasonKey) {
-                    var sNum = parseInt(sKey.replace('s', ''), 10);
-                    var sMapping = data.tmdb_mappings[sKey];
-                    var sParts = sMapping.split('-');
-                    if (sParts.length === 2) {
-                        var sStart = parseInt(sParts[0].replace('e', ''), 10);
-                        var sEnd = parseInt(sParts[1].replace('e', ''), 10);
-                        if (episode >= 1 && episode <= (sEnd - sStart + 1)) {
-                            var malEp = sStart + episode - 1;
-                            return {
-                                mal_episode: malEp,
-                                season: sNum,
-                                episode: episode
-                            };
-                        }
-                    }
+        var seasonKey = "s" + season;
+        var mapping = data.tmdb_mappings[seasonKey];
+        
+        if (mapping) {
+            var parts = mapping.split('-');
+            if (parts.length === 2) {
+                var startEp = parseInt(parts[0].replace('e', ''), 10);
+                var endEp = parseInt(parts[1].replace('e', ''), 10);
+                
+                if (episode >= 1 && episode <= (endEp - startEp + 1)) {
+                    return { mal_episode: startEp + episode - 1 };
                 }
             }
         }
-        
         return null;
     })
-    .catch(function(err) {
-        console.log("Mapping API error:", err.message);
-        return null;
-    });
+    .catch(function() { return null; });
 }
 
 function searchAnime(title) {
@@ -251,6 +195,7 @@ function getDubEpisode(animeId, episodeNum, referer) {
                 if (found) return;
                 var a = $(el);
                 var num = parseInt(a.attr("data-num") || "0", 10);
+                // Look for DUB episode with matching number
                 if (num === episodeNum && a.attr("data-dub") === "1" && a.attr("data-ids")) {
                     found = { ids: a.attr("data-ids"), number: num };
                 }
@@ -269,6 +214,7 @@ function getDubServer(ids, referer) {
         .then(function(data) {
             if (!data || !data.result) return null;
             var $ = cheerio.load(data.result);
+            // Find the first DUB server link ID
             return $('div.type[data-type="dub"] li[data-link-id]').first().attr("data-link-id") || null;
         })
         .catch(function() { return null; });
@@ -288,191 +234,83 @@ function getEmbed(linkId, referer) {
         .catch(function() { return null; });
 }
 
-function resolveMegaplay(embed) {
-    if (!embed) return Promise.resolve(null);
-
-    // Just return the megaplay embed URL with autostart
-    // The WebView will load the page and JW Player will handle decryption
-    var embedUrl = embed;
-    if (embedUrl.indexOf("autostart") === -1) {
-        embedUrl += (embedUrl.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
-    }
-
-    console.log("Returning megaplay embed URL for WebView:", embedUrl);
-    
-    return Promise.resolve({
-        url: embedUrl,
-        headers: {
-            "Referer": CONFIG.BASE_URL,
-            "Origin": CONFIG.BASE_URL
-        }
-    });
-}
-
-        return fetch(apiUrl, {
-            headers: {
-                "User-Agent": CONFIG.USER_AGENT,
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": embed,
-                "Accept": "application/json"
-            }
-        })
-        .then(function(r) { 
-            if (!r.ok) {
-                console.log("Megaplay API returned status:", r.status);
-                return null;
-            }
-            return r.json(); 
-        })
-        .then(function(data) {
-            if (!data) {
-                console.log("Megaplay API returned empty");
-                return null;
-            }
-
-            console.log("Megaplay API response keys:", Object.keys(data));
-
-            // Check if we have a direct file URL
-            var file = null;
-            if (data.file) {
-                file = data.file;
-            } else if (data.url) {
-                file = data.url;
-            } else if (data.sources && data.sources.file) {
-                file = data.sources.file;
-            } else if (data.sources && data.sources[0] && data.sources[0].file) {
-                file = data.sources[0].file;
-            }
-
-            // If we have a direct file URL, use it
-            if (file) {
-                console.log("Found direct file URL:", file);
-                return {
-                    url: file,
-                    headers: {
-                        "Referer": "https://megaplay.buzz/",
-                        "Origin": "https://megaplay.buzz"
-                    }
-                };
-            }
-
-            // If we have an enc field and no direct URL, return the enc data
-            // The player will need to handle decryption
-            if (data.enc) {
-                console.log("Found encrypted data, returning as-is for player to handle");
-                
-                // Try to construct a URL that might work with the megaplay player
-                // Some players accept the enc as the URL
-                var encUrl = "https://megaplay.buzz/stream/getSources?id=" + videoId + "&enc=" + encodeURIComponent(data.enc);
-                
-                return {
-                    url: encUrl,
-                    headers: {
-                        "Referer": "https://megaplay.buzz/",
-                        "Origin": "https://megaplay.buzz"
-                    }
-                };
-            }
-
-            console.log("No file URL or enc data found in API response");
-            console.log("API response:", JSON.stringify(data).substring(0, 500));
-            return null;
-        });
-    })
-    .catch(function(err) {
-        console.log("Megaplay resolution error:", err.message);
-        return null;
-    });
-}
-
 function getStreams(tmdbId, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
+    console.log("AnikotoTV: Getting streams for", tmdbId, mediaType, season, episode);
+
     return getTitle(tmdbId, mediaType)
         .then(function(title) {
-            if (!title) return [];
+            if (!title) {
+                console.log("AnikotoTV: No title found");
+                return [];
+            }
+            console.log("AnikotoTV: Title:", title);
 
             return getImdbId(tmdbId, mediaType)
                 .then(function(imdbId) {
+                    console.log("AnikotoTV: IMDB ID:", imdbId);
                     var mappedEpisode = episode;
 
-                    var mappingPromise = imdbId
-                        ? resolveMapping(imdbId, season, episode)
-                        : Promise.resolve(null);
+                    var mappingPromise = imdbId ? resolveMapping(imdbId, season, episode) : Promise.resolve(null);
 
                     return mappingPromise.then(function(mapping) {
                         if (mapping && mapping.mal_episode) {
                             mappedEpisode = mapping.mal_episode;
-                            console.log("Mapped episode:", episode, "->", mappedEpisode, "for", title);
-                        } else {
-                            console.log("No mapping found for", title, "using original episode:", episode);
+                            console.log("AnikotoTV: Mapped episode:", episode, "->", mappedEpisode);
                         }
 
                         return searchAnime(title).then(function(best) {
                             if (!best) {
-                                console.log("No search results for:", title);
+                                console.log("AnikotoTV: No search results");
                                 return [];
                             }
-
-                            console.log("Found anime:", best.title, "at", best.url);
+                            console.log("AnikotoTV: Found anime:", best.title, "at", best.url);
 
                             return getAnimeId(best.url).then(function(animeId) {
                                 if (!animeId) {
-                                    console.log("No anime ID found for:", best.url);
+                                    console.log("AnikotoTV: No anime ID");
                                     return [];
                                 }
-
-                                console.log("Anime ID:", animeId, "looking for episode:", mappedEpisode);
+                                console.log("AnikotoTV: Anime ID:", animeId);
 
                                 return getDubEpisode(animeId, mappedEpisode, best.url)
                                     .then(function(ep) {
                                         if (!ep) {
-                                            console.log("No DUB episode found for:", mappedEpisode);
+                                            console.log("AnikotoTV: No DUB episode found for", mappedEpisode);
                                             return [];
                                         }
-
-                                        console.log("Found DUB episode:", ep.number, "with IDs:", ep.ids);
+                                        console.log("AnikotoTV: Found DUB episode:", ep.number);
 
                                         return getDubServer(ep.ids, best.url)
                                             .then(function(linkId) {
                                                 if (!linkId) {
-                                                    console.log("No DUB server found");
+                                                    console.log("AnikotoTV: No DUB server");
                                                     return [];
                                                 }
-
-                                                console.log("Found DUB server link ID:", linkId);
+                                                console.log("AnikotoTV: Found DUB server link ID");
 
                                                 return getEmbed(linkId, best.url)
                                                     .then(function(embed) {
                                                         if (!embed) {
-                                                            console.log("No embed found");
+                                                            console.log("AnikotoTV: No embed");
                                                             return [];
                                                         }
+                                                        console.log("AnikotoTV: Found embed:", embed);
 
-                                                        console.log("Found embed:", embed);
-
-                                                        if (embed.indexOf("megaplay") === -1) {
-                                                            console.log("Embed is not megaplay");
-                                                            return [];
-                                                        }
-
-                                                        return resolveMegaplay(embed)
-                                                            .then(function(stream) {
-                                                                if (!stream) {
-                                                                    console.log("No stream from megaplay");
-                                                                    return [];
-                                                                }
-
-                                                                console.log("Found stream:", stream.url);
-                                                                return [{
-                                                                    name: "AnikotoTV",
-                                                                    title: "1080p DUB",
-                                                                    url: stream.url,
-                                                                    quality: "1080p",
-                                                                    headers: stream.headers
-                                                                }];
-                                                            });
+                                                        // Return the megaplay URL directly for WebView
+                                                        // The WebView will load the page and JW Player handles decryption
+                                                        return [{
+                                                            name: "AnikotoTV",
+                                                            title: "1080p DUB",
+                                                            url: embed,  // Return the megaplay page URL
+                                                            quality: "1080p",
+                                                            headers: {
+                                                                "Referer": CONFIG.BASE_URL,
+                                                                "Origin": CONFIG.BASE_URL
+                                                            }
+                                                        }];
                                                     });
                                             });
                                     });
@@ -482,7 +320,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 });
         })
         .catch(function(err) {
-            console.log("getStreams error:", err.message);
+            console.log("AnikotoTV error:", err.message);
             return [];
         });
 }
