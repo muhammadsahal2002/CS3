@@ -1,7 +1,8 @@
 /**
  * AnikotoTV Provider for Nuvio
  * DUB only
- * Uses MAL mapping API for correct episode numbers
+ * Uses idmapper.vercel.app (IMDb id -> per-season TMDB episode ranges)
+ * to convert TMDB season/episode into the site's absolute episode number
  */
 
 "use strict";
@@ -12,14 +13,11 @@ var CONFIG = {
     BASE_URL: "https://anikoto.cz",
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
-    MAPPING_API: "https://id-mapping-api-malid.hf.space/api/resolve",
-    JIKAN_BASE: "https://api.jikan.moe/v4",
+    ID_MAPPER_API: "https://idmapper.vercel.app/api/mapper",
+    OMDB_BASE: "https://www.omdbapi.com/",
+    OMDB_API_KEY: "8d6935ed",
     USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
-
-function delay(ms) {
-    return new Promise(function(resolve) { setTimeout(resolve, ms); });
-}
 
 function headers(extra) {
     var h = {
@@ -77,13 +75,48 @@ function getTitle(tmdbId, mediaType) {
         .catch(function() { return null; });
 }
 
-function resolveMapping(imdbId, season, episode) {
-    var url = CONFIG.MAPPING_API +
-        "?id=" + encodeURIComponent(imdbId) +
-        "&s=" + season +
-        "&e=" + episode;
+function getYear(tmdbId, mediaType) {
+    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
+        "?api_key=" + CONFIG.TMDB_API_KEY;
 
     return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data) return null;
+            var dateStr = mediaType === "tv" ? data.first_air_date : data.release_date;
+            return dateStr ? dateStr.slice(0, 4) : null;
+        })
+        .catch(function() { return null; });
+}
+
+/**
+ * Fallback IMDb id lookup via OMDb, used when TMDB's external_ids
+ * doesn't have an imdb_id for this title.
+ */
+function getImdbIdFromOmdb(title, year) {
+    var url = CONFIG.OMDB_BASE + "?apikey=" + CONFIG.OMDB_API_KEY +
+        "&t=" + encodeURIComponent(title) +
+        (year ? "&y=" + encodeURIComponent(year) : "");
+
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || data.Response === "False" || !data.imdbID) return null;
+            return data.imdbID;
+        })
+        .catch(function() { return null; });
+}
+
+/**
+ * Resolves cross-site id mapping (including per-season TMDB episode
+ * ranges) for an IMDb id via idmapper.vercel.app.
+ */
+function resolveIdMapping(imdbId) {
+    if (!imdbId) return Promise.resolve(null);
+
+    var url = CONFIG.ID_MAPPER_API + "?imdb_id=" + encodeURIComponent(imdbId);
+
+    return fetch(url, { headers: { "User-Agent": CONFIG.USER_AGENT } })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
             if (!data || data.error) return null;
@@ -92,112 +125,29 @@ function resolveMapping(imdbId, season, episode) {
         .catch(function() { return null; });
 }
 
-function getEpisodeAirDate(tmdbId, season, episode) {
-    var url = CONFIG.TMDB_BASE + "/tv/" + tmdbId + "/season/" + season + "/episode/" + episode +
-        "?api_key=" + CONFIG.TMDB_API_KEY;
-
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            return data && data.air_date ? data.air_date : null;
-        })
-        .catch(function() { return null; });
-}
-
-function jikanSearchMalId(title) {
-    var url = CONFIG.JIKAN_BASE + "/anime?q=" + encodeURIComponent(title) + "&limit=5&sfw=false";
-
-    return fetch(url, { headers: { "User-Agent": CONFIG.USER_AGENT } })
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            if (!data || !data.data || !data.data.length) return null;
-
-            var q = normalize(title);
-            var best = null;
-            var bestScore = -999;
-
-            for (var i = 0; i < data.data.length; i++) {
-                var item = data.data[i];
-                var t = normalize(item.title);
-                var tEn = normalize(item.title_english || "");
-                var score = 0;
-
-                if (t === q || tEn === q) score = 100;
-                else if (t.indexOf(q) !== -1 || q.indexOf(t) !== -1) score = 60;
-                else if (tEn.indexOf(q) !== -1 || q.indexOf(tEn) !== -1) score = 55;
-
-                if (item.type === "TV") score += 10;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = item;
-                }
-            }
-
-            return (best || data.data[0]).mal_id;
-        })
-        .catch(function() { return null; });
-}
-
-function jikanGetEpisodesPage(malId, page) {
-    var url = CONFIG.JIKAN_BASE + "/anime/" + malId + "/episodes" + (page ? "?page=" + page : "");
-
-    return fetch(url, { headers: { "User-Agent": CONFIG.USER_AGENT } })
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .catch(function() { return null; });
-}
-
-function jikanFindEpisodeByAirDate(malId, airDate, page) {
-    page = page || 1;
-    if (!airDate) return Promise.resolve(null);
-
-    var targetDate = String(airDate).slice(0, 10);
-
-    return jikanGetEpisodesPage(malId, page).then(function(data) {
-        if (!data || !data.data) return null;
-
-        for (var i = 0; i < data.data.length; i++) {
-            var ep = data.data[i];
-            if (ep.aired && String(ep.aired).slice(0, 10) === targetDate) {
-                return ep.mal_id;
-            }
-        }
-
-        if (data.pagination && data.pagination.has_next_page && page < 10) {
-            return delay(400).then(function() {
-                return jikanFindEpisodeByAirDate(malId, airDate, page + 1);
-            });
-        }
-
-        return null;
-    });
-}
-
 /**
- * Fallback MAL episode mapping using Jikan, used when the
- * hf.space mapping API (resolveMapping) is unavailable.
- * Resolves the MAL id via title search, then finds the matching
- * absolute episode number by cross-referencing TMDB's air_date
- * against Jikan's per-episode aired date.
+ * idmapper's tmdb_mappings gives each TMDB season's absolute episode
+ * range within the combined series numbering, e.g. "s2":"e33-e53".
+ * Converts a TMDB season/episode into that absolute episode number,
+ * which is the numbering the source site uses.
  */
-function resolveMappingViaJikan(title, tmdbId, mediaType, season, episode) {
-    var airDatePromise = mediaType === "tv"
-        ? getEpisodeAirDate(tmdbId, season, episode)
-        : Promise.resolve(null);
+function computeAbsoluteEpisode(mapping, season, episode) {
+    if (!mapping || !mapping.tmdb_mappings) return episode;
 
-    return airDatePromise.then(function(airDate) {
-        return jikanSearchMalId(title).then(function(malId) {
-            if (!malId) return null;
+    var range = mapping.tmdb_mappings["s" + season];
+    if (!range) return episode;
 
-            if (!airDate) {
-                return { mal_id: malId, mal_episode: episode };
-            }
+    var m = /^e(\d+)-e(\d+)$/i.exec(range);
+    if (!m) {
+        var single = /^e(\d+)$/i.exec(range);
+        return single ? parseInt(single[1], 10) : episode;
+    }
 
-            return jikanFindEpisodeByAirDate(malId, airDate).then(function(malEpisode) {
-                return { mal_id: malId, mal_episode: malEpisode || episode };
-            });
-        });
-    }).catch(function() { return null; });
+    var start = parseInt(m[1], 10);
+    var end = parseInt(m[2], 10);
+    var absolute = start + (episode - 1);
+
+    return absolute > end ? end : absolute;
 }
 
 function searchAnime(title) {
@@ -384,23 +334,19 @@ function getStreams(tmdbId, mediaType, season, episode) {
             if (!title) return [];
 
             return getImdbId(tmdbId, mediaType).then(function(imdbId) {
-                var mappedEpisode = episode;
+                var imdbIdPromise = imdbId
+                    ? Promise.resolve(imdbId)
+                    : getYear(tmdbId, mediaType).then(function(year) {
+                        return getImdbIdFromOmdb(title, year);
+                    });
 
-                var mappingPromise = imdbId
-                    ? resolveMapping(imdbId, season, episode)
-                    : Promise.resolve(null);
+                return imdbIdPromise.then(function(finalImdbId) {
+                    var mappingPromise = finalImdbId
+                        ? resolveIdMapping(finalImdbId)
+                        : Promise.resolve(null);
 
-                return mappingPromise.then(function(mapping) {
-                    // Primary mapping API (hf.space) is unreliable/down, so
-                    // fall back to a Jikan-based MAL id + episode lookup.
-                    var fallbackPromise = (mapping && mapping.mal_episode)
-                        ? Promise.resolve(mapping)
-                        : resolveMappingViaJikan(title, tmdbId, mediaType, season, episode);
-
-                    return fallbackPromise.then(function(finalMapping) {
-                        if (finalMapping && finalMapping.mal_episode) {
-                            mappedEpisode = finalMapping.mal_episode;
-                        }
+                    return mappingPromise.then(function(mapping) {
+                        var mappedEpisode = computeAbsoluteEpisode(mapping, season, episode);
 
                         return searchAnime(title).then(function(best) {
                             if (!best) return [];
