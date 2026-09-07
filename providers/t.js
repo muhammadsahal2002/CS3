@@ -291,49 +291,23 @@ function getEmbed(linkId, referer) {
 function resolveMegaplay(embed) {
     if (!embed) return Promise.resolve(null);
 
-    if (embed.indexOf("autostart") === -1) {
-        embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
+    // Just return the megaplay embed URL with autostart
+    // The WebView will load the page and JW Player will handle decryption
+    var embedUrl = embed;
+    if (embedUrl.indexOf("autostart") === -1) {
+        embedUrl += (embedUrl.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
     }
 
-    return fetch(embed, {
-        headers: headers({
+    console.log("Returning megaplay embed URL for WebView:", embedUrl);
+    
+    return Promise.resolve({
+        url: embedUrl,
+        headers: {
             "Referer": CONFIG.BASE_URL,
             "Origin": CONFIG.BASE_URL
-        })
-    })
-    .then(function(r) { 
-        if (!r.ok) {
-            console.log("Megaplay page fetch failed:", r.status);
-            return null;
         }
-        return r.text(); 
-    })
-    .then(function(html) {
-        if (!html) {
-            console.log("Megaplay page returned empty");
-            return null;
-        }
-
-        // Extract video ID from the page
-        var videoId = null;
-        var m = html.match(/data-id=["'](\d+)["']/);
-        if (m) {
-            videoId = m[1];
-        } else {
-            m = html.match(/player\s*:\s*\{[^}]*id\s*:\s*["']?(\d+)["']?/i);
-            if (m) videoId = m[1];
-        }
-
-        if (!videoId) {
-            console.log("Could not find video ID in megaplay page");
-            return null;
-        }
-
-        console.log("Found video ID:", videoId);
-
-        // Fetch the sources from megaplay API
-        var apiUrl = "https://megaplay.buzz/stream/getSources?id=" + videoId;
-        console.log("Fetching sources from API:", apiUrl);
+    });
+}
 
         return fetch(apiUrl, {
             headers: {
