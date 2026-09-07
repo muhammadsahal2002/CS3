@@ -13,7 +13,8 @@ var CONFIG = {
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
     MAPPING_API: "https://idmapper.vercel.app/api/mapper",
-    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
+    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36",
+    MAPPING_TIMEOUT: 5000 // 5 second timeout for mapping API
 };
 
 function headers(extra) {
@@ -43,6 +44,18 @@ function normalize(str) {
         .replace(/[^a-z0-9\s]/g, "")
         .replace(/\s+/g, " ")
         .trim();
+}
+
+function fetchWithTimeout(url, options, timeout) {
+    timeout = timeout || CONFIG.MAPPING_TIMEOUT;
+    return Promise.race([
+        fetch(url, options),
+        new Promise(function(_, reject) {
+            setTimeout(function() {
+                reject(new Error("Request timeout"));
+            }, timeout);
+        })
+    ]);
 }
 
 function getImdbId(tmdbId, mediaType) {
@@ -76,68 +89,82 @@ function resolveMapping(imdbId, season, episode) {
     var url = CONFIG.MAPPING_API +
         "?imdb_id=" + encodeURIComponent(imdbId);
 
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            if (!data) return null;
+    // Add cache-busting to prevent browser caching issues
+    var cacheBuster = "&_=" + Date.now();
+    url += cacheBuster;
+
+    return fetchWithTimeout(url, {
+        headers: {
+            "User-Agent": CONFIG.USER_AGENT,
+            "Accept": "application/json"
+        }
+    })
+    .then(function(r) { 
+        if (!r.ok) {
+            throw new Error("API responded with status: " + r.status);
+        }
+        return r.json(); 
+    })
+    .then(function(data) {
+        if (!data) return null;
+        
+        // Check if we have TMDB mappings
+        if (data.tmdb_mappings) {
+            var seasonKey = "s" + season;
+            var mapping = data.tmdb_mappings[seasonKey];
             
-            // Check if we have TMDB mappings
-            if (data.tmdb_mappings) {
-                var seasonKey = "s" + season;
-                var mapping = data.tmdb_mappings[seasonKey];
-                
-                if (mapping) {
-                    // Parse the episode range (e.g., "e1-e32")
-                    var parts = mapping.split('-');
-                    if (parts.length === 2) {
-                        var startEp = parseInt(parts[0].replace('e', ''), 10);
-                        var endEp = parseInt(parts[1].replace('e', ''), 10);
-                        
-                        // Check if episode is within range and calculate offset
-                        if (episode >= 1 && episode <= (endEp - startEp + 1)) {
-                            var malEpisode = startEp + episode - 1;
+            if (mapping) {
+                // Parse the episode range (e.g., "e1-e32")
+                var parts = mapping.split('-');
+                if (parts.length === 2) {
+                    var startEp = parseInt(parts[0].replace('e', ''), 10);
+                    var endEp = parseInt(parts[1].replace('e', ''), 10);
+                    
+                    // Check if episode is within range and calculate offset
+                    if (episode >= 1 && episode <= (endEp - startEp + 1)) {
+                        var malEpisode = startEp + episode - 1;
+                        return {
+                            mal_episode: malEpisode,
+                            season: season,
+                            episode: episode
+                        };
+                    }
+                }
+            }
+            
+            // If no mapping found or episode out of range, try to find if this is a valid season
+            var allSeasons = Object.keys(data.tmdb_mappings);
+            for (var i = 0; i < allSeasons.length; i++) {
+                var sKey = allSeasons[i];
+                if (sKey !== seasonKey) {
+                    var sNum = parseInt(sKey.replace('s', ''), 10);
+                    var sMapping = data.tmdb_mappings[sKey];
+                    var sParts = sMapping.split('-');
+                    if (sParts.length === 2) {
+                        var sStart = parseInt(sParts[0].replace('e', ''), 10);
+                        var sEnd = parseInt(sParts[1].replace('e', ''), 10);
+                        // Check if this season's episode range might contain our episode
+                        if (episode >= 1 && episode <= (sEnd - sStart + 1)) {
+                            var malEp = sStart + episode - 1;
                             return {
-                                mal_episode: malEpisode,
-                                season: season,
+                                mal_episode: malEp,
+                                season: sNum,
                                 episode: episode
                             };
                         }
                     }
                 }
-                
-                // If no mapping found or episode out of range, try to find if this is a valid season
-                // Some mappings might be direct (like s1: "e1-e32")
-                // If episode is out of range, it might be a different season mapping
-                var allSeasons = Object.keys(data.tmdb_mappings);
-                for (var i = 0; i < allSeasons.length; i++) {
-                    var sKey = allSeasons[i];
-                    if (sKey !== seasonKey) {
-                        var sNum = parseInt(sKey.replace('s', ''), 10);
-                        var sMapping = data.tmdb_mappings[sKey];
-                        var sParts = sMapping.split('-');
-                        if (sParts.length === 2) {
-                            var sStart = parseInt(sParts[0].replace('e', ''), 10);
-                            var sEnd = parseInt(sParts[1].replace('e', ''), 10);
-                            // Check if this season's episode range might contain our episode
-                            if (episode >= 1 && episode <= (sEnd - sStart + 1)) {
-                                // This is a different season mapping, but we'll return it
-                                // with the correct MAL episode
-                                var malEp = sStart + episode - 1;
-                                return {
-                                    mal_episode: malEp,
-                                    season: sNum,
-                                    episode: episode
-                                };
-                            }
-                        }
-                    }
-                }
             }
-            
-            // If no mapping found, return null
-            return null;
-        })
-        .catch(function() { return null; });
+        }
+        
+        // If no mapping found, return null
+        return null;
+    })
+    .catch(function(err) {
+        // Log the error but don't fail - return null so we fall back to using original episode number
+        console.log("Mapping API error:", err.message);
+        return null;
+    });
 }
 
 function searchAnime(title) {
@@ -334,36 +361,76 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return mappingPromise.then(function(mapping) {
                         if (mapping && mapping.mal_episode) {
                             mappedEpisode = mapping.mal_episode;
+                            console.log("Mapped episode:", episode, "->", mappedEpisode, "for", title);
+                        } else {
+                            console.log("No mapping found for", title, "using original episode:", episode);
                         }
 
                         return searchAnime(title).then(function(best) {
-                            if (!best) return [];
+                            if (!best) {
+                                console.log("No search results for:", title);
+                                return [];
+                            }
+
+                            console.log("Found anime:", best.title, "at", best.url);
 
                             return getAnimeId(best.url).then(function(animeId) {
-                                if (!animeId) return [];
+                                if (!animeId) {
+                                    console.log("No anime ID found for:", best.url);
+                                    return [];
+                                }
+
+                                console.log("Anime ID:", animeId, "looking for episode:", mappedEpisode);
 
                                 return getDubEpisode(animeId, mappedEpisode, best.url)
                                     .then(function(ep) {
-                                        if (!ep) return [];
+                                        if (!ep) {
+                                            console.log("No DUB episode found for:", mappedEpisode);
+                                            return [];
+                                        }
+
+                                        console.log("Found DUB episode:", ep.number, "with IDs:", ep.ids);
 
                                         return getDubServer(ep.ids, best.url)
                                             .then(function(linkId) {
-                                                if (!linkId) return [];
-                                                return getEmbed(linkId, best.url);
-                                            })
-                                            .then(function(embed) {
-                                                if (!embed || embed.indexOf("megaplay") === -1) return [];
-                                                return resolveMegaplay(embed);
-                                            })
-                                            .then(function(stream) {
-                                                if (!stream) return [];
-                                                return [{
-                                                    name: "AnikotoTV",
-                                                    title: "1080p DUB",
-                                                    url: stream.url,
-                                                    quality: "1080p",
-                                                    headers: stream.headers
-                                                }];
+                                                if (!linkId) {
+                                                    console.log("No DUB server found");
+                                                    return [];
+                                                }
+
+                                                console.log("Found DUB server link ID:", linkId);
+
+                                                return getEmbed(linkId, best.url)
+                                                    .then(function(embed) {
+                                                        if (!embed) {
+                                                            console.log("No embed found");
+                                                            return [];
+                                                        }
+
+                                                        console.log("Found embed:", embed);
+
+                                                        if (embed.indexOf("megaplay") === -1) {
+                                                            console.log("Embed is not megaplay");
+                                                            return [];
+                                                        }
+
+                                                        return resolveMegaplay(embed)
+                                                            .then(function(stream) {
+                                                                if (!stream) {
+                                                                    console.log("No stream from megaplay");
+                                                                    return [];
+                                                                }
+
+                                                                console.log("Found stream:", stream.url);
+                                                                return [{
+                                                                    name: "AnikotoTV",
+                                                                    title: "1080p DUB",
+                                                                    url: stream.url,
+                                                                    quality: "1080p",
+                                                                    headers: stream.headers
+                                                                }];
+                                                            });
+                                                    });
                                             });
                                     });
                             });
@@ -371,7 +438,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     });
                 });
         })
-        .catch(function() {
+        .catch(function(err) {
+            console.log("getStreams error:", err.message);
             return [];
         });
 }
