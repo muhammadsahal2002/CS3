@@ -295,8 +295,6 @@ function resolveMegaplay(embed) {
         embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
     }
 
-    console.log("Fetching megaplay page:", embed);
-
     return fetch(embed, {
         headers: headers({
             "Referer": CONFIG.BASE_URL,
@@ -316,8 +314,6 @@ function resolveMegaplay(embed) {
             return null;
         }
 
-        console.log("Megaplay page loaded, looking for video ID...");
-
         // Extract video ID from the page
         var videoId = null;
         var m = html.match(/data-id=["'](\d+)["']/);
@@ -330,96 +326,53 @@ function resolveMegaplay(embed) {
 
         if (!videoId) {
             console.log("Could not find video ID in megaplay page");
-            console.log("HTML preview:", html.substring(0, 500));
             return null;
         }
 
         console.log("Found video ID:", videoId);
 
-        // Try different API endpoints to get the stream URL
-        var apiUrls = [
-            "https://megaplay.buzz/stream/getSources?id=" + videoId,
-            "https://megaplay.buzz/getSources?id=" + videoId,
-            "https://megaplay.buzz/api/source/" + videoId
-        ];
+        // Fetch the sources from megaplay API
+        var apiUrl = "https://megaplay.buzz/stream/getSources?id=" + videoId;
+        console.log("Fetching sources from API:", apiUrl);
 
-        function tryEndpoints(index) {
-            if (index >= apiUrls.length) {
-                console.log("All megaplay API endpoints failed");
+        return fetch(apiUrl, {
+            headers: {
+                "User-Agent": CONFIG.USER_AGENT,
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": embed,
+                "Accept": "application/json"
+            }
+        })
+        .then(function(r) { 
+            if (!r.ok) {
+                console.log("Megaplay API returned status:", r.status);
+                return null;
+            }
+            return r.json(); 
+        })
+        .then(function(data) {
+            if (!data) {
+                console.log("Megaplay API returned empty");
                 return null;
             }
 
-            var apiUrl = apiUrls[index];
-            console.log("Trying API endpoint:", apiUrl);
+            console.log("Megaplay API response keys:", Object.keys(data));
 
-            return fetch(apiUrl, {
-                headers: {
-                    "User-Agent": CONFIG.USER_AGENT,
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Referer": embed,
-                    "Accept": "application/json"
-                }
-            })
-            .then(function(r) { 
-                if (!r.ok) {
-                    console.log("API returned status:", r.status, "for", apiUrl);
-                    return tryEndpoints(index + 1);
-                }
-                return r.json(); 
-            })
-            .then(function(data) {
-                if (!data) {
-                    console.log("API returned empty for", apiUrl);
-                    return tryEndpoints(index + 1);
-                }
+            // Check if we have a direct file URL
+            var file = null;
+            if (data.file) {
+                file = data.file;
+            } else if (data.url) {
+                file = data.url;
+            } else if (data.sources && data.sources.file) {
+                file = data.sources.file;
+            } else if (data.sources && data.sources[0] && data.sources[0].file) {
+                file = data.sources[0].file;
+            }
 
-                console.log("API response keys:", Object.keys(data));
-
-                var file = null;
-
-                // Try all possible response formats
-                if (data.sources) {
-                    if (data.sources.file) {
-                        file = data.sources.file;
-                    } else if (data.sources[0] && data.sources[0].file) {
-                        file = data.sources[0].file;
-                    } else if (typeof data.sources === 'string') {
-                        file = data.sources;
-                    } else if (Array.isArray(data.sources)) {
-                        for (var i = 0; i < data.sources.length; i++) {
-                            if (data.sources[i].file) {
-                                file = data.sources[i].file;
-                                break;
-                            }
-                            if (data.sources[i].url) {
-                                file = data.sources[i].url;
-                                break;
-                            }
-                        }
-                    }
-                } else if (data.file) {
-                    file = data.file;
-                } else if (data.url) {
-                    file = data.url;
-                } else if (data.data && data.data.file) {
-                    file = data.data.file;
-                } else if (data.result && data.result.file) {
-                    file = data.result.file;
-                } else if (data.result && data.result.url) {
-                    file = data.result.url;
-                } else if (data.source) {
-                    if (data.source.file) file = data.source.file;
-                    else if (data.source.url) file = data.source.url;
-                }
-
-                if (!file) {
-                    console.log("No file URL found in API response for", apiUrl);
-                    console.log("Response:", JSON.stringify(data).substring(0, 500));
-                    return tryEndpoints(index + 1);
-                }
-
-                console.log("Found file URL:", file);
-
+            // If we have a direct file URL, use it
+            if (file) {
+                console.log("Found direct file URL:", file);
                 return {
                     url: file,
                     headers: {
@@ -427,14 +380,30 @@ function resolveMegaplay(embed) {
                         "Origin": "https://megaplay.buzz"
                     }
                 };
-            })
-            .catch(function(err) {
-                console.log("API error for", apiUrl, ":", err.message);
-                return tryEndpoints(index + 1);
-            });
-        }
+            }
 
-        return tryEndpoints(0);
+            // If we have an enc field and no direct URL, return the enc data
+            // The player will need to handle decryption
+            if (data.enc) {
+                console.log("Found encrypted data, returning as-is for player to handle");
+                
+                // Try to construct a URL that might work with the megaplay player
+                // Some players accept the enc as the URL
+                var encUrl = "https://megaplay.buzz/stream/getSources?id=" + videoId + "&enc=" + encodeURIComponent(data.enc);
+                
+                return {
+                    url: encUrl,
+                    headers: {
+                        "Referer": "https://megaplay.buzz/",
+                        "Origin": "https://megaplay.buzz"
+                    }
+                };
+            }
+
+            console.log("No file URL or enc data found in API response");
+            console.log("API response:", JSON.stringify(data).substring(0, 500));
+            return null;
+        });
     })
     .catch(function(err) {
         console.log("Megaplay resolution error:", err.message);
