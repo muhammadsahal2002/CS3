@@ -21,7 +21,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/ooooo.js",
+      "filename": "providers/anikoto.js",
       "enabled": true,
       "formats": ["m3u8"],
       "contentLanguage": ["en", "ja"]
