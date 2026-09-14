@@ -47,30 +47,36 @@ function getStreams(tmdbId, mediaType, season, episode) {
     return Promise.resolve(CACHE[key]);
   }
 
-  return resolveTmdbToImdb(tmdbId, wantType)
-    .then(function(imdbId) {
-      console.log('[DhakaFlix] IMDB=' + imdbId);
-      if (!imdbId) throw new Error('No IMDB ID for TMDB ' + tmdbId);
-      return fetchOmdb(imdbId);
-    })
-    .then(function(media) {
-      console.log('[DhakaFlix] OMDb title="' + (media ? media.title : 'null') +
-                  '" year=' + (media ? media.year : 'null'));
-      if (!media) throw new Error('OMDb lookup failed');
-      return searchAllProviders(media.title, wantType, media.year);
-    })
-    .then(function(matches) {
-      console.log('[DhakaFlix] matches=' + matches.length);
-      return processMatches(matches, wantType, season, episode);
-    })
-    .then(function(streams) {
-      CACHE[key] = streams;
-      console.log('[DhakaFlix] DONE returning ' + streams.length + ' streams');
-      return streams;
-    })
-    .catch(function(err) {
-      console.error('[DhakaFlix] ERROR: ' + err.message);
-      return [];
+// ---------- TMDB ID → IMDB ID (with external_ids fallback) ----------
+function resolveTmdbToImdb(tmdbId, wantType) {
+  var path = wantType === 'series' ? 'tv' : 'movie';
+  var url = 'https://api.themoviedb.org/3/' + path + '/' + tmdbId +
+            '?api_key=' + TMDB_API_KEY;
+
+  console.log('[DhakaFlix] TMDB GET ' + url);
+
+  return fetch(url)
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+      console.log('[DhakaFlix] TMDB primary imdb_id=' +
+                  (data ? data.imdb_id : 'null') +
+                  ' name=' + (data ? (data.name || data.title) : ''));
+
+      if (data && data.imdb_id) return data.imdb_id;
+
+      // Fallback: /external_ids works for TV shows
+      console.log('[DhakaFlix] No imdb_id on primary endpoint, trying external_ids');
+      var extUrl = 'https://api.themoviedb.org/3/' + path + '/' + tmdbId +
+                   '/external_ids?api_key=' + TMDB_API_KEY;
+
+      return fetch(extUrl)
+        .then(function(r) { return r.json(); })
+        .then(function(ext) {
+          console.log('[DhakaFlix] external_ids response imdb_id=' +
+                      (ext ? ext.imdb_id : 'null'));
+          if (ext && ext.imdb_id) return ext.imdb_id;
+          throw new Error('No imdb_id from TMDB (primary or external_ids)');
+        });
     });
 }
 
