@@ -235,33 +235,67 @@ function searchProvider(query, provider, providerId, wantType) {
 }
 
 function pickBest(results, targetTitle, targetYear, wantType) {
-  var cleanTarget = clean(targetTitle);
+  var targetTokens = clean(targetTitle).split(' ').filter(function(t) {
+    return t.length > 1;
+  });
   var best = null, bestScore = 0;
+
   for (var i = 0; i < results.length; i++) {
     var r = results[i];
     if (r.type !== wantType) continue;
-    var cn = clean(r.name);
-    var score = 0;
-    if (cn === cleanTarget) score = 20;
-    else if (cn.indexOf(cleanTarget) !== -1) score = 15;
-    else if (cleanTarget.indexOf(cn) !== -1) score = 12;
-    else {
-      var fw = cleanTarget.split(' ')[0];
-      if (fw.length > 3 && cn.indexOf(fw) !== -1) score = 5;
+
+    var nameTokens = clean(r.name).split(' ').filter(function(t) {
+      return t.length > 1;
+    });
+
+    // Count whole-word token matches
+    var matched = 0;
+    for (var t = 0; t < targetTokens.length; t++) {
+      if (nameTokens.indexOf(targetTokens[t]) !== -1) matched++;
     }
-    if (score === 0) continue;
-    if (wantType === 'movie') {
+
+    // Require at least one whole-word match
+    if (matched === 0) continue;
+
+    var coverage = matched / targetTokens.length;
+    var cn = clean(r.name);
+    var ct = clean(targetTitle);
+    var score = 0;
+
+    if (cn === ct) score = 25;
+    else if (coverage === 1) score = 20;
+    else if (coverage >= 0.6) score = 15;
+    else if (coverage >= 0.4) score = 10;
+    else score = 5;
+
+    // Year alignment for movies
+    if (wantType === 'movie' && targetYear) {
       var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
       var fy = ym ? parseInt(ym[1]) : null;
-      if (fy && targetYear) {
+      if (fy) {
         var d = Math.abs(fy - targetYear);
         if (d === 0) score += 10;
         else if (d === 1) score += 3;
+        else if (d > 3) score -= 5;
       }
     }
-    if (score > bestScore) { bestScore = score; best = r; }
+
+    // Slight preference for direct files
+    if (r.isFile) score += 3;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
   }
-  if (best) console.log('[DhakaFlix] Best "' + best.name + '" score=' + bestScore);
+
+  if (best) {
+    console.log('[DhakaFlix] Best "' + best.name + '" score=' + bestScore +
+                ' tokens=[' + targetTokens.join(',') + ']');
+  } else {
+    console.log('[DhakaFlix] No match for tokens [' +
+                targetTokens.join(',') + ']');
+  }
   return best;
 }
 
