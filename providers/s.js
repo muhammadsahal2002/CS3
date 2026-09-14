@@ -344,10 +344,41 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     else if (coverage >= 0.4) score = 10;
     else score = 5;
 
+    // ═══ POSITION BONUS ═══
+    // If the query's FIRST token appears at the START of the folder name,
+    // it's very likely the actual show title, not an episode name
+    var firstToken = targetTokens[0];
+    if (firstToken) {
+      var firstPos = nameTokens.indexOf(firstToken);
+      if (firstPos === 0) score += 15;         // starts with target — strong signal
+      else if (firstPos === 1) score += 5;     // second position — decent
+      else if (firstPos >= 3) score -= 10;     // buried — likely episode name
+    }
+
+    // ═══ CONSECUTIVE TOKEN BONUS ═══
+    // Real titles have all tokens in order at the start:
+    // "two and a half men" (consecutive) vs "supernatural s06e02 two and a half men" (not from start)
+    var consecutive = 0;
+    for (var k = 0; k < targetTokens.length; k++) {
+      var pos = nameTokens.indexOf(targetTokens[k]);
+      if (pos === k) consecutive++;   // token at expected position
+      else break;
+    }
+    if (consecutive === targetTokens.length) score += 10;  // perfect prefix
+
+    // Year alignment for movies
     if (wantType === 'movie' && targetYear && fileYear) {
       var d = Math.abs(fileYear - targetYear);
       if (d === 0) score += 10;
       else if (d === 1) score += 3;
+    }
+
+    // Year alignment for series — the show year range should include or be near target
+    if (wantType === 'series' && targetYear && fileYear) {
+      var dS = Math.abs(fileYear - targetYear);
+      if (dS <= 2) score += 8;   // series often has year range close to start
+      else if (dS <= 5) score += 3;
+      else if (dS > 15) score -= 5;  // 2020 for 2003 show — likely wrong
     }
 
     if (r.isFile) score += 3;
@@ -367,7 +398,6 @@ function pickBest(results, targetTitle, targetYear, wantType) {
   }
   return best;
 }
-
 // ---------- processMatches — dispatches movie vs series ----------
 function processMatches(matches, wantType, season, episode) {
   if (!matches.length) return Promise.resolve([]);
