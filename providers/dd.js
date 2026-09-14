@@ -1,6 +1,4 @@
-// Nuvio plugin: DhakaFlix BDIX (movies + series)
-// Hermes-compatible: Promise chains only
-
+// Nuvio plugin: DhakaFlix BDIX (movies + series) - FIXED
 var TMDB_API_KEY = '68e094699525b18a70bab2f86b1fa706';
 var OMDB_API_KEY = '81693a7c';
 
@@ -33,54 +31,75 @@ var MAX_RESULTS = 40;
 
 // ---------- Entry point ----------
 function getStreams(tmdbId, mediaType, season, episode) {
-  console.log('[DhakaFlix] tmdb=' + tmdbId + ' type=' + mediaType +
+  console.log('[DhakaFlix] ENTER tmdb=' + tmdbId + ' rawType=' + mediaType +
               ' S' + (season || 0) + 'E' + (episode || 0));
 
-  var wantType = (mediaType === 'tv' || mediaType === 'series') ? 'series' : 'movie';
+  // Normalize type ONCE
+  var wantType = 'movie';
+  if (mediaType === 'tv' || mediaType === 'series' || mediaType === 'show') {
+    wantType = 'series';
+  }
+  console.log('[DhakaFlix] Normalized wantType=' + wantType);
+
   var key = tmdbId + ':' + wantType + ':' + (season || 0) + ':' + (episode || 0);
-  if (CACHE[key]) return Promise.resolve(CACHE[key]);
+  if (CACHE[key]) {
+    console.log('[DhakaFlix] Cache hit');
+    return Promise.resolve(CACHE[key]);
+  }
 
   return resolveTmdbToImdb(tmdbId, wantType)
     .then(function(imdbId) {
+      console.log('[DhakaFlix] IMDB=' + imdbId);
       if (!imdbId) throw new Error('No IMDB ID for TMDB ' + tmdbId);
       return fetchOmdb(imdbId);
     })
     .then(function(media) {
+      console.log('[DhakaFlix] OMDb title="' + (media ? media.title : 'null') +
+                  '" year=' + (media ? media.year : 'null'));
       if (!media) throw new Error('OMDb lookup failed');
       return searchAllProviders(media.title, wantType, media.year);
     })
     .then(function(matches) {
+      console.log('[DhakaFlix] matches=' + matches.length);
       return processMatches(matches, wantType, season, episode);
     })
     .then(function(streams) {
       CACHE[key] = streams;
-      console.log('[DhakaFlix] Returning ' + streams.length + ' streams');
+      console.log('[DhakaFlix] DONE returning ' + streams.length + ' streams');
       return streams;
     })
     .catch(function(err) {
-      console.error('[DhakaFlix] Error: ' + err.message);
+      console.error('[DhakaFlix] ERROR: ' + err.message);
       return [];
     });
 }
 
-// ---------- Step 1: TMDB ID → IMDB ID ----------
+// ---------- TMDB ID → IMDB ID ----------
 function resolveTmdbToImdb(tmdbId, wantType) {
   var path = wantType === 'series' ? 'tv' : 'movie';
   var url = 'https://api.themoviedb.org/3/' + path + '/' + tmdbId +
             '?api_key=' + TMDB_API_KEY;
 
+  console.log('[DhakaFlix] TMDB GET ' + url);
+
   return fetch(url)
     .then(function(res) { return res.json(); })
     .then(function(data) {
-      if (!data || !data.imdb_id) throw new Error('No imdb_id in TMDB response');
+      console.log('[DhakaFlix] TMDB response imdb_id=' +
+                  (data ? data.imdb_id : 'null') +
+                  ' name=' + (data ? (data.name || data.title) : ''));
+      if (!data) throw new Error('TMDB empty response');
+      if (!data.imdb_id) {
+        // Fallback: try /find by TMDB id
+        throw new Error('TMDB returned no imdb_id for ' + path + '/' + tmdbId);
+      }
       return data.imdb_id;
     });
 }
 
-// ---------- Step 2: IMDB ID → Title via OMDb ----------
+// ---------- IMDB ID → Title via OMDb ----------
 function fetchOmdb(imdbId) {
   var url = 'https://www.omdbapi.com/?i=' + imdbId + '&apikey=' + OMDB_API_KEY;
-
   return fetch(url)
     .then(function(res) { return res.json(); })
     .then(function(data) {
@@ -93,26 +112,40 @@ function fetchOmdb(imdbId) {
     });
 }
 
-// ---------- Step 3: Parallel search ----------
+// ---------- Parallel search ----------
 function searchAllProviders(query, wantType, year) {
   var ids = Object.keys(PROVIDERS);
   var promises = [];
 
+  console.log('[DhakaFlix] searchAllProviders type=' + wantType +
+              ' providers=' + ids.join(','));
+
   for (var i = 0; i < ids.length; i++) {
     var id = ids[i];
     var provider = PROVIDERS[id];
-    if (provider.supportedTypes.indexOf(wantType) === -1) continue;
 
-    // Capture id in closure
+    if (provider.supportedTypes.indexOf(wantType) === -1) {
+      console.log('[DhakaFlix] Skip ' + id + ' (supports ' +
+                  provider.supportedTypes.join('/') + ', want ' + wantType + ')');
+      continue;
+    }
+
+    console.log('[DhakaFlix] Will search ' + id);
+
     (function(providerId, prov) {
       promises.push(
         searchProvider(query, prov, providerId)
           .then(function(results) {
+            console.log('[DhakaFlix] ' + providerId + ' raw=' + results.length);
             return pickBest(results, query, year, wantType);
           })
-          .then(function(best) { return best ? [best] : []; })
+          .then(function(best) {
+            console.log('[DhakaFlix] ' + providerId + ' best=' +
+                        (best ? best.name : 'null'));
+            return best ? [best] : [];
+          })
           .catch(function(err) {
-            console.log('[DhakaFlix] ' + providerId + ' search failed: ' + err.message);
+            console.log('[DhakaFlix] ' + providerId + ' FAILED: ' + err.message);
             return [];
           })
       );
@@ -129,8 +162,6 @@ function searchAllProviders(query, wantType, year) {
 }
 
 function searchProvider(query, provider, providerId) {
-  console.log('[DhakaFlix] Searching ' + providerId + ': "' + query + '"');
-
   var body = JSON.stringify({
     action: 'get',
     search: {
@@ -150,7 +181,7 @@ function searchProvider(query, provider, providerId) {
     var list = (data.search || []).filter(function(p) { return !p.size; });
     if (list.length > MAX_RESULTS) list = list.slice(0, MAX_RESULTS);
 
-    var results = list.map(function(post) {
+    return list.map(function(post) {
       var name = nameFromUrl(post.href);
       var isSeries = containsAny(post.href, provider.tvSeriesKeyword);
       return {
@@ -160,9 +191,6 @@ function searchProvider(query, provider, providerId) {
         providerId: providerId
       };
     });
-
-    console.log('[DhakaFlix] ' + providerId + ' → ' + results.length + ' results');
-    return results;
   });
 }
 
@@ -177,12 +205,24 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     if (r.type !== wantType) continue;
 
     var cn = clean(r.name);
-    if (cn.indexOf(cleanTarget) === -1 && cleanTarget.indexOf(cn) === -1) continue;
+    // Looser match: allow partial word overlap
+    if (cn.indexOf(cleanTarget) === -1 && cleanTarget.indexOf(cn) === -1) {
+      // Also try first-word match
+      var firstWord = cleanTarget.split(' ')[0];
+      if (firstWord.length > 3 && cn.indexOf(firstWord) !== -1) {
+        // weak match, allow with lower score
+        var weakScore = 3;
+        if (weakScore > bestScore) {
+          bestScore = weakScore;
+          best = r;
+        }
+      }
+      continue;
+    }
 
     var score = 10;
     if (cn === cleanTarget) score += 5;
 
-    // Year bonus only meaningful for movies
     if (wantType === 'movie') {
       var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
       var fileYear = ym ? parseInt(ym[1]) : null;
@@ -201,30 +241,35 @@ function pickBest(results, targetTitle, targetYear, wantType) {
   return best;
 }
 
-// ---------- Step 4: Load + extract streams ----------
+// ---------- Load + extract ----------
 function processMatches(matches, wantType, season, episode) {
   if (!matches.length) return Promise.resolve([]);
 
   var promises = matches.map(function(match) {
     var provider = PROVIDERS[match.providerId];
+    console.log('[DhakaFlix] LOADING ' + match.providerId + ' url=' + match.url);
+
     return loadContent(match.url, provider)
       .then(function(content) {
-        if (!content) return [];
+        if (!content) {
+          console.log('[DhakaFlix] ' + match.providerId + ' content=null');
+          return [];
+        }
 
         if (wantType === 'series' && content.episodes) {
-          var list = content.episodes;
+          console.log('[DhakaFlix] ' + match.providerId +
+                      ' episodes=' + content.episodes.length);
 
-          // Filter to specific episode when Nuvio asks for one
+          var list = content.episodes;
           if (season && episode) {
             var filtered = list.filter(function(ep) {
               return ep.season === season && ep.episode === episode;
             });
-            if (filtered.length > 0) list = filtered;
-            else {
-              // Requested episode not found — fall back to all episodes
+            if (filtered.length > 0) {
+              list = filtered;
+            } else {
               console.log('[DhakaFlix] S' + season + 'E' + episode +
-                          ' not found in ' + match.providerId +
-                          ', returning all ' + list.length + ' episodes');
+                          ' not found, showing all');
             }
           }
 
@@ -244,7 +289,8 @@ function processMatches(matches, wantType, season, episode) {
         return [];
       })
       .catch(function(err) {
-        console.log('[DhakaFlix] load failed: ' + err.message);
+        console.log('[DhakaFlix] load ' + match.providerId +
+                    ' error: ' + err.message);
         return [];
       });
   });
@@ -263,7 +309,6 @@ function toStream(item, provider, prefix) {
   var title = (prefix ? '[' + prefix + '] ' : '') +
               (item.name || 'Stream') +
               (quality !== 'Unknown' ? ' (' + quality + ')' : '');
-
   return {
     name: provider.name,
     title: title,
@@ -273,7 +318,7 @@ function toStream(item, provider, prefix) {
   };
 }
 
-// ---------- Load content (movie / series with season folders) ----------
+// ---------- Load content ----------
 function loadContent(url, provider) {
   var fullUrl = constructUrl(provider.mainUrl, url);
   console.log('[DhakaFlix] GET ' + fullUrl);
@@ -281,13 +326,14 @@ function loadContent(url, provider) {
   return fetch(fullUrl)
     .then(function(res) { return res.text(); })
     .then(function(html) {
+      console.log('[DhakaFlix] HTML len=' + html.length);
       var $ = load(html);
       var isSeries = containsAny(url, provider.tvSeriesKeyword);
+      console.log('[DhakaFlix] isSeries=' + isSeries);
 
       var videoFiles = [];
       var seasonFolders = [];
 
-      // Direct season folder in URL (e.g. ".../Season 3/")
       var directSeasonMatch = url.match(/season[\s%20]*(\d+)/i);
       var directSeasonNum = directSeasonMatch ? parseInt(directSeasonMatch[1]) : 0;
 
@@ -312,12 +358,13 @@ function loadContent(url, provider) {
         }
       });
 
-      // --- Movie branch ---
+      console.log('[DhakaFlix] videoFiles=' + videoFiles.length +
+                  ' seasonFolders=' + seasonFolders.length);
+
       if (!isSeries && seasonFolders.length === 0) {
         return { type: 'movie', videoFiles: videoFiles };
       }
 
-      // --- Series: season folders exist ---
       if (seasonFolders.length > 0) {
         var sfPromises = seasonFolders.map(function(sf) {
           return extractSeason(sf.url, provider, sf.season);
@@ -327,12 +374,10 @@ function loadContent(url, provider) {
           for (var i = 0; i < arrs.length; i++) {
             for (var j = 0; j < arrs[i].length; j++) eps.push(arrs[i][j]);
           }
-          console.log('[DhakaFlix] Total episodes across seasons: ' + eps.length);
           return { type: 'series', episodes: eps };
         });
       }
 
-      // --- Series: flat episode list at root ---
       var flatSeason = directSeasonNum > 0 ? directSeasonNum : 1;
       var episodes = videoFiles.map(function(v, i) {
         return {
@@ -342,15 +387,13 @@ function loadContent(url, provider) {
           url: v.url
         };
       });
-
-      console.log('[DhakaFlix] Flat episodes (S' + flatSeason + '): ' + episodes.length);
       return { type: 'series', episodes: episodes };
     });
 }
 
-// ---------- Season folder extractor ----------
+// ---------- Season extractor ----------
 function extractSeason(seasonUrl, provider, seasonNum) {
-  console.log('[DhakaFlix] Season ' + seasonNum + ': ' + seasonUrl);
+  console.log('[DhakaFlix] extractSeason S' + seasonNum + ' ' + seasonUrl);
 
   return fetch(seasonUrl)
     .then(function(res) { return res.text(); })
@@ -373,7 +416,7 @@ function extractSeason(seasonUrl, provider, seasonNum) {
         }
       });
 
-      console.log('[DhakaFlix] S' + seasonNum + ' → ' + episodes.length + ' eps');
+      console.log('[DhakaFlix] S' + seasonNum + ' → ' + episodes.length);
       return episodes;
     })
     .catch(function() { return []; });
@@ -384,7 +427,7 @@ var load = (function() {
   try {
     return require('cheerio-without-node-native').load;
   } catch (e) {
-    // Minimal regex fallback for Hermes if cheerio is unavailable
+    console.log('[DhakaFlix] cheerio fallback to regex parser');
     return function(html) {
       return {
         'tbody > tr:gt(1)': {
@@ -394,8 +437,7 @@ var load = (function() {
             while ((m = rowRe.exec(html)) !== null) {
               skip++;
               if (skip <= 2) continue;
-              var rowHtml = m[0];
-              fn(idx++, makeRow(rowHtml));
+              fn(idx++, makeRow(m[0]));
             }
           }
         }
