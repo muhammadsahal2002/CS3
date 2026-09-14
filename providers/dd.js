@@ -389,8 +389,11 @@ function pickBest(results, targetTitle, targetYear, wantType) {
 }
 
 // ---------- Process matches → streams ----------
+// ---------- Process matches → streams ----------
 function processMatches(matches, wantType, season, episode) {
   if (!matches.length) return Promise.resolve([]);
+
+  var label = (wantType === 'series') ? 'Series' : 'Movies';
 
   var promises = matches.map(function(match) {
     var provider = PROVIDERS[match.providerId];
@@ -419,7 +422,7 @@ function processMatches(matches, wantType, season, episode) {
           var prefix = 'S' + pad2(ep.season) + 'E' + pad2(ep.episode);
           var quality = extractQuality(ep.name || '');
           return {
-            name: provider.name,
+            name: label,
             title: '[' + prefix + '] ' + ep.name +
                    (quality !== 'Unknown' ? ' (' + quality + ')' : ''),
             url: ep.url,
