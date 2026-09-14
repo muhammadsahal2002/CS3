@@ -1,4 +1,4 @@
-// Nuvio plugin: DhakaFlix BDIX + PlusNet Anime — Final
+// Nuvio plugin: DhakaFlix BDIX — Final (no anime)
 // Promise chains only (Hermes-safe). No async/await.
 var TMDB_API_KEY = '68e094699525b18a70bab2f86b1fa706';
 var OMDB_API_KEY = '81693a7c';
@@ -45,16 +45,6 @@ var PROVIDERS = {
       'Foreign Language Movies/', 'Kolkata Bangla Movies/'
     ],
     seriesRoots: []
-  },
-  plusnet_anime: {
-    mainUrl: 'https://fs.plus.net.bd',
-    serverName: 'Shows/Anime-Shows',
-    name: '(BDIX) PlusNet Anime',
-    tvSeriesKeyword: ['Anime'],   // everything under this root is series
-    supportedTypes: ['series'],
-    searchMode: 'h5ai',           // different scraper path
-    movieRoots: [],
-    seriesRoots: ['Shows/Anime-Shows/']
   }
 };
 
@@ -64,7 +54,7 @@ var MAX_RESULTS = 40;
 var USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 ' +
                  '(KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36';
 
-// ---------- HTTP helper (UA + minimal headers only) ----------
+// ---------- HTTP helper (UA + minimal headers only, no cookies) ----------
 function fetchWithHeaders(url, options) {
   options = options || {};
   var hostMatch = url.match(/^https?:\/\/([^\/]+)/);
@@ -117,7 +107,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     });
 }
 
-// ---------- TMDB → IMDB ----------
+// ---------- TMDB → IMDB (with external_ids fallback) ----------
 function resolveTmdbToImdb(tmdbId, wantType) {
   var path = wantType === 'series' ? 'tv' : 'movie';
   var url = 'https://api.themoviedb.org/3/' + path + '/' + tmdbId +
@@ -148,15 +138,16 @@ function fetchOmdb(imdbId) {
       return {
         title: data.Title,
         year: parseInt(data.Year) || null,
-        type: data.Type
+        type: data.Type // 'movie' or 'series'
       };
     });
 }
 
-// ---------- Query builder ----------
+// ---------- Multi-query builder ----------
 function buildSearchQueries(title, year) {
   var queries = [];
   var seen = {};
+
   function add(q) {
     if (!q) return;
     q = q.trim();
@@ -164,22 +155,27 @@ function buildSearchQueries(title, year) {
     seen[q.toLowerCase()] = true;
     queries.push(q);
   }
+
   add(title);
   if (year) add(title + ' ' + year);
   if (title.indexOf(':') !== -1) add(title.split(':')[0]);
   if (title.indexOf(' - ') !== -1) add(title.split(' - ')[0]);
   add(title.replace(/\s+/g, '.'));
+
   var words = title.split(/\s+/);
   if (words.length > 3) add(words.slice(0, 3).join(' '));
   if (words.length > 2) add(words.slice(0, 2).join(' '));
+
   var stripped = title.replace(/^(The|A|An)\s+/i, '');
   if (stripped !== title) add(stripped);
+
   add(title.replace(/\bPart\s+II\b/i, 'Part 2')
             .replace(/\bPart\s+III\b/i, 'Part 3'));
+
   return queries;
 }
 
-// ---------- Parallel search (all providers × all queries) ----------
+// ---------- Parallel search across all providers ----------
 function searchAllProviders(query, wantType, year) {
   var queries = buildSearchQueries(query, year);
   var ids = Object.keys(PROVIDERS);
@@ -197,9 +193,11 @@ function searchAllProviders(query, wantType, year) {
       promises.push(
         searchProviderParallel(queries, provider, id, wantType)
           .then(function(results) {
+            // Series alphabet-bucket fallback
             if (wantType === 'series' && results.length === 0 &&
                 provider.seriesRoots && provider.seriesRoots.length > 0) {
-              console.log('[DhakaFlix] ' + id + ' empty, alphabet bucket fallback');
+              console.log('[DhakaFlix] ' + id +
+                          ' empty, alphabet bucket fallback');
               return searchSeriesAlphabetBuckets(query, provider, id);
             }
             return results;
@@ -225,7 +223,7 @@ function searchAllProviders(query, wantType, year) {
   });
 }
 
-// Run all queries in parallel, dedupe
+// Fire all queries in parallel, merge + dedupe
 function searchProviderParallel(queries, provider, providerId, wantType) {
   var promises = queries.map(function(q) {
     return searchProvider(q, provider, providerId, wantType)
@@ -247,16 +245,8 @@ function searchProviderParallel(queries, provider, providerId, wantType) {
   });
 }
 
-// ---------- Single query (routes to BDIX or h5ai) ----------
+// ---------- Single query BDIX search ----------
 function searchProvider(query, provider, providerId, wantType) {
-  if (provider.searchMode === 'h5ai') {
-    return searchH5ai(query, provider, providerId, wantType);
-  }
-  return searchBdix(query, provider, providerId, wantType);
-}
-
-// ---------- BDIX POST search ----------
-function searchBdix(query, provider, providerId, wantType) {
   var body = JSON.stringify({
     action: 'get',
     search: {
@@ -282,7 +272,10 @@ function searchBdix(query, provider, providerId, wantType) {
       var name = nameFromUrl(post.href);
       var isSeries = containsAny(post.href, provider.tvSeriesKeyword);
       var itemType = isSeries ? 'series' : 'movie';
+
+      // Type filter — movie requests only get movies, series only get series
       if (wantType && itemType !== wantType) continue;
+
       results.push({
         name: name,
         type: itemType,
@@ -290,110 +283,15 @@ function searchBdix(query, provider, providerId, wantType) {
         providerId: providerId
       });
     }
-    console.log('[DhakaFlix] ' + providerId + ' "' + query + '" → ' + results.length);
+
+    console.log('[DhakaFlix] ' + providerId + ' "' + query + '" → ' +
+                results.length);
     return results;
   });
 }
 
-// ---------- h5ai (PlusNet Anime) — client-side filtered search ----------
-// h5ai doesn't expose a search API, so we fetch the root once, cache it,
-// then filter locally. Very cheap after first hit.
-var H5AI_CACHE = {};
-
-function searchH5ai(query, provider, providerId, wantType) {
-  var rootUrl = provider.mainUrl + '/' + provider.serverName + '/';
-  var cleanQuery = clean(query);
-
-  function getListing() {
-    if (H5AI_CACHE[rootUrl]) return Promise.resolve(H5AI_CACHE[rootUrl]);
-    console.log('[DhakaFlix] h5ai fetch ' + rootUrl);
-    return fetchWithHeaders(rootUrl)
-      .then(function(res) { return res.text(); })
-      .then(function(html) {
-        // h5ai embeds a JSON blob in a <script> tag with folder contents
-        var items = parseH5aiListing(html, rootUrl);
-        H5AI_CACHE[rootUrl] = items;
-        console.log('[DhakaFlix] h5ai cached ' + items.length + ' items');
-        return items;
-      })
-      .catch(function(err) {
-        console.log('[DhakaFlix] h5ai fetch failed: ' + err.message);
-        return [];
-      });
-  }
-
-  return getListing().then(function(items) {
-    var results = [];
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i];
-      var cn = clean(it.name);
-      if (cn.indexOf(cleanQuery) === -1) {
-        // also try first 2 words
-        var fw = cleanQuery.split(' ').slice(0, 2).join(' ');
-        if (fw.length < 5 || cn.indexOf(fw) === -1) continue;
-      }
-      if (wantType === 'series' || !wantType) {
-        // Anime root is all series — skip anything not directory-like
-        results.push({
-          name: it.name,
-          type: 'series',
-          url: it.url,
-          providerId: providerId
-        });
-      }
-    }
-    console.log('[DhakaFlix] h5ai "' + query + '" → ' + results.length);
-    return results;
-  });
-}
-
-// Parse h5ai page: links are rendered inside <script id="fallback"> or a
-// JSON blob. Fallback: scrape <a href> entries from the html table.
-function parseH5aiListing(html, baseUrl) {
-  var items = [];
-  var seen = {};
-
-  // Primary: h5ai embeds a JSON array in a <script> tag with class="data"
-  var scriptMatch = html.match(/<script[^>]*class=["']?data["']?[^>]*>([\s\S]*?)<\/script>/i);
-  if (scriptMatch) {
-    try {
-      var parsed = JSON.parse(scriptMatch[1]);
-      if (parsed && parsed.items && Array.isArray(parsed.items)) {
-        for (var i = 0; i < parsed.items.length; i++) {
-          var it = parsed.items[i];
-          if (it.href && it.href !== '/') {
-            var full = constructUrl(baseUrl, it.href);
-            var nm = decodeURIComponent(it.href.replace(/\/$/, '').split('/').pop());
-            if (seen[full]) continue;
-            seen[full] = true;
-            items.push({ name: nm, url: full });
-          }
-        }
-        return items;
-      }
-    } catch (e) { /* fall through */ }
-  }
-
-  // Fallback: scrape href attributes pointing to subpaths
-  var re = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  var m;
-  while ((m = re.exec(html)) !== null) {
-    var href = m[1];
-    if (!href || href === '/' || href.indexOf('http') === 0) continue;
-    if (href.indexOf('?') === 0) continue;
-    var full2 = constructUrl(baseUrl, href);
-    if (seen[full2]) continue;
-    seen[full2] = true;
-    var name2 = m[2].replace(/<[^>]+>/g, '').trim() ||
-                decodeURIComponent(href.replace(/\/$/, '').split('/').pop());
-    items.push({ name: name2, url: full2 });
-  }
-  return items;
-}
-
-// ---------- Alphabet bucket fallback (BDIX series only) ----------
+// ---------- Alphabet bucket fallback (series only) ----------
 function searchSeriesAlphabetBuckets(title, provider, providerId) {
-  if (provider.searchMode === 'h5ai') return Promise.resolve([]);
   if (!provider.seriesRoots || provider.seriesRoots.length === 0) {
     return Promise.resolve([]);
   }
@@ -421,9 +319,11 @@ function searchSeriesAlphabetBuckets(title, provider, providerId) {
         var link = $a.attr('href');
         var name = $a.text();
         if (!link) return;
+
         var cn = clean(name);
         var matched = cn.indexOf(cleanTarget) !== -1 ||
                       (firstTwo.length > 4 && cn.indexOf(firstTwo) !== -1);
+
         if (matched) {
           results.push({
             name: name,
@@ -433,6 +333,7 @@ function searchSeriesAlphabetBuckets(title, provider, providerId) {
           });
         }
       });
+
       console.log('[DhakaFlix] Bucket matched ' + results.length);
       return results;
     })
@@ -442,15 +343,19 @@ function searchSeriesAlphabetBuckets(title, provider, providerId) {
     });
 }
 
-// ---------- Best match ----------
+// ---------- Best match picker ----------
 function pickBest(results, targetTitle, targetYear, wantType) {
   var cleanTarget = clean(targetTitle);
-  var best = null, bestScore = 0;
+  var best = null;
+  var bestScore = 0;
+
   for (var i = 0; i < results.length; i++) {
     var r = results[i];
     if (r.type !== wantType) continue;
+
     var cn = clean(r.name);
     var score = 0;
+
     if (cn === cleanTarget) score = 20;
     else if (cn.indexOf(cleanTarget) !== -1) score = 15;
     else if (cleanTarget.indexOf(cn) !== -1) score = 12;
@@ -458,7 +363,9 @@ function pickBest(results, targetTitle, targetYear, wantType) {
       var fw = cleanTarget.split(' ')[0];
       if (fw.length > 3 && cn.indexOf(fw) !== -1) score = 5;
     }
+
     if (score === 0) continue;
+
     if (wantType === 'movie') {
       var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
       var fileYear = ym ? parseInt(ym[1]) : null;
@@ -468,13 +375,20 @@ function pickBest(results, targetTitle, targetYear, wantType) {
         else if (diff === 1) score += 3;
       }
     }
-    if (score > bestScore) { bestScore = score; best = r; }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
   }
-  if (best) console.log('[DhakaFlix] Best "' + best.name + '" score=' + bestScore);
+
+  if (best) {
+    console.log('[DhakaFlix] Best "' + best.name + '" score=' + bestScore);
+  }
   return best;
 }
 
-// ---------- Process matches ----------
+// ---------- Process matches → streams ----------
 function processMatches(matches, wantType, season, episode) {
   if (!matches.length) return Promise.resolve([]);
 
@@ -488,14 +402,19 @@ function processMatches(matches, wantType, season, episode) {
           console.log('[DhakaFlix] ' + match.providerId + ' no episodes');
           return [];
         }
+
         var list = content.episodes;
         console.log('[DhakaFlix] ' + match.providerId + ' eps=' + list.length);
+
         if (season && episode) {
           var filtered = list.filter(function(ep) {
             return ep.season === season && ep.episode === episode;
           });
           if (filtered.length > 0) list = filtered;
+          else console.log('[DhakaFlix] S' + season + 'E' + episode +
+                           ' not found, using all');
         }
+
         return list.map(function(ep) {
           var prefix = 'S' + pad2(ep.season) + 'E' + pad2(ep.episode);
           var quality = extractQuality(ep.name || '');
@@ -524,15 +443,8 @@ function processMatches(matches, wantType, season, episode) {
   });
 }
 
-// ---------- Load content (routes per searchMode) ----------
+// ---------- Load content ----------
 function loadContent(url, provider, wantType) {
-  if (provider.searchMode === 'h5ai') {
-    return loadH5ai(url, provider);
-  }
-  return loadBdix(url, provider, wantType);
-}
-
-function loadBdix(url, provider, wantType) {
   var fullUrl = constructUrl(provider.mainUrl, url);
   console.log('[DhakaFlix] GET ' + fullUrl);
 
@@ -543,13 +455,17 @@ function loadBdix(url, provider, wantType) {
       var isSeries = containsAny(url, provider.tvSeriesKeyword) ||
                      wantType === 'series';
 
-      var videoFiles = [], seasonFolders = [], otherFolders = [];
+      var videoFiles = [];
+      var seasonFolders = [];
+      var otherFolders = [];
+
       $('tbody > tr:gt(1)').each(function(_, row) {
         var $row = $(row);
         var $a = $row.find('td.fb-n > a');
         var link = $a.attr('href');
         var name = $a.text();
         var isFolder = $row.find('td.fb-i > img[alt="folder"]').length > 0;
+
         if (isFolder && /season/i.test(name)) {
           var sm = name.match(/season[\s]*(\d+)/i);
           seasonFolders.push({
@@ -570,26 +486,31 @@ function loadBdix(url, provider, wantType) {
                   ' sf=' + seasonFolders.length +
                   ' of=' + otherFolders.length);
 
+      // Movie branch
       if (!isSeries) {
         if (videoFiles.length > 0) {
-          return { type: 'movie', videoFiles: videoFiles,
+          return {
+            type: 'movie',
+            videoFiles: videoFiles,
             episodes: videoFiles.map(function(v, i) {
               return { name: v.name, season: 0, episode: i + 1, url: v.url };
             })
           };
         }
         if (otherFolders.length > 0) {
-          var sp = otherFolders.map(function(fu) {
-            return loadBdix(fu, provider, 'movie');
+          var subPromises = otherFolders.map(function(fu) {
+            return loadContent(fu, provider, 'movie');
           });
-          return Promise.all(sp).then(function(results) {
+          return Promise.all(subPromises).then(function(results) {
             var all = [];
             for (var i = 0; i < results.length; i++) {
               if (results[i] && results[i].videoFiles) {
                 all = all.concat(results[i].videoFiles);
               }
             }
-            return { type: 'movie', videoFiles: all,
+            return {
+              type: 'movie',
+              videoFiles: all,
               episodes: all.map(function(v, i) {
                 return { name: v.name, season: 0, episode: i + 1, url: v.url };
               })
@@ -599,11 +520,12 @@ function loadBdix(url, provider, wantType) {
         return { type: 'movie', videoFiles: [], episodes: [] };
       }
 
+      // Series with season folders
       if (seasonFolders.length > 0) {
-        var sfs = seasonFolders.map(function(sf) {
+        var sfPromises = seasonFolders.map(function(sf) {
           return extractSeason(sf.url, provider, sf.season);
         });
-        return Promise.all(sfs).then(function(arrs) {
+        return Promise.all(sfPromises).then(function(arrs) {
           var eps = [];
           for (var i = 0; i < arrs.length; i++) {
             for (var j = 0; j < arrs[i].length; j++) eps.push(arrs[i][j]);
@@ -612,25 +534,28 @@ function loadBdix(url, provider, wantType) {
         });
       }
 
+      // Series flat episodes
       if (videoFiles.length > 0) {
         return { type: 'series', episodes: videoFiles.map(function(v, i) {
           return { name: v.name, season: 1, episode: i + 1, url: v.url };
         })};
       }
 
+      // Series sub-folders
       if (otherFolders.length > 0) {
-        var sf2 = otherFolders.map(function(fu) {
+        var subPromises2 = otherFolders.map(function(fu) {
           return fetchWithHeaders(fu)
             .then(function(r) { return r.text(); })
-            .then(function(sub) {
-              var $$ = load(sub);
+            .then(function(subHtml) {
+              var $$ = load(subHtml);
               var subEps = [];
               $$('tbody > tr:gt(1)').each(function(_, row) {
                 var $a = $$(row).find('td.fb-n > a');
                 var link = $a.attr('href');
                 if (link && /\.(mkv|mp4|avi|webm)$/i.test(link)) {
                   subEps.push({
-                    name: $a.text(), season: 1,
+                    name: $a.text(),
+                    season: 1,
                     episode: subEps.length + 1,
                     url: constructUrl(provider.mainUrl, link)
                   });
@@ -640,7 +565,7 @@ function loadBdix(url, provider, wantType) {
             })
             .catch(function() { return []; });
         });
-        return Promise.all(sf2).then(function(arrs) {
+        return Promise.all(subPromises2).then(function(arrs) {
           var eps = [];
           for (var i = 0; i < arrs.length; i++) {
             for (var j = 0; j < arrs[i].length; j++) eps.push(arrs[i][j]);
@@ -653,103 +578,7 @@ function loadBdix(url, provider, wantType) {
     });
 }
 
-// ---------- h5ai content loader (anime) ----------
-function loadH5ai(url, provider) {
-  console.log('[DhakaFlix] h5ai LOAD ' + url);
-
-  return fetchWithHeaders(url)
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-      var items = parseH5aiListing(html, url);
-
-      // Split into folders and video files
-      var folders = [];
-      var videos = [];
-      for (var i = 0; i < items.length; i++) {
-        var it = items[i];
-        if (/\.(mkv|mp4|avi|webm)$/i.test(it.name)) videos.push(it);
-        else folders.push(it);
-      }
-
-      // Direct episode files at this level
-      if (videos.length > 0 && folders.length === 0) {
-        return {
-          type: 'series',
-          episodes: videos.map(function(v, idx) {
-            // Try to extract S/E from filename
-            var se = parseEpisodeNumbers(v.name);
-            return {
-              name: v.name,
-              season: se.season,
-              episode: se.episode || idx + 1,
-              url: v.url
-            };
-          })
-        };
-      }
-
-      // Season folders — load them in parallel
-      if (folders.length > 0) {
-        var folderPromises = folders.map(function(f, idx) {
-          // Season name detection
-          var se = parseEpisodeNumbers(f.name);
-          var seasonNum = se.season || (idx + 1);
-
-          return fetchWithHeaders(f.url)
-            .then(function(r) { return r.text(); })
-            .then(function(subHtml) {
-              var subItems = parseH5aiListing(subHtml, f.url);
-              var subVideos = subItems.filter(function(x) {
-                return /\.(mkv|mp4|avi|webm)$/i.test(x.name);
-              });
-              return subVideos.map(function(v, i) {
-                var vse = parseEpisodeNumbers(v.name);
-                return {
-                  name: v.name,
-                  season: vse.season || seasonNum,
-                  episode: vse.episode || (i + 1),
-                  url: v.url
-                };
-              });
-            })
-            .catch(function() { return []; });
-        });
-
-        return Promise.all(folderPromises).then(function(arrs) {
-          var eps = [];
-          for (var i = 0; i < arrs.length; i++) {
-            for (var j = 0; j < arrs[i].length; j++) eps.push(arrs[i][j]);
-          }
-          return { type: 'series', episodes: eps };
-        });
-      }
-
-      return { type: 'series', episodes: [] };
-    });
-}
-
-// Parse "S01E02" or "1x02" or "Episode 5" or " - 05 " from filename
-function parseEpisodeNumbers(name) {
-  var m;
-  m = name.match(/S(\d{1,2})E(\d{1,3})/i);
-  if (m) return { season: parseInt(m[1]), episode: parseInt(m[2]) };
-
-  m = name.match(/(\d{1,2})x(\d{1,3})/);
-  if (m) return { season: parseInt(m[1]), episode: parseInt(m[2]) };
-
-  m = name.match(/Season\s*(\d{1,2})/i);
-  if (m) return { season: parseInt(m[1]), episode: 0 };
-
-  m = name.match(/(?:Episode|Ep|E)\s*[-._ ]?\s*(\d{1,3})/i);
-  if (m) return { season: 1, episode: parseInt(m[1]) };
-
-  m = name.match(/[-._ ](\d{1,3})[-._ ]/);
-  if (m) return { season: 1, episode: parseInt(m[1]) };
-
-  return { season: 1, episode: 0 };
-}
-
-// ---------- Season extractor (BDIX) ----------
+// ---------- Season extractor ----------
 function extractSeason(seasonUrl, provider, seasonNum) {
   return fetchWithHeaders(seasonUrl)
     .then(function(res) { return res.text(); })
