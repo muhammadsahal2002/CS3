@@ -29,7 +29,7 @@ var PROVIDERS = {
 var CACHE = {};
 var INFLIGHT = {};
 var META_CACHE = {};
-var MAX_RESULTS = 40;
+var MAX_RESULTS = 400;
 
 var USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 ' +
                  '(KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36';
@@ -244,17 +244,25 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     var r = results[i];
     if (r.type !== wantType) continue;
 
+    // Extract year from folder name (works for both movies and shows)
+    var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
+    var fileYear = ym ? parseInt(ym[1]) : null;
+
+    // ═══ HARD YEAR FILTER FOR MOVIES ═══
+    // If the query has a year and this candidate has a year,
+    // reject anything more than 1 year off
+    if (wantType === 'movie' && targetYear && fileYear) {
+      if (Math.abs(fileYear - targetYear) > 1) continue;
+    }
+
+    // Token match — require every target token to be present as a whole word
     var nameTokens = clean(r.name).split(' ').filter(function(t) {
       return t.length > 1;
     });
-
-    // Count whole-word token matches
     var matched = 0;
     for (var t = 0; t < targetTokens.length; t++) {
       if (nameTokens.indexOf(targetTokens[t]) !== -1) matched++;
     }
-
-    // Require at least one whole-word match
     if (matched === 0) continue;
 
     var coverage = matched / targetTokens.length;
@@ -268,19 +276,14 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     else if (coverage >= 0.4) score = 10;
     else score = 5;
 
-    // Year alignment for movies
-    if (wantType === 'movie' && targetYear) {
-      var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
-      var fy = ym ? parseInt(ym[1]) : null;
-      if (fy) {
-        var d = Math.abs(fy - targetYear);
-        if (d === 0) score += 10;
-        else if (d === 1) score += 3;
-        else if (d > 3) score -= 5;
-      }
+    // Year alignment bonus (only reached if year is compatible)
+    if (wantType === 'movie' && targetYear && fileYear) {
+      var d = Math.abs(fileYear - targetYear);
+      if (d === 0) score += 10;
+      else if (d === 1) score += 3;
     }
 
-    // Slight preference for direct files
+    // Direct files get a small boost
     if (r.isFile) score += 3;
 
     if (score > bestScore) {
@@ -291,10 +294,10 @@ function pickBest(results, targetTitle, targetYear, wantType) {
 
   if (best) {
     console.log('[DhakaFlix] Best "' + best.name + '" score=' + bestScore +
-                ' tokens=[' + targetTokens.join(',') + ']');
+                ' tokens=[' + targetTokens.join(',') + '] year=' + targetYear);
   } else {
-    console.log('[DhakaFlix] No match for tokens [' +
-                targetTokens.join(',') + ']');
+    console.log('[DhakaFlix] NO MATCH for tokens [' +
+                targetTokens.join(',') + '] year=' + targetYear);
   }
   return best;
 }
