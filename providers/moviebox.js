@@ -77,8 +77,8 @@ var BRAND_MODELS = {
 };
 var PACKAGE_INFO = {
   package_name: "com.community.mbox.in",
-  version_name: "3.0.03.0529.03",
-  version_code: 50020042
+  version_name: "4.0.02.0831.03",
+  version_code: 50020126
 };
 
 // src/moviebox/utils.js
