@@ -408,7 +408,7 @@ function processMatches(matches, wantType, season, episode) {
 
     // Fast path — search already returned a file
     if (match.isFile) {
-      var q = extractQuality(match.name);
+      var q = dfQuality(match.name);
       return Promise.resolve([{
         name: label,
         title: match.name + (q !== 'Unknown' ? ' (' + q + ')' : ''),
@@ -460,7 +460,7 @@ function loadMovieContent(url, provider, label) {
 
       if (files.length > 0) {
         return files.map(function(f) {
-          var q = extractQuality(f.name);
+          var q = dfQuality(f.name);
           return {
             name: label,
             title: f.name + (q !== 'Unknown' ? ' (' + q + ')' : ''),
@@ -608,7 +608,7 @@ function finalizeEpisodes(eps, season, episode, label) {
   }
   return eps.map(function(e) {
     var prefix = 'S' + pad2(e.season) + 'E' + pad2(e.episode);
-    var q = extractQuality(e.name || '');
+    var q = dfQuality(e.name || '');
     return {
       name: label,
       title: '[' + prefix + '] ' + e.name +
@@ -731,6 +731,12 @@ function extractQuality(name) {
   var m = name.match(/\b(720p|1080p|2160p|4K)\b/i);
   return m ? m[1].toUpperCase() : 'Unknown';
 }
+
+function dfQuality(name) {
+  var m = name.match(/\b(720p|1080p|2160p|4K)\b/i);
+  return m ? 'DF ' + m[1].toUpperCase() : 'Unknown';
+}
+
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
 module.exports = { getStreams: getStreams };
