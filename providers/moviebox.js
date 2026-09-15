@@ -63,7 +63,7 @@ var __async = (__this, __arguments, generator) => {
 };
 
 // src/moviebox/constants.js
-var API_BASE = "https://api3.aoneroom.com";
+var API_BASE = "https://api4.aoneroom.com";
 var KEY_B64_DEFAULT = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw==";
 var KEY_B64_ALT = "WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ==";
 var TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49";
