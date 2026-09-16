@@ -21,7 +21,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/new.js",
+      "filename": "providers/🍒🍒🍒.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["m3u8"],
@@ -58,7 +58,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/primevideo.js",
+      "filename": "providers/anikoto.js",
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
