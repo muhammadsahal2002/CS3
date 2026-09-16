@@ -23,6 +23,8 @@ const DEFAULT_HEADERS = {
 let tokenCache = null;
 let cookieHeader = null;
 let rawToken = null;
+let tokenFetchedAt = 0;
+const TOKEN_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
 
 function log(msg) { console.log("[NetflixNF] " + msg); }
 
@@ -98,9 +100,10 @@ async function getImdbTitle(imdbId) {
 
 // ---------- Token ----------
 async function fetchToken() {
-  if (tokenCache) return tokenCache;
+const now = Date.now();
+if (tokenCache && (now - tokenFetchedAt) < TOKEN_TTL_MS) return tokenCache;
 
-  const resp = await fetch(TOKEN_URL);
+const resp = await fetch(`${TOKEN_URL}?t=${now}`);
   if (!resp.ok) throw new Error(`Token HTTP ${resp.status}`);
   const json = await resp.json();
 
@@ -116,6 +119,7 @@ async function fetchToken() {
   cookieHeader += "; hd=on";
 
   tokenCache = { t_hash_t, t_hash, rawToken };
+  tokenFetchedAt = now;
   log("Token loaded from JSONBin");
   return tokenCache;
 }
