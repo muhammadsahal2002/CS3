@@ -21,7 +21,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/🍇🍇.js",
+      "filename": "providers/new.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["m3u8"],
