@@ -76,9 +76,9 @@ var BRAND_MODELS = {
   "Realme": ["RMX3085", "RMX3360", "RMX3551"]
 };
 var PACKAGE_INFO = {
-  package_name: "com.community.mbox.in",
-  version_name: "4.0.02.0831.03",
-  version_code: 50020126
+  package_name: "com.community.oneroom",
+  version_name: "4.0.03.0918.03",
+  version_code: 50020129
 };
 
 // src/moviebox/utils.js
