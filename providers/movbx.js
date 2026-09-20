@@ -1,7 +1,7 @@
 /**
  * moviebox - Built from src/moviebox/
  * Generated: 2026-07-08T18:40:52.588Z
- * Updated: signCookie decode FIRST, then decoy check
+ * Updated: signCookie decode FIRST + language label in quality
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -70,7 +70,6 @@ var PACKAGE_INFO = {
   version_code: 50020042
 };
 
-// Decoy markers (the "please update app" trap)
 var DECOY_HASH = "b164fbfb4347792950bdfbfb563d39d9";
 var DECOY_PATH = "/other/2026/09/04/";
 
@@ -296,9 +295,6 @@ function getFormatType(url) {
   return "VIDEO";
 }
 
-// ─────────────────────────────────────────────────────────────
-// Decoy + signCookie helpers
-// ─────────────────────────────────────────────────────────────
 function isDecoyUrl(url) {
   if (!url) return true;
   const u = String(url).toLowerCase();
@@ -386,9 +382,6 @@ function findBestMatch(subjects, tmdbTitle, tmdbYear, mediaType) {
   return bestScore >= 40 ? bestMatch : null;
 }
 
-// ─────────────────────────────────────────────────────────────
-// getStreamLinks — decode signCookie FIRST, decoy check SECOND
-// ─────────────────────────────────────────────────────────────
 function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", mediaType = "movie") {
   return __async(this, null, function* () {
     const subjectUrl = `${API_BASE}/wefeed-mobile-bff/subject-api/get?subjectId=${subjectId}`;
@@ -436,7 +429,7 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
           for (const stream of streamsList) {
             if (!stream.url) continue;
 
-            // ★★★ KEY FIX: decode signCookie FIRST — even if url is decoy,
+            // Decode signCookie FIRST — even if url is decoy,
             // the real CDN path lives inside CloudFront-Policy cookie
             const resource = extractPolicyResource(stream.signCookie);
             if (resource) {
@@ -453,10 +446,10 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
                 seen.add(dashUrl);
                 console.log(`[MovieBox]   ✓ added: ${r}p`);
                 allStreams.push({
-                  name: "MovieBox",
+                  name: `MovieBox ${item.lang}`,
                   title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${r}p [DASH]`,
                   url: dashUrl,
-                  quality: `${r}p`,
+                  quality: `${r}p • ${item.lang}`,
                   headers: {
                     "Referer": API_BASE,
                     "User-Agent": `com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; MovieBox; Build/BP22.250325.006; Cronet/133.0.6876.3)`,
@@ -485,10 +478,10 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
             if (seen.has(stream.url)) continue;
             seen.add(stream.url);
             allStreams.push({
-              name: "MovieBox",
+              name: `MovieBox ${item.lang}`,
               title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${quality} [${formatType}]`,
               url: stream.url,
-              quality,
+              quality: `${quality} • ${item.lang}`,
               headers: __spreadValues({
                 "Referer": API_BASE,
                 "User-Agent": `com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; MovieBox; Build/BP22.250325.006; Cronet/133.0.6876.3)`
@@ -509,10 +502,10 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
                 if (seen.has(video.resourceLink)) continue;
                 seen.add(video.resourceLink);
                 allStreams.push({
-                  name: "MovieBox",
+                  name: `MovieBox ${item.lang}`,
                   title: `${mediaTitle} S${se}E${ep} (${item.lang}) - ${quality} [Fallback]`,
                   url: video.resourceLink,
-                  quality,
+                  quality: `${quality} • ${item.lang}`,
                   headers: {
                     "Referer": API_BASE,
                     "User-Agent": `com.community.mbox.in/50020042 (Linux; U; Android 16; en_IN; MovieBox; Build/BP22.250325.006; Cronet/133.0.6876.3)`
