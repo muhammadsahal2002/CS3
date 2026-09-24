@@ -1,29 +1,43 @@
-// primevideo.js – Prime Video (pv) with subtitles
+/**
+ * AnikotoTV Provider for Nuvio
+ * DUB only
+ * Uses MAL mapping API for correct episode numbers
+ */
+
 "use strict";
 
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var TMDB_BASE = "https://api.themoviedb.org/3";
-var TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
-var BASE = "https://net52.cc";
-var PV = BASE + "/mobile/pv";
+var cheerio = require("cheerio-without-node-native");
 
-var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
+var CONFIG = {
+    BASE_URL: "https://anikoto.cz",
+    TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
+    TMDB_BASE: "https://api.themoviedb.org/3",
+    MAPPING_API: "https://id-mapping-api-malid.hf.space/api/resolve",
+    USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
+};
 
-var cookieHeader = "";
-var rawToken = "";
-var tokenCache = null;
-var tokenFetchedAt = 0;
-var TOKEN_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
-
-function log(msg) {
-    console.log("[PrimePV] " + msg);
+function headers(extra) {
+    var h = {
+        "User-Agent": CONFIG.USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
+    };
+    if (extra) {
+        for (var k in extra) h[k] = extra[k];
+    }
+    return h;
 }
 
-function ts() {
-    return Math.floor(Date.now() / 1000);
+function ajaxHeaders(referer) {
+    return {
+        "User-Agent": CONFIG.USER_AGENT,
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Referer": referer || CONFIG.BASE_URL
+    };
 }
 
-function normalizeTitle(str) {
+function normalize(str) {
     return String(str || "")
         .toLowerCase()
         .replace(/[^a-z0-9\s]/g, "")
@@ -31,418 +45,282 @@ function normalizeTitle(str) {
         .trim();
 }
 
-function normalizeTitleForSearch(str) {
-    return String(str || "")
-        .replace(/[^a-zA-Z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
+function getImdbId(tmdbId, mediaType) {
+    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
+        "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
 
-// ---------- Language priority (Hindi > English > others) ----------
-function langPriority(title) {
-    var t = (title || "").toLowerCase();
-    if (/\bhindi\b/.test(t)) return 100;
-    if (/\benglish\b/.test(t)) return 90;
-    if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
-    return 10;
-}
-
-function headers(xhr) {
-    var h = {
-        "User-Agent": UA,
-        "Accept": "*/*",
-        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-        "Referer": BASE + "/mobile/home?app=1",
-        "Origin": BASE,
-        "Cookie": cookieHeader,
-        "X-Requested-With": xhr || "XMLHttpRequest"
-    };
-    return h;
-}
-
-// ---------- Token (cached 3h, cache-busted, auto-refresh on expiry) ----------
-function fetchToken() {
-    var now = Date.now();
-    if (tokenCache && (now - tokenFetchedAt) < TOKEN_TTL_MS) {
-        return Promise.resolve(rawToken);
-    }
-
-    return fetch(TOKEN_URL + "?t=" + now)
-        .then(function(r) {
-            if (!r.ok) throw new Error("Token HTTP " + r.status);
-            return r.json();
-        })
-        .then(function(json) {
-            var record = json.record || {};
-            rawToken = record.token || "";
-            var t_hash_t = record.t_hash_t || "";
-            var t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
-
-            if (!rawToken || rawToken.indexOf("::") === -1) {
-                throw new Error("Invalid token format");
-            }
-
-            cookieHeader = "t_hash_t=" + t_hash_t;
-            if (t_hash) {
-                cookieHeader += "; t_hash=" + t_hash;
-            }
-            cookieHeader += "; ott=pv; hd=on";
-
-            tokenCache = rawToken;
-            tokenFetchedAt = now;
-            log("Token OK (cached 3h): " + rawToken.substring(0, 30) + "...");
-            return rawToken;
-        });
-}
-
-// Auto-retry once with a fresh token if anything downstream fails
-function withTokenRetry(fn) {
-    return fn().catch(function(e) {
-        log("Retrying with fresh token: " + (e && e.message ? e.message : String(e)));
-        tokenCache = null;
-        cookieHeader = "";
-        rawToken = "";
-        tokenFetchedAt = 0;
-        return fetchToken().then(function() {
-            return fn();
-        });
-    });
-}
-
-function getTmdbInfo(tmdbId, mediaType) {
-    var url = TMDB_BASE + "/" + (mediaType === "movie" ? "movie" : "tv") +
-        "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(d) {
-            if (!d) throw new Error("TMDB failed");
-            var title = d.title || d.name;
-            var year = d.release_date ? d.release_date.substring(0,4) :
-                       (d.first_air_date ? d.first_air_date.substring(0,4) : "");
-            return { title: title, year: year };
-        });
-}
-
-function search(query) {
-    var url = PV + "/search.php?s=" + encodeURIComponent(query) +
-        "&t=" + ts() + "&ADSearch=false";
-    return fetch(url, { headers: headers("XMLHttpRequest") })
-        .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (!data || !data.searchResult) {
-                return [];
-            }
-            return data.searchResult || [];
-        });
-}
-
-function searchWithFallback(originalTitle, year) {
-    var normalized = normalizeTitleForSearch(originalTitle);
-
-    return search(originalTitle)
-        .then(function(results) {
-            if (results && results.length > 0) {
-                return results;
-            }
-            log("No results for original title, trying normalized: " + normalized);
-            return search(normalized);
+            return data && data.imdb_id ? data.imdb_id : null;
         })
-        .then(function(results) {
-            if (!results || results.length === 0) {
-                return [];
-            }
-            if (year) {
-                var filtered = results.filter(function(item) {
-                    return item.y === year;
-                });
-                if (filtered.length > 0) {
-                    return filtered;
-                }
-            }
-            return results;
-        });
+        .catch(function() { return null; });
 }
 
-function getPost(id) {
-    var url = PV + "/post.php?id=" + encodeURIComponent(id) + "&t=" + ts();
-    return fetch(url, { headers: headers("XMLHttpRequest") })
-        .then(function(r) { return r.json(); })
+function getTitle(tmdbId, mediaType) {
+    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
+        "?api_key=" + CONFIG.TMDB_API_KEY;
+
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
-            if (!data || data.status !== "y") {
-                throw new Error("Post failed: " + (data.error || "unknown"));
-            }
+            if (!data) return null;
+            return mediaType === "tv"
+                ? (data.name || data.original_name)
+                : (data.title || data.original_title);
+        })
+        .catch(function() { return null; });
+}
+
+function resolveMapping(imdbId, season, episode) {
+    var url = CONFIG.MAPPING_API +
+        "?id=" + encodeURIComponent(imdbId) +
+        "&s=" + season +
+        "&e=" + episode;
+
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || data.error) return null;
             return data;
-        });
+        })
+        .catch(function() { return null; });
 }
 
-function getEpisodes(seasonId, seriesId) {
-    var all = [];
-    var page = 1;
+function searchAnime(title) {
+    var searchTitle = String(title || "")
+        .replace(/ū/g, "uu")
+        .replace(/ō/g, "ou")
+        .replace(/ā/g, "aa")
+        .replace(/ī/g, "ii")
+        .replace(/ē/g, "ee");
 
-    function next() {
-        var url = PV + "/episodes.php?s=" + encodeURIComponent(seasonId) +
-            "&series=" + encodeURIComponent(seriesId) + "&t=" + ts();
-        if (page > 1) url += "&page=" + page;
+    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
 
-        return fetch(url, { headers: headers("XMLHttpRequest") })
-            .then(function(r) { return r.ok ? r.json() : null; })
-            .then(function(data) {
-                if (!data) return all;
-                if (data.episodes) all = all.concat(data.episodes);
-                if (data.nextPageShow === 1) {
-                    page = data.nextPage || (page + 1);
-                    return next();
+    return fetch(url, { headers: headers() })
+        .then(function(r) { return r.ok ? r.text() : null; })
+        .then(function(html) {
+            if (!html) return null;
+
+            var $ = cheerio.load(html);
+            var results = [];
+
+            $("div.item").each(function(i, el) {
+                var $el = $(el);
+                var a = $el.find("a.name.d-title, a[data-jp]").first();
+                if (!a.length) return;
+
+                var href = a.attr("href");
+                var t = (a.attr("data-jp") || a.text() || "").trim();
+                if (!href || !t) return;
+
+                results.push({
+                    title: t,
+                    url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
+                    isMovie: /movie|film|special|ova/i.test(t)
+                });
+            });
+
+            if (results.length === 0) return null;
+
+            var q = normalize(searchTitle);
+            var best = null;
+            var bestScore = -999;
+
+            for (var i = 0; i < results.length; i++) {
+                var r = results[i];
+                var t = normalize(r.title);
+                var score = 0;
+
+                if (t === q) score = 100;
+                else if (t.indexOf(q) !== -1) score = 70;
+                else if (q.indexOf(t) !== -1) score = 40;
+
+                if (!r.isMovie) score += 20;
+                if (r.isMovie) score -= 30;
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = r;
                 }
-                return all;
-            })
-            .catch(function() { return all; });
-    }
-    return next();
+            }
+
+            return best || results[0];
+        })
+        .catch(function() { return null; });
 }
 
-function getPlaylist(id, title, lang) {
-    var url = PV + "/playlist.php?id=" + encodeURIComponent(id) +
-        "&t=" + encodeURIComponent(title) +
-        "&tm=" + ts() +
-        "&lang=null" +
-        "&hd=on" +
-        "&userhash=" + encodeURIComponent(rawToken);
+function getAnimeId(url) {
+    return fetch(url, { headers: headers() })
+        .then(function(r) { return r.ok ? r.text() : null; })
+        .then(function(html) {
+            if (!html) return null;
+            var $ = cheerio.load(html);
+            var id = $("[data-id]").first().attr("data-id");
+            if (id) return id;
+            var m = html.match(/data-id=["'](\d+)["']/);
+            return m ? m[1] : null;
+        })
+        .catch(function() { return null; });
+}
 
-    return fetch(url, { headers: headers("app.netmirror.nmv2") })
-        .then(function(r) { return r.json(); })
+function getDubEpisode(animeId, episodeNum, referer) {
+    var url = CONFIG.BASE_URL + "/ajax/episode/list/" + animeId + "?vrf=";
+
+    return fetch(url, { headers: ajaxHeaders(referer) })
+        .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
-            if (!data || !data.length || !data[0].sources) {
-                throw new Error("Empty playlist (maybe wrong language or expired token)");
+            if (!data || !data.result) return null;
+
+            var $ = cheerio.load(data.result);
+            var found = null;
+
+            $("a[data-ids]").each(function(i, el) {
+                if (found) return;
+                var a = $(el);
+                var num = parseInt(a.attr("data-num") || "0", 10);
+                if (num === episodeNum && a.attr("data-dub") === "1" && a.attr("data-ids")) {
+                    found = { ids: a.attr("data-ids"), number: num };
+                }
+            });
+
+            return found;
+        })
+        .catch(function() { return null; });
+}
+
+function getDubServer(ids, referer) {
+    var url = CONFIG.BASE_URL + "/ajax/server/list?servers=" + encodeURIComponent(ids);
+
+    return fetch(url, { headers: ajaxHeaders(referer) })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || !data.result) return null;
+            var $ = cheerio.load(data.result);
+            return $('div.type[data-type="dub"] li[data-link-id]').first().attr("data-link-id") || null;
+        })
+        .catch(function() { return null; });
+}
+
+function getEmbed(linkId, referer) {
+    var url = CONFIG.BASE_URL + "/ajax/server?get=" + encodeURIComponent(linkId);
+
+    return fetch(url, { headers: ajaxHeaders(referer) })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || !data.result) return null;
+            if (typeof data.result === "string") return data.result;
+            if (data.result.url) return data.result.url;
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
+function resolveMegaplay(embed) {
+    if (!embed) return Promise.resolve(null);
+
+    if (embed.indexOf("autostart") === -1) {
+        embed += (embed.indexOf("?") === -1 ? "?" : "&") + "autostart=true";
+    }
+
+    return fetch(embed, {
+        headers: headers({
+            "Referer": CONFIG.BASE_URL,
+            "Origin": CONFIG.BASE_URL
+        })
+    })
+    .then(function(r) { return r.ok ? r.text() : null; })
+    .then(function(html) {
+        if (!html) return null;
+
+        var m = html.match(/data-id=["'](\d+)["']/);
+        if (!m) return null;
+
+        return fetch("https://megaplay.buzz/stream/getSources?id=" + m[1], {
+            headers: {
+                "User-Agent": CONFIG.USER_AGENT,
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": embed,
+                "Accept": "application/json"
             }
-            return data[0];
-        });
+        }).then(function(r) { return r.ok ? r.json() : null; });
+    })
+    .then(function(data) {
+        if (!data || !data.sources) return null;
+
+        var file = data.sources.file || (data.sources[0] && data.sources[0].file);
+        if (!file) return null;
+
+        return {
+            url: file,
+            headers: {
+                "Referer": "https://megaplay.buzz/",
+                "Origin": "https://megaplay.buzz"
+            }
+        };
+    })
+    .catch(function() { return null; });
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
-    return withTokenRetry(function() {
-        return getStreamsInner(tmdbId, mediaType, season, episode);
-    });
-}
-
-function getStreamsInner(tmdbId, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
-    return fetchToken()
-        .then(function() {
-            return getTmdbInfo(tmdbId, mediaType);
-        })
-        .then(function(tmdbInfo) {
-            var title = tmdbInfo.title;
-            var year = tmdbInfo.year;
-            var isMovieType = (mediaType === "movie");
-            log("TMDB Title: " + title + " (" + year + ") [" + (isMovieType ? 'Movie' : 'Series') + "]");
+    return getTitle(tmdbId, mediaType)
+        .then(function(title) {
+            if (!title) return [];
 
-            return searchWithFallback(title, year).then(function(results) {
-                if (!results.length) throw new Error("No results for " + title);
+            return getImdbId(tmdbId, mediaType)
+                .then(function(imdbId) {
+                    var mappedEpisode = episode;
 
-                var filteredResults = results;
+                    var mappingPromise = imdbId
+                        ? resolveMapping(imdbId, season, episode)
+                        : Promise.resolve(null);
 
-                if (isMovieType && year) {
-                    // MOVIE: Strict year matching
-                    filteredResults = results.filter(function(item) {
-                        return item.y === year;
-                    });
-                    if (filteredResults.length === 0) {
-                        log("No movies with year " + year + " in search results, checking post.php...");
-                        var fetchPromises = results.map(function(item) {
-                            return getPost(item.id)
-                                .then(function(post) {
-                                    var itemYear = post.year || "";
-                                    if (itemYear === year) {
-                                        return { ...item, y: itemYear, post: post };
-                                    }
-                                    return null;
-                                })
-                                .catch(function() { return null; });
-                        });
-                        return Promise.all(fetchPromises).then(function(resultsWithYear) {
-                            var validResults = resultsWithYear.filter(function(item) { return item !== null; });
-                            if (validResults.length === 0) {
-                                throw new Error("No movies found with year " + year);
-                            }
-                            filteredResults = validResults;
-                            log("Found " + filteredResults.length + " movies with year " + year + " from post.php");
-                            return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
-                        });
-                    }
-                    log("Found " + filteredResults.length + " movies with year " + year);
-                } else {
-                    // SERIES: Year matching is flexible
-                    log("Series mode: Year matching is flexible");
-                    var fetchPromises = results.map(function(item) {
-                        return getPost(item.id)
-                            .then(function(post) {
-                                var itemYear = post.year || "";
-                                item.y = itemYear;
-                                item.post = post;
-                                return item;
-                            })
-                            .catch(function() { return item; });
-                    });
-                    return Promise.all(fetchPromises).then(function(updatedResults) {
-                        if (year) {
-                            var yearMatches = updatedResults.filter(function(item) { return item.y === year; });
-                            if (yearMatches.length > 0) {
-                                log("Found " + yearMatches.length + " results with year " + year + " (preferred)");
-                                var nonMatches = updatedResults.filter(function(item) { return item.y !== year; });
-                                filteredResults = yearMatches.concat(nonMatches);
-                            } else {
-                                log("No results with year " + year + ", using all results");
-                                filteredResults = updatedResults;
-                            }
+                    return mappingPromise.then(function(mapping) {
+                        if (mapping && mapping.mal_episode) {
+                            mappedEpisode = mapping.mal_episode;
                         }
-                        return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
+
+                        return searchAnime(title).then(function(best) {
+                            if (!best) return [];
+
+                            return getAnimeId(best.url).then(function(animeId) {
+                                if (!animeId) return [];
+
+                                return getDubEpisode(animeId, mappedEpisode, best.url)
+                                    .then(function(ep) {
+                                        if (!ep) return [];
+
+                                        return getDubServer(ep.ids, best.url)
+                                            .then(function(linkId) {
+                                                if (!linkId) return [];
+                                                return getEmbed(linkId, best.url);
+                                            })
+                                            .then(function(embed) {
+                                                if (!embed || embed.indexOf("megaplay") === -1) return [];
+                                                return resolveMegaplay(embed);
+                                            })
+                                            .then(function(stream) {
+                                                if (!stream) return [];
+                                                return [{
+                                                    name: "AnikotoTV",
+                                                    title: "1080p DUB",
+                                                    url: stream.url,
+                                                    quality: "1080p",
+                                                    headers: stream.headers
+                                                }];
+                                            });
+                                    });
+                            });
+                        });
                     });
-                }
-
-                return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
-            });
-        })
-        .then(function(ctx) {
-            var title = ctx.title;
-            var year = ctx.year;
-            var results = ctx.results;
-
-            // ---- Language priority selection ----
-            var best = null;
-            var bestScore = -1;
-
-            for (var i = 0; i < results.length; i++) {
-                var item = results[i];
-                var score = langPriority(item.t) * 10;
-                if (year && item.y === year) score += 5;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = item;
-                }
-            }
-
-            var selected = best || results[0];
-            if (best) {
-                log("Selected: " + selected.t + " (" + selected.y + ") score=" + bestScore);
-            } else {
-                log("No language pick, using first: " + selected.t + " (" + selected.y + ")");
-            }
-
-            var postPromise;
-            if (selected.post) {
-                postPromise = Promise.resolve(selected.post);
-            } else {
-                postPromise = getPost(selected.id);
-            }
-
-            return postPromise.then(function(postData) {
-                var post = postData;
-                return { title: title, selected: selected, post: post };
-            });
-        })
-        .then(function(ctx) {
-            var post = ctx.post;
-            var selected = ctx.selected;
-            var title = ctx.title;
-
-            var langList = post.lang || [];
-            var chosenLang = "eng";
-            if (langList.length) {
-                var eng = langList.find(function(l) { return l.s === "eng"; });
-                chosenLang = eng ? eng.s : langList[0].s;
-            }
-            log("Selected language: " + chosenLang);
-
-            var isMovie = (post.type === "m" || mediaType === "movie");
-
-            if (isMovie) {
-                log("Movie mode");
-                return getPlaylist(selected.id, post.title || title, chosenLang)
-                    .then(function(playlist) {
-                        return { playlist: playlist, post: post, chosenLang: chosenLang };
-                    });
-            }
-
-            // ---- SERIES (handles "t", "tv", etc.) ----
-            log("Series mode");
-            var seasonList = post.season || [];
-            var targetSeasonId = null;
-            for (var i = 0; i < seasonList.length; i++) {
-                if (parseInt(seasonList[i].s, 10) === season) {
-                    targetSeasonId = seasonList[i].id;
-                    break;
-                }
-            }
-            if (!targetSeasonId) {
-                throw new Error("Season " + season + " not found");
-            }
-            log("Season " + season + " → " + targetSeasonId);
-
-            return getEpisodes(targetSeasonId, selected.id).then(function(eps) {
-                if (!eps.length && post.episodes && post.episodes.length) {
-                    eps = post.episodes.filter(function(e) {
-                        return e && String(e.s).replace(/^S/i, "") === String(season);
-                    });
-                }
-                if (!eps.length) throw new Error("No episodes for season " + season);
-
-                var target = null;
-                for (var j = 0; j < eps.length; j++) {
-                    var n = parseInt(String(eps[j].ep).replace(/^E/i, ""), 10);
-                    if (n === episode) {
-                        target = eps[j];
-                        break;
-                    }
-                }
-                if (!target) throw new Error("Episode " + episode + " not found");
-                log("EP: " + target.t + " id=" + target.id);
-                return getPlaylist(target.id, post.title || title, chosenLang)
-                    .then(function(playlist) {
-                        return { playlist: playlist, post: post, chosenLang: chosenLang };
-                    });
-            });
-        })
-        .then(function(result) {
-            var playlist = result.playlist;
-            var subtitles = [];
-            if (playlist.tracks && playlist.tracks.length) {
-                subtitles = playlist.tracks.map(function(track) {
-                    var url = track.file || "";
-                    if (url && url.indexOf("http") !== 0) {
-                        url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
-                    }
-                    return {
-                        url: url,
-                        language: track.label || "Unknown",
-                        default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
-                    };
                 });
-            }
-
-            return playlist.sources.map(function(src) {
-                var file = src.file || "";
-                var url = file.indexOf("http") === 0 ? file : BASE + file;
-                return {
-                    name: "Prime Video",
-                    title: src.label || "Auto",
-                    url: url,
-                    quality: src.label || "Auto",
-                    headers: {
-                        "Referer": BASE + "/",
-                        "Origin": BASE,
-                        "User-Agent": UA,
-                        "Cookie": cookieHeader
-                    },
-                    subtitles: subtitles
-                };
-            });
         })
-        .catch(function(err) {
-            log("ERROR: " + (err && err.message ? err.message : String(err)));
-            throw err;   // rethrow so withTokenRetry can retry
+        .catch(function() {
+            return [];
         });
 }
 
-module.exports = { getStreams: getStreams };
+module.exports = { getStreams };
