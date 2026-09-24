@@ -11,6 +11,9 @@ var UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) Ap
 
 var cookieHeader = "";
 var rawToken = "";
+var tokenCache = null;
+var tokenFetchedAt = 0;
+var TOKEN_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
 
 function log(msg) {
     console.log("[PrimePV] " + msg);
@@ -57,8 +60,14 @@ function headers(xhr) {
     return h;
 }
 
+// ---------- Token (cached 3h, cache-busted, auto-refresh on expiry) ----------
 function fetchToken() {
-    return fetch(TOKEN_URL)
+    var now = Date.now();
+    if (tokenCache && (now - tokenFetchedAt) < TOKEN_TTL_MS) {
+        return Promise.resolve(rawToken);
+    }
+
+    return fetch(TOKEN_URL + "?t=" + now)
         .then(function(r) {
             if (!r.ok) throw new Error("Token HTTP " + r.status);
             return r.json();
@@ -79,10 +88,25 @@ function fetchToken() {
             }
             cookieHeader += "; ott=pv; hd=on";
 
-            log("Token OK: " + rawToken.substring(0, 30) + "...");
-            log("Cookie: " + cookieHeader);
+            tokenCache = rawToken;
+            tokenFetchedAt = now;
+            log("Token OK (cached 3h): " + rawToken.substring(0, 30) + "...");
             return rawToken;
         });
+}
+
+// Auto-retry once with a fresh token if anything downstream fails
+function withTokenRetry(fn) {
+    return fn().catch(function(e) {
+        log("Retrying with fresh token: " + (e && e.message ? e.message : String(e)));
+        tokenCache = null;
+        cookieHeader = "";
+        rawToken = "";
+        tokenFetchedAt = 0;
+        return fetchToken().then(function() {
+            return fn();
+        });
+    });
 }
 
 function getTmdbInfo(tmdbId, mediaType) {
@@ -93,7 +117,7 @@ function getTmdbInfo(tmdbId, mediaType) {
         .then(function(d) {
             if (!d) throw new Error("TMDB failed");
             var title = d.title || d.name;
-            var year = d.release_date ? d.release_date.substring(0,4) : 
+            var year = d.release_date ? d.release_date.substring(0,4) :
                        (d.first_air_date ? d.first_air_date.substring(0,4) : "");
             return { title: title, year: year };
         });
@@ -195,6 +219,12 @@ function getPlaylist(id, title, lang) {
 }
 
 function getStreams(tmdbId, mediaType, season, episode) {
+    return withTokenRetry(function() {
+        return getStreamsInner(tmdbId, mediaType, season, episode);
+    });
+}
+
+function getStreamsInner(tmdbId, mediaType, season, episode) {
     season = parseInt(season, 10) || 1;
     episode = parseInt(episode, 10) || 1;
 
@@ -205,16 +235,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(tmdbInfo) {
             var title = tmdbInfo.title;
             var year = tmdbInfo.year;
-            // ---- FIX: Check both mediaType and whether it's a movie ----
             var isMovieType = (mediaType === "movie");
             log("TMDB Title: " + title + " (" + year + ") [" + (isMovieType ? 'Movie' : 'Series') + "]");
-            
+
             return searchWithFallback(title, year).then(function(results) {
                 if (!results.length) throw new Error("No results for " + title);
 
-                // ---- Filter results based on movie/series ----
                 var filteredResults = results;
-                
+
                 if (isMovieType && year) {
                     // MOVIE: Strict year matching
                     filteredResults = results.filter(function(item) {
@@ -272,7 +300,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
                     });
                 }
-                
+
                 return { title: title, year: year, results: filteredResults, isMovieType: isMovieType };
             });
         })
@@ -280,7 +308,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = ctx.title;
             var year = ctx.year;
             var results = ctx.results;
-            var isMovieType = ctx.isMovieType;
 
             // ---- Language priority selection ----
             var best = null;
@@ -309,7 +336,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             } else {
                 postPromise = getPost(selected.id);
             }
-            
+
             return postPromise.then(function(postData) {
                 var post = postData;
                 return { title: title, selected: selected, post: post };
@@ -328,8 +355,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             log("Selected language: " + chosenLang);
 
-            // ---- FIX: Check both post.type and mediaType ----
-            // "m" = Movie, anything else (including "t") = Series
             var isMovie = (post.type === "m" || mediaType === "movie");
 
             if (isMovie) {
@@ -416,7 +441,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         })
         .catch(function(err) {
             log("ERROR: " + (err && err.message ? err.message : String(err)));
-            return [];
+            throw err;   // rethrow so withTokenRetry can retry
         });
 }
 
