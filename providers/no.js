@@ -1,8 +1,8 @@
 /**
  * AnikotoTV Provider for Nuvio
  * DUB only
- * Uses MAL mapping API for correct episode numbers
- * Debug logs prefixed with [AnikotoTV] for easy filtering
+ * Computes absolute episode number from TMDB season structure
+ * (no external mapping API needed)
  */
 
 "use strict";
@@ -28,7 +28,6 @@ var CONFIG = {
     BASE_URL: "https://anikoto.cz",
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
-    MAPPING_API: "https://id-mapping-api-malid.hf.space/api/resolve",
     USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
 
@@ -69,13 +68,9 @@ function paddedWordArray(str, totalBytes) {
 
 function decryptMegaplayEnc(enc, keySeed, ivSeed) {
     try {
-        log("  decrypt: enc length =", enc.length);
         var ct  = base64UrlToWordArray(enc);
-        log("  decrypt: ct sigBytes =", ct.sigBytes);
         var key = paddedWordArray(keySeed, 32);
         var iv  = paddedWordArray(ivSeed, 16);
-        log("  decrypt: key hex =", key.toString(CryptoJS.enc.Hex).slice(0, 32) + "...");
-        log("  decrypt: iv hex  =", iv.toString(CryptoJS.enc.Hex));
 
         var decrypted = CryptoJS.AES.decrypt(
             { ciphertext: ct },
@@ -84,27 +79,16 @@ function decryptMegaplayEnc(enc, keySeed, ivSeed) {
         );
 
         var text = decrypted.toString(CryptoJS.enc.Utf8);
-        log("  decrypt: plaintext (first 200) =", JSON.stringify(text.slice(0, 200)));
-
         var m = MEGAPLAY_FILE_RE.exec(text);
-        if (m) {
-            log("  decrypt: SUCCESS ->", m[1]);
-            return m[1];
-        }
-        log("  decrypt: no 'file' key in plaintext");
-        return null;
+        return m ? m[1] : null;
     } catch (e) {
-        logErr("  decrypt exception:", e.message);
         return null;
     }
 }
 
 function signMegaplayUrl(url) {
     var m = MEGAPLAY_HEX_IDS_RE.exec(url);
-    if (!m) {
-        log("  sign: URL has no hex IDs, returning as-is");
-        return url;
-    }
+    if (!m) return url;
 
     var animeId   = m[1].toLowerCase();
     var episodeId = m[2].toLowerCase();
@@ -116,10 +100,6 @@ function signMegaplayUrl(url) {
     var token = wordArrayToBase64Url(CryptoJS.enc.Utf8.parse(payload)) +
                 "." +
                 wordArrayToBase64Url(sig);
-
-    log("  sign: expires =", expires);
-    log("  sign: payload =", payload);
-    log("  sign: token   =", token.slice(0, 80) + "...");
 
     var sep = url.indexOf("?") !== -1 ? "&" : "?";
     return url + sep + "token=" + token;
@@ -160,19 +140,6 @@ function normalize(str) {
 // TMDB helpers
 // =========================================================================
 
-function getImdbId(tmdbId, mediaType) {
-    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
-        "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
-    return fetch(url)
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(data) {
-            var id = data && data.imdb_id ? data.imdb_id : null;
-            log("  tmdb: imdbId =", id);
-            return id;
-        })
-        .catch(function(e) { logErr("  tmdb imdbId failed:", e.message); return null; });
-}
-
 function getTitle(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
         "?api_key=" + CONFIG.TMDB_API_KEY;
@@ -189,19 +156,44 @@ function getTitle(tmdbId, mediaType) {
         .catch(function(e) { logErr("  tmdb title failed:", e.message); return null; });
 }
 
-function resolveMapping(imdbId, season, episode) {
-    var url = CONFIG.MAPPING_API +
-        "?id=" + encodeURIComponent(imdbId) +
-        "&s=" + season +
-        "&e=" + episode;
+// Compute absolute episode number from TMDB season structure
+// Example: Shippuden S22E3 -> sum all prior seasons' episode counts + 3
+function getAbsoluteEpisode(tmdbId, season, episode) {
+    var url = CONFIG.TMDB_BASE + "/tv/" + tmdbId + "?api_key=" + CONFIG.TMDB_API_KEY;
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
-            if (!data || data.error) { log("  mapping: no mapping found"); return null; }
-            log("  mapping:", JSON.stringify(data).slice(0, 200));
-            return data;
+            if (!data || !data.seasons || !data.seasons.length) {
+                log("  absEp: no season data, using raw episode =", episode);
+                return episode;
+            }
+
+            var abs = 0;
+            var found = false;
+            for (var i = 0; i < data.seasons.length; i++) {
+                var s = data.seasons[i];
+                if (s.season_number === 0) continue; // skip specials
+                if (s.season_number < season) {
+                    abs += s.episode_count;
+                } else if (s.season_number === season) {
+                    abs += episode;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                log("  absEp: season", season, "not in TMDB list, using raw episode =", episode);
+                return episode;
+            }
+
+            log("  absEp: S" + season + "E" + episode + " -> absolute ep", abs);
+            return abs;
         })
-        .catch(function(e) { logErr("  mapping failed:", e.message); return null; });
+        .catch(function(e) {
+            logErr("  absEp failed, using raw episode:", e.message);
+            return episode;
+        });
 }
 
 // =========================================================================
@@ -263,7 +255,7 @@ function searchAnime(title) {
                 if (score > bestScore) { bestScore = score; best = r; }
             }
 
-            log("  search: best =", JSON.stringify(best));
+            log("  search: best =", best ? best.title : "null");
             return best || results[0];
         })
         .catch(function(e) { logErr("  search failed:", e.message); return null; });
@@ -316,7 +308,10 @@ function getDubEpisode(animeId, episodeNum, referer) {
                 }
             });
 
-            log("  dubEp: available dub episodes =", available.slice(0, 20).join(","), "...");
+            log("  dubEp: available dub range =", available.length > 0 ?
+                (available[0] + "-" + available[available.length - 1]) : "none",
+                "(" + available.length + " eps)");
+
             if (found) {
                 log("  dubEp: FOUND ep", episodeNum, "ids length =", found.ids.length);
             } else {
@@ -341,7 +336,7 @@ function getDubServer(ids, referer) {
             var $ = cheerio.load(data.result);
             var linkId = $('div.type[data-type="dub"] li[data-link-id]').first().attr("data-link-id");
             if (linkId) {
-                log("  dubSrv: linkId =", linkId.slice(0, 40) + "...");
+                log("  dubSrv: linkId captured");
             } else {
                 logErr("  dubSrv: no dub link-id found");
             }
@@ -384,10 +379,10 @@ function fetchMegaplayKeySeeds(baseUrl) {
             if (!js) { log("  seeds: no js"); return null; }
             var m = MEGAPLAY_KEY_PAIR_RE.exec(js);
             if (m) {
-                log("  seeds: dynamic =", JSON.stringify([m[1], m[2]]));
+                log("  seeds: dynamic seeds found");
                 return [m[1], m[2]];
             }
-            log("  seeds: no dynamic match in js");
+            log("  seeds: no dynamic match");
             return null;
         })
         .catch(function(e) { logErr("  seeds failed:", e.message); return null; });
@@ -404,7 +399,6 @@ function resolveMegaplay(embed) {
 
     var hostMatch = embed.match(/^https?:\/\/([^\/]+)/);
     var primaryHost = hostMatch ? "https://" + hostMatch[1] : "https://megaplay.buzz";
-    log("resolveMegaplay: primaryHost =", primaryHost);
 
     return fetch(embed, {
         headers: headers({ "Referer": CONFIG.BASE_URL, "Origin": CONFIG.BASE_URL })
@@ -415,7 +409,6 @@ function resolveMegaplay(embed) {
     })
     .then(function(html) {
         if (!html) { logErr("resolveMegaplay: empty embed html"); return null; }
-        log("resolveMegaplay: html length =", html.length);
 
         var sm = html.match(/data-id=["'](\d+)["']/) ||
                  html.match(/data-realid=["'](\d+)["']/) ||
@@ -426,7 +419,6 @@ function resolveMegaplay(embed) {
 
         var dm = html.match(/data-domain=["']([^"']+)["']/);
         var assetOrigin = dm ? "https://" + dm[1] : primaryHost;
-        log("resolveMegaplay: assetOrigin =", assetOrigin);
 
         var audioType = embed.indexOf("/dub") !== -1 ? "dub" : "sub";
         log("resolveMegaplay: audioType =", audioType);
@@ -437,7 +429,7 @@ function resolveMegaplay(embed) {
         function tryOne(apiHost, endpoint) {
             var url = apiHost + "/stream/" + endpoint +
                       "?id=" + streamId + "&type=" + audioType;
-            log("resolveMegaplay: GET", url);
+            log("resolveMegaplay: GET", endpoint, "on", apiHost);
             return fetch(url, {
                 headers: {
                     "User-Agent": CONFIG.USER_AGENT,
@@ -448,7 +440,7 @@ function resolveMegaplay(embed) {
                 }
             })
             .then(function(r) {
-                log("  ->", endpoint, "on", apiHost, "HTTP", r.status);
+                log("  ->", endpoint, "HTTP", r.status);
                 return r.ok ? r.json() : null;
             })
             .catch(function(e) { logErr("  ->", endpoint, "failed:", e.message); return null; });
@@ -467,7 +459,6 @@ function resolveMegaplay(embed) {
     })
     .then(function(data) {
         if (!data) { logErr("resolveMegaplay: no sources data"); return null; }
-        log("resolveMegaplay: response keys =", Object.keys(data).join(","));
 
         var payload = data.result || data;
         log("resolveMegaplay: payload keys =", Object.keys(payload).join(","));
@@ -495,12 +486,12 @@ function resolveMegaplay(embed) {
                 var seeds = [];
                 if (dynamic) seeds.push(dynamic);
                 seeds.push([MEGAPLAY_FALLBACK_KEY_SEED, MEGAPLAY_FALLBACK_IV_SEED]);
-                log("resolveMegaplay: trying", seeds.length, "seed candidates");
 
                 for (var i = 0; i < seeds.length; i++) {
-                    log("resolveMegaplay: seed #" + (i + 1), JSON.stringify(seeds[i]));
+                    log("resolveMegaplay: seed #" + (i + 1));
                     var m3u8 = decryptMegaplayEnc(payload.enc, seeds[i][0], seeds[i][1]);
                     if (m3u8) {
+                        log("  decrypt SUCCESS:", m3u8);
                         return {
                             url: signMegaplayUrl(m3u8),
                             headers: { "Referer": "https://megaplay.buzz/", "Origin": "https://megaplay.buzz" }
@@ -512,8 +503,7 @@ function resolveMegaplay(embed) {
             });
         }
 
-        logErr("resolveMegaplay: no 'sources' and no 'enc' in response");
-        logErr("  payload:", JSON.stringify(payload).slice(0, 300));
+        logErr("resolveMegaplay: no 'sources' and no 'enc'");
         return null;
     })
     .catch(function(e) {
@@ -538,61 +528,50 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(title) {
             if (!title) { logErr("getStreams: no title, aborting"); return []; }
 
-            return getImdbId(tmdbId, mediaType)
-                .then(function(imdbId) {
-                    var mappedEpisode = episode;
+            return getAbsoluteEpisode(tmdbId, season, episode)
+                .then(function(mappedEpisode) {
+                    log("getStreams: mapped episode =", mappedEpisode);
 
-                    var mappingPromise = imdbId
-                        ? resolveMapping(imdbId, season, episode)
-                        : Promise.resolve(null);
+                    return searchAnime(title).then(function(best) {
+                        if (!best) { logErr("getStreams: no search result"); return []; }
 
-                    return mappingPromise.then(function(mapping) {
-                        if (mapping && mapping.mal_episode) {
-                            mappedEpisode = mapping.mal_episode;
-                        }
-                        log("getStreams: mapped episode =", mappedEpisode);
+                        return getAnimeId(best.url).then(function(animeId) {
+                            if (!animeId) { logErr("getStreams: no animeId"); return []; }
 
-                        return searchAnime(title).then(function(best) {
-                            if (!best) { logErr("getStreams: no search result"); return []; }
+                            return getDubEpisode(animeId, mappedEpisode, best.url)
+                                .then(function(ep) {
+                                    if (!ep) { logErr("getStreams: no dub episode"); return []; }
 
-                            return getAnimeId(best.url).then(function(animeId) {
-                                if (!animeId) { logErr("getStreams: no animeId"); return []; }
-
-                                return getDubEpisode(animeId, mappedEpisode, best.url)
-                                    .then(function(ep) {
-                                        if (!ep) { logErr("getStreams: no dub episode"); return []; }
-
-                                        return getDubServer(ep.ids, best.url)
-                                            .then(function(linkId) {
-                                                if (!linkId) { logErr("getStreams: no linkId"); return []; }
-                                                return getEmbed(linkId, best.url);
-                                            })
-                                            .then(function(embed) {
-                                                if (!embed || embed.indexOf("megaplay") === -1) {
-                                                    logErr("getStreams: no megaplay embed, got =", embed);
-                                                    return [];
-                                                }
-                                                return resolveMegaplay(embed);
-                                            })
-                                            .then(function(stream) {
-                                                if (!stream) { logErr("getStreams: resolveMegaplay returned null"); return []; }
-                                                log("getStreams: SUCCESS url =", stream.url);
-                                                return [{
-                                                    name: "AnikotoTV",
-                                                    title: "1080p DUB",
-                                                    url: stream.url,
-                                                    quality: "1080p",
-                                                    headers: stream.headers
-                                                }];
-                                            });
-                                    });
-                            });
+                                    return getDubServer(ep.ids, best.url)
+                                        .then(function(linkId) {
+                                            if (!linkId) { logErr("getStreams: no linkId"); return []; }
+                                            return getEmbed(linkId, best.url);
+                                        })
+                                        .then(function(embed) {
+                                            if (!embed || embed.indexOf("megaplay") === -1) {
+                                                logErr("getStreams: no megaplay embed");
+                                                return [];
+                                            }
+                                            return resolveMegaplay(embed);
+                                        })
+                                        .then(function(stream) {
+                                            if (!stream) { logErr("getStreams: resolveMegaplay null"); return []; }
+                                            log("getStreams: SUCCESS");
+                                            return [{
+                                                name: "AnikotoTV",
+                                                title: "1080p DUB",
+                                                url: stream.url,
+                                                quality: "1080p",
+                                                headers: stream.headers
+                                            }];
+                                        });
+                                });
                         });
                     });
                 });
         })
         .catch(function(e) {
-            logErr("getStreams outer exception:", e.message, e.stack);
+            logErr("getStreams outer exception:", e.message);
             return [];
         });
 }
