@@ -1,12 +1,14 @@
 /**
  * movielinkbd — Nuvio-style plugin
- * Ported from CloudStream MovieLinkBDProvider.kt
  *
- * Usage from Nuvio/Stremio host:
+ * Contract:
  *   const { getStreams } = require('./movielinkbd-nuvio.js');
  *   const streams = await getStreams(tmdbId, mediaType, season, episode);
  *
- * Or from CLI for testing:
+ * Works for both movies and series. Iterates every plausible MovieLinkBD
+ * candidate until one produces real streams — no more "wrong match" aborts.
+ *
+ * CLI:
  *   node movielinkbd-nuvio.js <tmdbId> <movie|tv> [season] [episode]
  */
 
@@ -15,6 +17,10 @@ const HUB_URL      = 'https://movielinkbd.com';
 const FALLBACK_URL = 'https://sefcng.movielinkbd.li';
 const TMDB_API_KEY = '1865f43a0549ca50d341dd9ab8b29f49';
 const TMDB_BASE    = 'https://api.themoviedb.org/3';
+
+// Candidate scoring thresholds
+const MIN_SCORE_TO_TRY   = 200;   // below this, card is almost certainly wrong
+const MIN_SCORE_TO_ACCEPT = 500;  // below this, only accept if nothing better works
 
 const BASE_HEADERS = {
   'sec-ch-ua':          '"Brave";v="155", "Chromium";v="155", "Not(A:Brand";v="24"',
@@ -348,10 +354,6 @@ async function loadDetail(url) {
   const h1m = html.match(/<div[^>]*class="movie-info-view"[^>]*>[\s\S]*?<h1[^>]*>([\s\S]*?)<\/h1>/i);
   if (h1m) title = trimOrNull(stripTags(h1m[1]));
   if (!title && player) title = trimOrNull(player.title);
-  if (!title) {
-    const t = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    if (t) title = trimOrNull(stripTags(t[1]).split(' Download')[0]);
-  }
 
   const episodes = [];
   const epArr = player?.episodes ?? [];
@@ -398,14 +400,90 @@ async function generateLinks(blob) {
   return out;
 }
 
-// ================= subtitles (no-op for MovieLinkBD) =================
-async function fetchSubtitles() {
-  return []; // site does not expose subtitle tracks in the manifest
+// ================= pick target episode =================
+/**
+ * Robust episode resolver:
+ *  - Movie: returns the single episode (0-index of episodes).
+ *  - Series: tries exact S/E, then S/E as strings, then closest episode.
+ */
+function pickEpisode(episodes, mediaType, seasonNum, episodeNum) {
+  if (!episodes || !episodes.length) return null;
+  if (mediaType === 'movie') return episodes[0];
+
+  const s = Number(seasonNum);
+  const e = Number(episodeNum);
+
+  // Exact match
+  let hit = episodes.find(x => Number(x.season) === s && Number(x.number) === e);
+  if (hit) return hit;
+
+  // Same season, closest episode
+  const seasonEps = episodes.filter(x => Number(x.season) === s);
+  if (seasonEps.length) {
+    seasonEps.sort((a, b) =>
+      Math.abs(Number(a.number) - e) - Math.abs(Number(b.number) - e));
+    return seasonEps[0];
+  }
+
+  // Whole-series closest (S then E)
+  episodes.sort((a, b) =>
+    Math.abs(Number(a.season) - s) - Math.abs(Number(b.season) - s) ||
+    Math.abs(Number(a.number) - e) - Math.abs(Number(b.number) - e));
+  return episodes[0];
+}
+
+// ================= attempt one candidate =================
+async function tryOneCandidate(card, tmdbDetails, mediaType, seasonNum, episodeNum) {
+  log(`\n── try candidate: "${card.title}" (score ${card._score}) ──`);
+
+  let detail;
+  try {
+    detail = await loadDetail(card.url);
+  } catch (e) {
+    log(`  ✗ detail fetch failed: ${e.message}`);
+    return null;
+  }
+
+  if (!detail.episodes.length) {
+    log(`  ✗ no episodes in manifest`);
+    return null;
+  }
+  log(`  ✓ ${detail.episodes.length} episode(s) in manifest`);
+
+  const target = pickEpisode(detail.episodes, mediaType, seasonNum, episodeNum);
+  if (!target) {
+    log(`  ✗ no usable episode`);
+    return null;
+  }
+  log(`  → picking S${target.season}E${target.number} — "${target.name}"`);
+
+  let links;
+  try {
+    links = await generateLinks(target.data);
+  } catch (e) {
+    log(`  ✗ link generation failed: ${e.message}`);
+    return null;
+  }
+  if (!links.length) {
+    log(`  ✗ no playable links generated`);
+    return null;
+  }
+  log(`  ✓ ${links.length} stream(s) generated`);
+
+  return {
+    detail,
+    target,
+    links,
+    card,
+  };
 }
 
 // ================= controller — public API =================
 async function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
-  console.log(`[MovieLinkBD] === TMDB ${tmdbId} type=${mediaType} S${seasonNum}E${episodeNum} ===`);
+  seasonNum  = Number(seasonNum)  || 1;
+  episodeNum = Number(episodeNum) || 1;
+
+  console.log(`\n[MovieLinkBD] ═══ TMDB ${tmdbId} (${mediaType}) S${seasonNum}E${episodeNum} ═══`);
 
   // 1. TMDB identity
   let details;
@@ -415,67 +493,74 @@ async function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
     console.log(`[MovieLinkBD] TMDB lookup failed: ${e.message}`);
     return [];
   }
-  console.log(`[MovieLinkBD] TMDB: "${details._title}" (${details._year})`);
+  console.log(`[MovieLinkBD] TMDB: "${details._title}" (${details._year}) | ${details.original_language || '?'}`);
 
-  // 2. MovieLinkBD search — canonical title, with fallback to original
-  let cards = await mlinkSearch(details._title).catch(() => []);
-  console.log(`[MovieLinkBD] Search "${details._title}" → ${cards.length} cards`);
-
-  if (!cards.length && details.original_title && details.original_title !== details._title) {
-    cards = await mlinkSearch(details.original_title).catch(() => []);
-    console.log(`[MovieLinkBD] Fallback "${details.original_title}" → ${cards.length} cards`);
-  }
-  if (!cards.length) {
-    console.log('[MovieLinkBD] ✗ No MovieLinkBD results');
-    return [];
+  // 2. MovieLinkBD search — try canonical title, then original title
+  const queries = [details._title];
+  if (details.original_title && details.original_title !== details._title) {
+    queries.push(details.original_title);
   }
 
-  // 3. Rank + threshold
-  const ranked = rankCandidates(cards, details, {});
-  ranked.slice(0, 5).forEach((r, i) => {
-    console.log(`[MovieLinkBD]   ${i === 0 ? '→' : ' '} [${i}] ${r.title} | ${r.type} | score ${r._score}`);
-  });
-
-  const best = ranked[0];
-  if (best._score < 500) {
-    console.log(`[MovieLinkBD] ✗ Best score ${best._score} < 500 — likely not on MovieLinkBD`);
-    return [];
-  }
-
-  // 4. Detail page + manifest
-  const detail = await loadDetail(best.url).catch(e => {
-    console.log(`[MovieLinkBD] Detail fetch failed: ${e.message}`);
-    return null;
-  });
-  if (!detail) return [];
-  console.log(`[MovieLinkBD] Detail: "${detail.title}" — ${detail.episodes.length} episode(s)`);
-
-  // 5. Pick episode
-  let target;
-  if (mediaType === 'movie') {
-    target = detail.episodes[0];
-  } else {
-    target = detail.episodes.find(
-      e => e.season === Number(seasonNum) && e.number === Number(episodeNum)
-    );
-    if (!target) {
-      console.log(`[MovieLinkBD] ⚠ S${seasonNum}E${episodeNum} not found — using first episode`);
-      target = detail.episodes[0];
+  let cards = [];
+  for (const q of queries) {
+    const found = await mlinkSearch(q).catch(() => []);
+    console.log(`[MovieLinkBD] Search "${q}" → ${found.length} card(s)`);
+    if (found.length) {
+      cards = found;
+      break;
     }
   }
-  if (!target) {
-    console.log('[MovieLinkBD] ✗ No episode to extract');
+
+  if (!cards.length) {
+    console.log('[MovieLinkBD] ✗ nothing found on MovieLinkBD');
     return [];
   }
 
-  // 6. Sign links
-  const links = await generateLinks(target.data);
-  console.log(`[MovieLinkBD] ✓ ${links.length} stream(s)`);
+  // 3. Rank candidates
+  const ranked = rankCandidates(cards, details, {});
+  console.log('\n[MovieLinkBD] Candidate ranking:');
+  ranked.slice(0, 8).forEach((r, i) => {
+    console.log(`  ${i === 0 ? '→' : ' '} [${i}] ${r.title} | ${r.type} | score ${r._score}`);
+  });
 
-  // 7. Nuvio-shaped result
+  // 4. Build attempt list:
+  //    - always include candidates with score >= MIN_SCORE_TO_TRY
+  //    - always try at least top-3 even if they score below threshold
+  //      (MovieLinkBD sometimes has no year on the title)
+  const attemptList = ranked.filter(r => r._score >= MIN_SCORE_TO_TRY);
+  if (attemptList.length < 3) {
+    for (const r of ranked.slice(0, 3)) {
+      if (!attemptList.includes(r)) attemptList.push(r);
+    }
+  }
+  // Cap attempts so we don't hammer the CDN forever
+  const MAX_ATTEMPTS = 6;
+  const toTry = attemptList.slice(0, MAX_ATTEMPTS);
+  console.log(`[MovieLinkBD] Will try ${toTry.length} candidate(s)\n`);
+
+  // 5. Try each candidate — stop at first success
+  let result = null;
+  for (const card of toTry) {
+    result = await tryOneCandidate(card, details, mediaType, seasonNum, episodeNum);
+    if (result) break;
+  }
+
+  if (!result) {
+    console.log('[MovieLinkBD] ✗ no candidate produced streams');
+    return [];
+  }
+
+  // 6. Build Nuvio-shaped output
+  const { detail, target, links, card } = result;
+  console.log(`\n[MovieLinkBD] ✓ using "${card.title}" — S${target.season}E${target.number}`);
+
+  const showLabel = mediaType === 'tv'
+    ? `${details._title} S${target.season}E${target.number}`
+    : details._title;
+
   return links.map(l => ({
     name:     'MovieLinkBD',
-    title:    `${details._title}${mediaType === 'tv' ? ` S${seasonNum}E${episodeNum}` : ''} — ${l.label}`,
+    title:    `${showLabel} — ${l.label}`,
     url:      l.url,
     quality:  `${l.quality}p`,
     headers: {
@@ -490,22 +575,18 @@ async function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
 // ================= exports =================
 module.exports = { getStreams };
 
-// ================= CLI for testing =================
+// ================= CLI =================
 if (require.main === module) {
   (async () => {
     const [,, tmdbId, mediaType = 'movie', season = '1', episode = '1'] = process.argv;
     if (!tmdbId) {
       console.error('Usage: node movielinkbd-nuvio.js <tmdbId> <movie|tv> [season] [episode]');
-      console.error('Example: node movielinkbd-nuvio.js 597 movie');
-      console.error('         node movielinkbd-nuvio.js 2316 tv 2 5');
+      console.error('Examples:');
+      console.error('  node movielinkbd-nuvio.js 597 movie');
+      console.error('  node movielinkbd-nuvio.js 2316 tv 2 5');
       process.exit(1);
     }
-    const streams = await getStreams(
-      Number(tmdbId),
-      mediaType,
-      Number(season),
-      Number(episode),
-    );
+    const streams = await getStreams(Number(tmdbId), mediaType, Number(season), Number(episode));
     console.log('\n=== Result ===');
     console.log(JSON.stringify(streams, null, 2));
   })();
