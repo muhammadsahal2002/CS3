@@ -98,6 +98,18 @@
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
+    },
+{
+      "id": "mlbd",
+      "name": "MovieLinkBD",
+      "description": "Movielink for All cinema.",
+      "version": "1.0.0",
+      "author": "You",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/mlbd.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en"]
     }
   ]
 }
