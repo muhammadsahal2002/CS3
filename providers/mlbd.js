@@ -1,15 +1,7 @@
 /**
- * movielinkbd — Nuvio-style plugin
+ * movielinkbd — Nuvio plugin (QuickJS-safe)
  *
- * Contract:
- *   const { getStreams } = require('./movielinkbd-nuvio.js');
- *   const streams = await getStreams(tmdbId, mediaType, season, episode);
- *
- * Works for both movies and series. Iterates every plausible MovieLinkBD
- * candidate until one produces real streams — no more "wrong match" aborts.
- *
- * CLI:
- *   node movielinkbd-nuvio.js <tmdbId> <movie|tv> [season] [episode]
+ * getStreams(tmdbId, mediaType, season, episode) → stream array
  */
 
 // ================= constants =================
@@ -18,9 +10,9 @@ const FALLBACK_URL = 'https://sefcng.movielinkbd.li';
 const TMDB_API_KEY = '1865f43a0549ca50d341dd9ab8b29f49';
 const TMDB_BASE    = 'https://api.themoviedb.org/3';
 
-// Candidate scoring thresholds
-const MIN_SCORE_TO_TRY   = 200;   // below this, card is almost certainly wrong
-const MIN_SCORE_TO_ACCEPT = 500;  // below this, only accept if nothing better works
+const MIN_SCORE_TO_TRY    = 200;
+const MAX_ATTEMPTS        = 6;
+const FETCH_TIMEOUT_MS    = 20000;
 
 const BASE_HEADERS = {
   'sec-ch-ua':          '"Brave";v="155", "Chromium";v="155", "Not(A:Brand";v="24"',
@@ -28,20 +20,19 @@ const BASE_HEADERS = {
   'sec-ch-ua-platform': '"Android"',
   'Upgrade-Insecure-Requests': '1',
   'User-Agent':         'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36',
-  'Accept':             'text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept':             'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Sec-GPC':            '1',
   'Sec-Fetch-Site':     'same-origin',
   'Sec-Fetch-Mode':     'navigate',
   'Sec-Fetch-User':     '?1',
   'Sec-Fetch-Dest':     'document',
-  'Accept-Encoding':    'gzip, deflate, br',
   'Accept-Language':    'en-GB,en-US;q=0.9,en;q=0.8',
 };
 
 // ================= state =================
 let resolvedBase = null;
 let hpToken      = null;
-const mgCache    = new Map();
+const mgCache    = {};
 
 // ================= utils =================
 const log = (...a) => console.error('[mlbd]', ...a);
@@ -51,6 +42,65 @@ const CDN_STREAM_RE = /^(https?:\/\/([a-z0-9.-]+)\/p\/[A-Za-z0-9._%-]+)(\?.*)?$/
 const ASIAN_LANGS = new Set(['ko','ja','zh','cn','th','tl','id','ms','hi','ta','te','bn','ml','kn','mr','pa','ur','vi']);
 const ASIAN_COUNTRIES = new Set(['KR','JP','CN','TW','HK','TH','PH','ID','MY','IN','BD','PK','VN']);
 const STOPWORDS = new Set(['the','a','an','of','and','or','in','on','at','to','for']);
+
+// --- pure-JS base64 decoder (works in QuickJS) ---
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function base64ToBytes(str) {
+  const clean = String(str).replace(/[^A-Za-z0-9+/=]/g, '');
+  const pad = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
+  const out = [];
+  let buf = 0, bits = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const c = clean[i];
+    if (c === '=') break;
+    const v = B64_CHARS.indexOf(c);
+    if (v < 0) continue;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buf >> bits) & 0xff);
+    }
+  }
+  return out;
+}
+
+function bytesToUtf8(bytes) {
+  // QuickJS may not have TextDecoder in all builds — manual UTF-8 decode
+  let out = '';
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i++];
+    if (b < 0x80) {
+      out += String.fromCharCode(b);
+    } else if (b < 0xe0) {
+      out += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i++] & 0x3f));
+    } else if (b < 0xf0) {
+      out += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f));
+    } else {
+      const cp = ((b & 0x07) << 18) | ((bytes[i++] & 0x3f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f);
+      const off = cp - 0x10000;
+      out += String.fromCharCode(0xd800 + (off >> 10), 0xdc00 + (off & 0x3ff));
+    }
+  }
+  return out;
+}
+
+// --- fetch with timeout ---
+async function fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timer = null;
+  if (controller) {
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+    opts.signal = controller.signal;
+  }
+  try {
+    const res = await fetch(url, opts);
+    return res;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function stripTags(html) {
   return html
@@ -67,7 +117,7 @@ function stripTags(html) {
 function attrOf(tag, name) {
   const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
   const m = tag.match(re);
-  return m ? (m[1] ?? m[2] ?? m[3]) : null;
+  return m ? (m[1] || m[2] || m[3]) : null;
 }
 
 function findByClass(html, tagName, className) {
@@ -120,7 +170,7 @@ function titleOverlap(a, b) {
   const ta = new Set(tokenize(a));
   const tb = new Set(tokenize(b));
   let common = 0;
-  for (const t of ta) if (tb.has(t)) common++;
+  ta.forEach(t => { if (tb.has(t)) common++; });
   return { common, ta: ta.size, tb: tb.size };
 }
 
@@ -131,8 +181,12 @@ function titleOf(item) {
   return item.title || item.name || item.original_title || item.original_name || '';
 }
 function isAsian(item) {
-  return ASIAN_LANGS.has(item.original_language) ||
-         (item.origin_country || []).some(c => ASIAN_COUNTRIES.has(c));
+  if (ASIAN_LANGS.has(item.original_language)) return true;
+  const countries = item.origin_country || [];
+  for (let i = 0; i < countries.length; i++) {
+    if (ASIAN_COUNTRIES.has(countries[i])) return true;
+  }
+  return false;
 }
 function qualityName(q) {
   if (q >= 2160) return '4K';
@@ -143,43 +197,60 @@ function qualityName(q) {
 // ================= TMDB =================
 async function tmdbDetailById(tmdbId, mediaType) {
   const url = `${TMDB_BASE}/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`TMDB ${res.status} for ${mediaType}/${tmdbId}`);
+  const res = await fetchWithTimeout(url, { headers: { 'Accept': 'application/json' } }, 15000);
+  if (!res.ok) throw new Error(`TMDB ${res.status}`);
   const data = await res.json();
   return {
     ...data,
     media_type: mediaType,
-    imdb_id: data.external_ids?.imdb_id,
+    imdb_id: data.external_ids && data.external_ids.imdb_id,
     _title:  titleOf(data),
     _year:   yearOf(data),
   };
 }
 
-// ================= HTTP =================
+// ================= HTTP (QuickJS-safe) =================
 async function httpGet(url, extraHeaders = {}) {
   const headers = { ...BASE_HEADERS, ...extraHeaders };
-  if (hpToken) headers['Cookie'] = `mlbd_hp=${hpToken}`;
+  if (hpToken) headers['Cookie'] = 'mlbd_hp=' + hpToken;
+
   log('GET', url);
-  const res = await fetch(url, { headers, redirect: 'follow' });
-  const text = await res.text();
+  let res;
+  try {
+    res = await fetchWithTimeout(url, { headers, redirect: 'follow' });
+  } catch (e) {
+    log('FETCH ERR', e.message || e);
+    return { status: 0, url, text: '' };
+  }
+
+  let text = '';
+  try {
+    text = await res.text();
+  } catch (e) {
+    log('READ ERR', e.message || e);
+    return { status: res.status, url: res.url || url, text: '' };
+  }
   log('→', res.status, text.length + 'B');
 
-  const setCookies = res.headers.getSetCookie?.() ?? [];
-  let token = null;
-  for (const c of setCookies) {
-    const mm = c.match(/mlbd_hp=(?:"\s*\+\s*")?([0-9]+\.[0-9a-fA-F]+)/);
-    if (mm) { token = mm[1]; break; }
+  // Manual cookie extraction — QuickJS has no getSetCookie()
+  const setCookie = res.headers.get('set-cookie') || res.headers.get('Set-Cookie');
+  if (setCookie) {
+    const mm = String(setCookie).match(/mlbd_hp=(?:"\s*\+\s*")?([0-9]+\.[0-9a-fA-F]+)/);
+    if (mm && mm[1] !== hpToken) {
+      hpToken = mm[1];
+      return httpGet(url, extraHeaders);
+    }
   }
-  if (token && token !== hpToken) { hpToken = token; return httpGet(url, extraHeaders); }
-  return { status: res.status, url: res.url, text };
+  return { status: res.status, url: res.url || url, text };
 }
 
 async function httpGetHtml(url, extraHeaders = {}) {
   const r = await httpGet(url, extraHeaders);
-  if (r.status === 403 && r.text.includes('This bucket cannot be viewed'))
-    throw new Error(`R2 bucket 403 from ${url}`);
-  if (r.status !== 200) throw new Error(`HTTP ${r.status} from ${url}`);
-  if (r.text.includes('cf-turnstile')) throw new Error(`Turnstile at ${url}`);
+  if (r.status === 0) throw new Error(`fetch failed: ${url}`);
+  if (r.status === 403 && r.text.indexOf('This bucket cannot be viewed') >= 0)
+    throw new Error(`R2 403: ${url}`);
+  if (r.status !== 200) throw new Error(`HTTP ${r.status}: ${url}`);
+  if (r.text.indexOf('cf-turnstile') >= 0) throw new Error(`Turnstile: ${url}`);
   return { html: r.text, base: r.url };
 }
 
@@ -191,12 +262,12 @@ async function resolveBase() {
       const m = r.text.match(/href="(https?:\/\/[^"]*movielinkbd\.li[^"]*)"/i);
       if (m) {
         const u = new URL(m[1]);
-        resolvedBase = `${u.protocol}//${u.host}`;
+        resolvedBase = u.protocol + '//' + u.host;
         log('resolved base:', resolvedBase);
         return resolvedBase;
       }
     }
-  } catch (e) { log('hub resolve failed:', e.message); }
+  } catch (e) { log('hub resolve failed:', e.message || e); }
   resolvedBase = FALLBACK_URL;
   log('fallback base:', resolvedBase);
   return resolvedBase;
@@ -204,8 +275,8 @@ async function resolveBase() {
 
 // ================= search =================
 function typeFromUrl(url) {
-  if (url.includes('/series/') || url.includes('/anime/')) return 'TvSeries';
-  if (url.includes('/drama/')) return 'AsianDrama';
+  if (url.indexOf('/series/') >= 0 || url.indexOf('/anime/') >= 0) return 'TvSeries';
+  if (url.indexOf('/drama/') >= 0) return 'AsianDrama';
   return 'Movie';
 }
 
@@ -213,11 +284,11 @@ function parseMovieCards(html, pageBase) {
   const cards = findByClass(html, 'div', 'movie-card');
   log('cards found:', cards.length);
   const out = [], seen = new Set();
-  for (const card of cards) {
-    const inner = card.inner;
+  for (let i = 0; i < cards.length; i++) {
+    const inner = cards[i].inner;
     const titleA = findAnchorByClass(inner, 'title');
     if (!titleA) continue;
-    const rawHref = attrOf(`<a ${titleA.attrs}>`, 'href');
+    const rawHref = attrOf('<a ' + titleA.attrs + '>', 'href');
     const title   = trimOrNull(stripTags(titleA.inner));
     if (!rawHref || !title) continue;
     const href = absoluteUrl(pageBase, rawHref);
@@ -241,13 +312,14 @@ function parseMovieCards(html, pageBase) {
 
 async function mlinkSearch(query) {
   const base = await resolveBase();
-  const url  = `${base}/search?q=${urlEncode(query.trim())}`;
-  const { html } = await httpGetHtml(url, { 'Referer': `${base}/` });
+  const url  = base + '/search?q=' + urlEncode(query.trim());
+  const { html } = await httpGetHtml(url, { 'Referer': base + '/' });
   return parseMovieCards(html, base);
 }
 
 // ================= rank =================
-function rankCandidates(results, tmdbItem, opts = {}) {
+function rankCandidates(results, tmdbItem, opts) {
+  opts = opts || {};
   const tYear   = yearOf(tmdbItem);
   const tType   = tmdbItem.media_type === 'tv' ? 'tv' : 'movie';
   const tAsian  = isAsian(tmdbItem);
@@ -262,12 +334,12 @@ function rankCandidates(results, tmdbItem, opts = {}) {
     else if (tYear && Math.abs(rYear - tYear) <= 1)  score += 300;
     else if (tYear && rYear)                         score -= 150;
 
-    const { common, ta, tb } = titleOverlap(r.title, tTitle);
-    if (common === 0)                            score -= 500;
-    else if (common === ta && common === tb)     score += 500;
-    else if (common >= 2)                        score += 200;
-    else if (common === 1 && (ta === 1 || tb === 1)) score += 100;
-    else                                         score += 50;
+    const ov = titleOverlap(r.title, tTitle);
+    if (ov.common === 0)                             score -= 500;
+    else if (ov.common === ov.ta && ov.common === ov.tb) score += 500;
+    else if (ov.common >= 2)                         score += 200;
+    else if (ov.common === 1 && (ov.ta === 1 || ov.tb === 1)) score += 100;
+    else                                             score += 50;
 
     if (tType === 'movie' && r.type === 'Movie')                     score += 200;
     if (tType === 'tv'    && r.type === 'TvSeries')                  score += 200;
@@ -275,54 +347,69 @@ function rankCandidates(results, tmdbItem, opts = {}) {
     if (tType === 'movie' && r.type !== 'Movie')                     score -= 200;
     if (tType === 'tv'    && r.type === 'Movie')                     score -= 150;
 
-    return { ...r, _score: score };
+    return Object.assign({}, r, { _score: score });
   }).sort((a, b) => b._score - a._score);
 }
 
-// ================= decode manifest =================
+// ================= decode manifest (32-bit, no BigInt) =================
 function decodeManifest(scriptInner, seedAttr, repeatAttr) {
   if (!seedAttr) return scriptInner;
-  let x = BigInt(`0x${seedAttr}`) & 0xFFFFFFFFn;
+
+  // 32-bit LCG — JS Numbers are safe up to 2^53, constants fit
+  const MUL = 0x41C64E6D;
+  const INC = 0x3039;
+  const MASK = 0xFFFFFFFF;
+
+  let x = parseInt(seedAttr, 16) >>> 0;
   const repeat = parseInt(repeatAttr || '0', 10) || 0;
-  const MUL = 0x41C64E6Dn, INC = 0x3039n, MASK = 0xFFFFFFFFn;
-  for (let i = 0; i < repeat; i++) x = (MUL * x + INC) & MASK;
-  const bytes = Buffer.from(scriptInner.trim(), 'base64');
-  for (let i = 0; i < bytes.length; i++) {
-    x = (MUL * x + INC) & MASK;
-    bytes[i] ^= Number((x >> 16n) & 0xFFn);
+
+  for (let i = 0; i < repeat; i++) {
+    // Multiply in two halves to avoid precision loss
+    const lo = (x & 0xffff) * MUL;
+    const hi = ((x >>> 16) * MUL) & 0xffff;
+    x = (((hi << 16) >>> 0) + lo + INC) & MASK;
   }
-  return bytes.toString('utf8');
+
+  const bytes = base64ToBytes(scriptInner.trim());
+  for (let i = 0; i < bytes.length; i++) {
+    const lo = (x & 0xffff) * MUL;
+    const hi = ((x >>> 16) * MUL) & 0xffff;
+    x = (((hi << 16) >>> 0) + lo + INC) & MASK;
+    const key = (x >>> 16) & 0xFF;
+    bytes[i] = (bytes[i] ^ key) & 0xff;
+  }
+  return bytesToUtf8(bytes);
 }
 
 // ================= mg token =================
 async function mgToken(host, base) {
   const nowSec = Math.floor(Date.now() / 1000);
-  const cached = mgCache.get(host);
+  const cached = mgCache[host];
   if (cached && cached.expiresAtSec > nowSec) return cached.value;
   try {
-    const r = await httpGet(`https://${host}/g`, {
-      'Origin': base, 'Referer': `${base}/`, 'Accept': 'application/json',
+    const r = await httpGet('https://' + host + '/g', {
+      'Origin': base, 'Referer': base + '/', 'Accept': 'application/json',
     });
-    if (r.status !== 200) { log(`mgToken(${host}) ${r.status}`); return null; }
+    if (r.status !== 200) { log('mgToken(' + host + ') ' + r.status); return null; }
     const json = JSON.parse(r.text);
     if (!json.ok || !json.g) return null;
-    const prefix = json.g.includes('.') ? json.g.split('.')[0] : json.g;
+    const prefix = json.g.indexOf('.') >= 0 ? json.g.split('.')[0] : json.g;
     const expiresAtSec = Number(prefix) - 600 || (nowSec + 1800);
-    mgCache.set(host, { value: json.g, expiresAtSec });
+    mgCache[host] = { value: json.g, expiresAtSec };
     return json.g;
-  } catch (e) { log(`mgToken(${host}) failed:`, e.message); return null; }
+  } catch (e) { log('mgToken(' + host + ') failed: ' + (e.message || e)); return null; }
 }
 
 async function withMgToken(link, base) {
   const m = link.match(CDN_STREAM_RE);
   if (!m) return link;
-  if (link.includes('mg=')) return link;
-  const [, prefix, host, qs] = m;
+  if (link.indexOf('mg=') >= 0) return link;
+  const prefix = m[1], host = m[2], qs = m[3];
   const token = await mgToken(host, base);
   if (!token) return link;
-  const mg = `mg=${urlEncode(token)}`;
+  const mg = 'mg=' + urlEncode(token);
   const query = (qs || '').replace(/^\?/, '');
-  return `${prefix}?${query ? `${mg}&${query}` : mg}`;
+  return prefix + '?' + (query ? mg + '&' + query : mg);
 }
 
 // ================= detail =================
@@ -331,81 +418,86 @@ async function loadDetail(url) {
   let fixedUrl = url;
   try {
     const u = new URL(url);
-    if (u.host.includes('movielinkbd')) {
+    if (u.host.indexOf('movielinkbd') >= 0) {
       const bu = new URL(base);
-      fixedUrl = `${bu.protocol}//${bu.host}${u.pathname}${u.search}`;
+      fixedUrl = bu.protocol + '//' + bu.host + u.pathname + u.search;
     }
   } catch {}
 
   log('loading detail:', fixedUrl);
-  const { html } = await httpGetHtml(fixedUrl, { 'Referer': `${base}/` });
+  const { html } = await httpGetHtml(fixedUrl, { 'Referer': base + '/' });
+  log('  detail page:', html.length + 'B');
 
   let player = null;
   const scriptM = html.match(/<script\b[^>]*id="mlbdInlinePlayerData"[^>]*>([\s\S]*?)<\/script>/i);
   if (scriptM) {
     const openTag = scriptM[0].slice(0, scriptM[0].indexOf('>') + 1);
+    const seed = attrOf(openTag, 'data-s');
+    const rep  = attrOf(openTag, 'data-r');
+    log('  manifest seed:', seed ? 'yes' : 'no', '| repeat:', rep || '0');
     try {
-      player = JSON.parse(decodeManifest(scriptM[1],
-        attrOf(openTag, 'data-s'), attrOf(openTag, 'data-r')));
-    } catch (e) { log('manifest decode failed:', e.message); }
+      const decoded = decodeManifest(scriptM[1], seed, rep);
+      log('  manifest decoded:', decoded.length + 'B');
+      player = JSON.parse(decoded);
+    } catch (e) { log('  manifest decode FAILED:', e.message || e); }
+  } else {
+    log('  WARN: no mlbdInlinePlayerData script');
   }
 
   let title = null;
   const h1m = html.match(/<div[^>]*class="movie-info-view"[^>]*>[\s\S]*?<h1[^>]*>([\s\S]*?)<\/h1>/i);
   if (h1m) title = trimOrNull(stripTags(h1m[1]));
   if (!title && player) title = trimOrNull(player.title);
+  log('  title:', title);
 
   const episodes = [];
-  const epArr = player?.episodes ?? [];
-  epArr.forEach((ep, i) => {
+  const epArr = (player && player.episodes) || [];
+  log('  episodes in manifest:', epArr.length);
+  for (let i = 0; i < epArr.length; i++) {
+    const ep = epArr[i];
     const links = [];
-    for (const src of (ep.sources ?? [])) {
+    const sources = ep.sources || [];
+    for (let j = 0; j < sources.length; j++) {
+      const src = sources[j];
       const su = trimOrNull(src.url);
-      if (!su || !su.startsWith('http')) continue;
+      if (!su || su.indexOf('http') !== 0) continue;
       const q   = Number(src.quality) || 0;
       const ql  = trimOrNull(src.quality_label) || qualityName(q);
       const aud = trimOrNull(src.audio);
       const label = [ql, aud].filter(Boolean).join(' • ');
-      links.push(`${q}|${label}|${su}`);
+      links.push(q + '|' + label + '|' + su);
     }
-    if (!links.length) return;
+    if (!links.length) continue;
     episodes.push({
-      name:   trimOrNull(ep.label) || `Episode ${i + 1}`,
-      season: Number.isFinite(ep.season) ? ep.season : 1,
-      number: Number.isFinite(ep.number) ? ep.number : i + 1,
+      name:   trimOrNull(ep.label) || ('Episode ' + (i + 1)),
+      season: (typeof ep.season === 'number') ? ep.season : 1,
+      number: (typeof ep.number === 'number') ? ep.number : (i + 1),
       data:   links.join('\n'),
     });
-  });
+  }
   episodes.sort((a, b) => (a.season - b.season) || (a.number - b.number));
+  log('  usable episodes:', episodes.length);
 
-  return {
-    title, url: fixedUrl,
-    type: typeFromUrl(fixedUrl),
-    episodes,
-  };
+  return { title, url: fixedUrl, type: typeFromUrl(fixedUrl), episodes };
 }
 
 // ================= link generation =================
 async function generateLinks(blob) {
   const base = await resolveBase();
   const out = [];
-  for (const line of blob.split('\n')) {
-    const parts = line.split('|');
+  const lines = blob.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const parts = lines[i].split('|');
     if (parts.length < 3) continue;
     const q = parts[0], label = parts[1], rawLink = parts.slice(2).join('|');
     const link = await withMgToken(rawLink, base);
-    const type = link.includes('.m3u8') ? 'HLS' : 'VIDEO';
-    out.push({ quality: q, label, url: link, type, referer: `${base}/` });
+    const type = link.indexOf('.m3u8') >= 0 ? 'HLS' : 'VIDEO';
+    out.push({ quality: q, label, url: link, type, referer: base + '/' });
   }
   return out;
 }
 
-// ================= pick target episode =================
-/**
- * Robust episode resolver:
- *  - Movie: returns the single episode (0-index of episodes).
- *  - Series: tries exact S/E, then S/E as strings, then closest episode.
- */
+// ================= pick episode =================
 function pickEpisode(episodes, mediaType, seasonNum, episodeNum) {
   if (!episodes || !episodes.length) return null;
   if (mediaType === 'movie') return episodes[0];
@@ -413,156 +505,130 @@ function pickEpisode(episodes, mediaType, seasonNum, episodeNum) {
   const s = Number(seasonNum);
   const e = Number(episodeNum);
 
-  // Exact match
-  let hit = episodes.find(x => Number(x.season) === s && Number(x.number) === e);
+  let hit = null;
+  for (let i = 0; i < episodes.length; i++) {
+    if (Number(episodes[i].season) === s && Number(episodes[i].number) === e) {
+      hit = episodes[i]; break;
+    }
+  }
   if (hit) return hit;
 
-  // Same season, closest episode
   const seasonEps = episodes.filter(x => Number(x.season) === s);
   if (seasonEps.length) {
     seasonEps.sort((a, b) =>
       Math.abs(Number(a.number) - e) - Math.abs(Number(b.number) - e));
     return seasonEps[0];
   }
-
-  // Whole-series closest (S then E)
   episodes.sort((a, b) =>
     Math.abs(Number(a.season) - s) - Math.abs(Number(b.season) - s) ||
     Math.abs(Number(a.number) - e) - Math.abs(Number(b.number) - e));
   return episodes[0];
 }
 
-// ================= attempt one candidate =================
+// ================= try one =================
 async function tryOneCandidate(card, tmdbDetails, mediaType, seasonNum, episodeNum) {
-  log(`\n── try candidate: "${card.title}" (score ${card._score}) ──`);
-
+  log('── try candidate: "' + card.title + '" (score ' + card._score + ') ──');
   let detail;
   try {
     detail = await loadDetail(card.url);
   } catch (e) {
-    log(`  ✗ detail fetch failed: ${e.message}`);
+    log('  ✗ detail fetch failed: ' + (e.message || e));
     return null;
   }
-
   if (!detail.episodes.length) {
-    log(`  ✗ no episodes in manifest`);
+    log('  ✗ no episodes');
     return null;
   }
-  log(`  ✓ ${detail.episodes.length} episode(s) in manifest`);
-
   const target = pickEpisode(detail.episodes, mediaType, seasonNum, episodeNum);
-  if (!target) {
-    log(`  ✗ no usable episode`);
-    return null;
-  }
-  log(`  → picking S${target.season}E${target.number} — "${target.name}"`);
+  if (!target) { log('  ✗ no usable episode'); return null; }
+  log('  → S' + target.season + 'E' + target.number + ' — "' + target.name + '"');
 
   let links;
   try {
     links = await generateLinks(target.data);
   } catch (e) {
-    log(`  ✗ link generation failed: ${e.message}`);
+    log('  ✗ link gen failed: ' + (e.message || e));
     return null;
   }
-  if (!links.length) {
-    log(`  ✗ no playable links generated`);
-    return null;
-  }
-  log(`  ✓ ${links.length} stream(s) generated`);
-
-  return {
-    detail,
-    target,
-    links,
-    card,
-  };
+  if (!links.length) { log('  ✗ no links'); return null; }
+  log('  ✓ ' + links.length + ' stream(s)');
+  return { detail, target, links, card };
 }
 
-// ================= controller — public API =================
-async function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
+// ================= controller =================
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+  mediaType  = mediaType || 'movie';
   seasonNum  = Number(seasonNum)  || 1;
   episodeNum = Number(episodeNum) || 1;
 
-  console.log(`\n[MovieLinkBD] ═══ TMDB ${tmdbId} (${mediaType}) S${seasonNum}E${episodeNum} ═══`);
+  console.log('\n[MovieLinkBD] ═══ TMDB ' + tmdbId + ' (' + mediaType + ') S' + seasonNum + 'E' + episodeNum + ' ═══');
 
-  // 1. TMDB identity
+  // 1. TMDB
   let details;
   try {
     details = await tmdbDetailById(tmdbId, mediaType);
   } catch (e) {
-    console.log(`[MovieLinkBD] TMDB lookup failed: ${e.message}`);
+    console.log('[MovieLinkBD] TMDB failed: ' + (e.message || e));
     return [];
   }
-  console.log(`[MovieLinkBD] TMDB: "${details._title}" (${details._year}) | ${details.original_language || '?'}`);
+  console.log('[MovieLinkBD] TMDB: "' + details._title + '" (' + details._year + ')');
 
-  // 2. MovieLinkBD search — try canonical title, then original title
+  // 2. Search
   const queries = [details._title];
   if (details.original_title && details.original_title !== details._title) {
     queries.push(details.original_title);
   }
-
   let cards = [];
-  for (const q of queries) {
-    const found = await mlinkSearch(q).catch(() => []);
-    console.log(`[MovieLinkBD] Search "${q}" → ${found.length} card(s)`);
-    if (found.length) {
-      cards = found;
-      break;
+  for (let i = 0; i < queries.length; i++) {
+    try {
+      const found = await mlinkSearch(queries[i]);
+      console.log('[MovieLinkBD] Search "' + queries[i] + '" → ' + found.length + ' card(s)');
+      if (found.length) { cards = found; break; }
+    } catch (e) {
+      console.log('[MovieLinkBD] Search "' + queries[i] + '" failed: ' + (e.message || e));
     }
   }
+  if (!cards.length) return [];
 
-  if (!cards.length) {
-    console.log('[MovieLinkBD] ✗ nothing found on MovieLinkBD');
-    return [];
+  // 3. Rank
+  const ranked = rankCandidates(cards, details, {});
+  console.log('[MovieLinkBD] Ranking:');
+  for (let i = 0; i < Math.min(8, ranked.length); i++) {
+    const r = ranked[i];
+    console.log('  ' + (i === 0 ? '→' : ' ') + ' [' + i + '] ' + r.title + ' | ' + r.type + ' | ' + r._score);
   }
 
-  // 3. Rank candidates
-  const ranked = rankCandidates(cards, details, {});
-  console.log('\n[MovieLinkBD] Candidate ranking:');
-  ranked.slice(0, 8).forEach((r, i) => {
-    console.log(`  ${i === 0 ? '→' : ' '} [${i}] ${r.title} | ${r.type} | score ${r._score}`);
-  });
-
-  // 4. Build attempt list:
-  //    - always include candidates with score >= MIN_SCORE_TO_TRY
-  //    - always try at least top-3 even if they score below threshold
-  //      (MovieLinkBD sometimes has no year on the title)
+  // 4. Attempt list
   const attemptList = ranked.filter(r => r._score >= MIN_SCORE_TO_TRY);
   if (attemptList.length < 3) {
-    for (const r of ranked.slice(0, 3)) {
-      if (!attemptList.includes(r)) attemptList.push(r);
+    for (let i = 0; i < Math.min(3, ranked.length); i++) {
+      if (attemptList.indexOf(ranked[i]) < 0) attemptList.push(ranked[i]);
     }
   }
-  // Cap attempts so we don't hammer the CDN forever
-  const MAX_ATTEMPTS = 6;
   const toTry = attemptList.slice(0, MAX_ATTEMPTS);
-  console.log(`[MovieLinkBD] Will try ${toTry.length} candidate(s)\n`);
+  console.log('[MovieLinkBD] Trying ' + toTry.length + ' candidate(s)');
 
-  // 5. Try each candidate — stop at first success
+  // 5. Iterate
   let result = null;
-  for (const card of toTry) {
-    result = await tryOneCandidate(card, details, mediaType, seasonNum, episodeNum);
+  for (let i = 0; i < toTry.length; i++) {
+    result = await tryOneCandidate(toTry[i], details, mediaType, seasonNum, episodeNum);
     if (result) break;
   }
+  if (!result) { console.log('[MovieLinkBD] ✗ all candidates failed'); return []; }
 
-  if (!result) {
-    console.log('[MovieLinkBD] ✗ no candidate produced streams');
-    return [];
-  }
-
-  // 6. Build Nuvio-shaped output
+  // 6. Nuvio output
   const { detail, target, links, card } = result;
-  console.log(`\n[MovieLinkBD] ✓ using "${card.title}" — S${target.season}E${target.number}`);
+  console.log('[MovieLinkBD] ✓ "' + card.title + '" S' + target.season + 'E' + target.number);
 
   const showLabel = mediaType === 'tv'
-    ? `${details._title} S${target.season}E${target.number}`
+    ? details._title + ' S' + target.season + 'E' + target.number
     : details._title;
 
   return links.map(l => ({
     name:     'MovieLinkBD',
-    title:    `${showLabel} — ${l.label}`,
+    title:    showLabel + ' — ' + l.label,
     url:      l.url,
-    quality:  `${l.quality}p`,
+    quality:  l.quality + 'p',
     headers: {
       'Referer':    l.referer,
       'User-Agent': BASE_HEADERS['User-Agent'],
@@ -573,21 +639,9 @@ async function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
 }
 
 // ================= exports =================
-module.exports = { getStreams };
-
-// ================= CLI =================
-if (require.main === module) {
-  (async () => {
-    const [,, tmdbId, mediaType = 'movie', season = '1', episode = '1'] = process.argv;
-    if (!tmdbId) {
-      console.error('Usage: node movielinkbd-nuvio.js <tmdbId> <movie|tv> [season] [episode]');
-      console.error('Examples:');
-      console.error('  node movielinkbd-nuvio.js 597 movie');
-      console.error('  node movielinkbd-nuvio.js 2316 tv 2 5');
-      process.exit(1);
-    }
-    const streams = await getStreams(Number(tmdbId), mediaType, Number(season), Number(episode));
-    console.log('\n=== Result ===');
-    console.log(JSON.stringify(streams, null, 2));
-  })();
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { getStreams };
+}
+if (typeof globalThis !== 'undefined') {
+  globalThis.getStreams = getStreams;
 }
