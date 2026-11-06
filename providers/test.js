@@ -1,11 +1,6 @@
 /**
- * moviebox - v4 fast path
- * - token stored in module scope + harvested from x-user, reused across calls
- * - dub detail paths cached per detailPath
- * - subtitles cached per (subjectId|streamId|lang), fetched once per stream
- * - dubs processed in parallel (cap 4)
- * - single /subject/play per dub; parallel fallback only if empty
- * - 401 re-auths immediately (no blind sleeps)
+ * moviebox - merged: old.js request pipeline + test.js structure
+ * Nuvio-compatible: async/promise-based, module.exports = { getStreams }
  */
 
 var __create = Object.create;
@@ -88,7 +83,7 @@ var PLAY_UA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTM
 var DECOY_HASH = "b164fbfb4347792950bdfbfb563d39d9";
 var DECOY_PATH = "/other/2026/09/04/";
 
-// ================= module-scope caches (reused across calls) =================
+// ================= utils =================
 var import_crypto_js = __toESM(require("crypto-js"));
 var SECRET_KEY_DEFAULT = import_crypto_js.default.enc.Base64.parse(
   import_crypto_js.default.enc.Base64.parse(KEY_B64_DEFAULT).toString(import_crypto_js.default.enc.Utf8));
@@ -98,13 +93,8 @@ var SECRET_KEY_ALT = import_crypto_js.default.enc.Base64.parse(
 var deviceId = "";
 var selectedBrand = "";
 var selectedModel = "";
-var bearerToken = null;            // ← stored + reused
-var tokenPromise = null;           // ← in-flight dedupe
-var dubPathCache = new Map();      // detailPath -> { subjectId: detailPath }
-var subtitleCache = new Map();     // `${subjectId}|${streamId}|${lang}` -> [subs]
-var DUB_CONCURRENCY = 4;
+var bearerToken = null;
 
-// ================= utils =================
 function decodeJwtExpiry(token) {
   try {
     const parts = token.split(".");
@@ -117,7 +107,7 @@ function decodeJwtExpiry(token) {
 }
 function isTokenValid(token) {
   if (!token) return false;
-  return decodeJwtExpiry(token) > Date.now() / 1e3 + 300; // 5min headroom
+  return decodeJwtExpiry(token) > Date.now() / 1e3 + 3600;
 }
 function initializeSession() {
   if (!deviceId) {
@@ -132,7 +122,8 @@ function md5(input) { return import_crypto_js.default.MD5(input).toString(import
 function hmacMd5(key, data) { return import_crypto_js.default.HmacMD5(data, key).toString(import_crypto_js.default.enc.Base64); }
 function generateXClientToken(timestamp) {
   const ts = (timestamp || Date.now()).toString();
-  return `${ts},${md5(ts.split("").reverse().join(""))}`;
+  const hash = md5(ts.split("").reverse().join(""));
+  return `${ts},${hash}`;
 }
 function buildCanonicalString(method, accept, contentType, url, body, timestamp) {
   let path = "", query = "";
@@ -141,7 +132,10 @@ function buildCanonicalString(method, accept, contentType, url, body, timestamp)
     path = urlObj.pathname;
     const params = Array.from(urlObj.searchParams.keys()).sort();
     if (params.length > 0) {
-      query = params.map((key) => urlObj.searchParams.getAll(key).map((v) => `${key}=${v}`).join("&")).join("&");
+      query = params.map((key) => {
+        const values = urlObj.searchParams.getAll(key);
+        return values.map((val) => `${key}=${val}`).join("&");
+      }).join("&");
     }
   } catch (e) {
     if (url.includes("?")) {
@@ -159,7 +153,13 @@ function buildCanonicalString(method, accept, contentType, url, body, timestamp)
     bodyLength = bodyWords.sigBytes.toString();
     bodyHash = import_crypto_js.default.MD5(bodyWords).toString(import_crypto_js.default.enc.Hex);
   }
-  return `${method.toUpperCase()}\n${accept || ""}\n${contentType || ""}\n${bodyLength}\n${timestamp}\n${bodyHash}\n${canonicalUrl}`;
+  return `${method.toUpperCase()}
+${accept || ""}
+${contentType || ""}
+${bodyLength}
+${timestamp}
+${bodyHash}
+` + canonicalUrl;
 }
 function generateXTrSignature(method, accept, contentType, url, body, useAltKey = false, customTimestamp = null) {
   const timestamp = customTimestamp || Date.now();
@@ -167,6 +167,7 @@ function generateXTrSignature(method, accept, contentType, url, body, useAltKey 
   const secret = useAltKey ? SECRET_KEY_ALT : SECRET_KEY_DEFAULT;
   return `${timestamp}|2|${hmacMd5(secret, canonical)}`;
 }
+
 function buildClientInfoV4() {
   return JSON.stringify({
     package_name: "com.community.mbox.in",
@@ -183,9 +184,7 @@ function buildClientInfoV4() {
   });
 }
 
-// ================= request core =================
-// No getCachedToken() gate. Token used if present in module scope.
-// x-user harvested on every response. 401 re-auths immediately.
+// ================= core request (async promise, Nuvio-safe) =================
 function movieBoxRequest(_0, _1) {
   return __async(this, arguments, function* (method, url, body = null, customHeaders = {}, isTokenFetch = false, mode = "v3") {
     initializeSession();
@@ -201,88 +200,70 @@ function movieBoxRequest(_0, _1) {
       timezone: "Asia/Calcutta", sp_code: ""
     }));
     const ua = isV4 ? UA_V4 : UA_V3;
-
-    function buildHeaders() {
-      const h = __spreadValues({
-        "Accept": accept,
-        "Content-Type": headerContentType,
-        "x-client-token": generateXClientToken(timestamp),
-        "x-tr-signature": xTrSignature,
-        "User-Agent": ua,
-        "x-client-info": xClientInfo,
-        "x-client-status": "0"
-      }, customHeaders);
-      if (!isTokenFetch && bearerToken) h["Authorization"] = `Bearer ${bearerToken}`;
-      return h;
+    const headers = __spreadValues({
+      "Accept": accept,
+      "Content-Type": headerContentType,
+      "x-client-token": generateXClientToken(timestamp),
+      "x-tr-signature": xTrSignature,
+      "User-Agent": ua,
+      "x-client-info": xClientInfo,
+      "x-client-status": "0"
+    }, customHeaders);
+    if (!isTokenFetch) {
+      const token = yield getCachedToken();
+      if (token) headers["Authorization"] = `Bearer ${token}`;
     }
-
-    let options = { method, headers: buildHeaders() };
+    const options = { method, headers };
     if (body) options.body = body;
-
-    try {
-      let res = yield fetch(url, options);
-
-      // 401 → re-auth once, no sleep
-      if (res.status === 401 && !isTokenFetch && bearerToken) {
-        bearerToken = null;
-        const t = yield getCachedToken(true);
-        if (t) {
-          options.headers["Authorization"] = `Bearer ${t}`;
-          res = yield fetch(url, options);
-        }
-      }
-      if (!res.ok) {
-        if (res.status === 403 || res.status === 429) {
-          yield new Promise((r) => setTimeout(r, 400));
-          res = yield fetch(url, options);
-          if (!res.ok) return null;
-        } else {
+    let retries = 2;
+    while (retries > 0) {
+      try {
+        const res = yield fetch(url, options);
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403 || res.status === 429) {
+            bearerToken = null;
+            retries--;
+            yield new Promise((r) => setTimeout(r, 1e3));
+            continue;
+          }
           return null;
         }
+        const text = yield res.text();
+        let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
+        const xUser = res.headers.get("x-user");
+        if (xUser) { try { const j = JSON.parse(xUser); if (j.token && isTokenValid(j.token)) bearerToken = j.token; } catch {} }
+        return { data: parsed, headers: res.headers };
+      } catch (err) {
+        retries--;
+        if (retries === 0) { console.error("[MovieBox Request Error]", err.message); return null; }
+        yield new Promise((r) => setTimeout(r, 1e3));
       }
+    }
+    return null;
+  });
+}
 
-      const text = yield res.text();
-      let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
-
-      // harvest token from every response
+function getCachedToken() {
+  return __async(this, null, function* () {
+    if (isTokenValid(bearerToken)) return bearerToken;
+    console.log("[MovieBox] Fetching fresh anonymous token...");
+    const url = `${API_BASE_TOKEN}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1`;
+    const res = yield movieBoxRequest("GET", url, null, {}, true, "v3");
+    if (res && res.headers) {
       const xUser = res.headers.get("x-user");
       if (xUser) {
         try {
-          const j = JSON.parse(xUser);
-          if (j.token && isTokenValid(j.token)) bearerToken = j.token;
-        } catch {}
+          const xUserJson = JSON.parse(xUser);
+          const token = xUserJson.token;
+          if (token && isTokenValid(token)) { bearerToken = token; return token; }
+        } catch (e) { console.error("[MovieBox] Failed to parse x-user", e); }
       }
-      return { data: parsed, headers: res.headers };
-    } catch (err) {
-      return null;
     }
+    return bearerToken || "";
   });
 }
 
-// ================= token (stored + reused, in-flight deduped) =================
-function getCachedToken(force = false) {
-  return __async(this, null, function* () {
-    if (!force && isTokenValid(bearerToken)) return bearerToken;
-    if (tokenPromise) return tokenPromise;
-    tokenPromise = (function* () {
-      const url = `${API_BASE_TOKEN}/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1`;
-      const res = yield movieBoxRequest("GET", url, null, {}, true, "v3");
-      if (res && res.headers) {
-        const xUser = res.headers.get("x-user");
-        if (xUser) {
-          try {
-            const j = JSON.parse(xUser);
-            if (j.token && isTokenValid(j.token)) { bearerToken = j.token; return j.token; }
-          } catch {}
-        }
-      }
-      return bearerToken || "";
-    })();
-    try { return yield tokenPromise; } finally { tokenPromise = null; }
-  });
-}
-
-// ================= tmdb =================
+// ================= TMDB =================
 function fetchTmdbDetails(tmdbId, mediaType) {
   return __async(this, null, function* () {
     var _a;
@@ -299,11 +280,9 @@ function fetchTmdbDetails(tmdbId, mediaType) {
         imdbId: (_a = data.external_ids) == null ? void 0 : _a.imdb_id,
         originalTitle: data.original_title || data.original_name
       };
-    } catch (e) { return null; }
+    } catch (e) { console.error("[MovieBox TMDB Error]", e.message); return null; }
   });
 }
-
-// ================= helpers =================
 function normalizeTitle(s) {
   if (!s) return "";
   return s.replace(/\[.*?\]/g, " ").replace(/\(.*?\|/g, " ")
@@ -312,8 +291,8 @@ function normalizeTitle(s) {
     .replace(/[^\w\s]/g, " ").replace(/\s+/g, " ");
 }
 function parseQualityNumber(value) {
-  const m = String(value || "").match(/(\d{3,4})/);
-  return m ? parseInt(m[1], 10) : 0;
+  const match = String(value || "").match(/(\d{3,4})/);
+  return match ? parseInt(match[1], 10) : 0;
 }
 function getFormatType(url) {
   const u = String(url || "").toLowerCase();
@@ -329,7 +308,6 @@ function isDecoyUrl(url) {
   return u.includes(DECOY_HASH) || u.includes(DECOY_PATH);
 }
 
-// ================= signCookie decode =================
 function extractPolicyResource(signCookie) {
   if (!signCookie) return null;
   try {
@@ -364,6 +342,7 @@ function extractPolicyResource(signCookie) {
     return (json.Statement && json.Statement[0] && json.Statement[0].Resource) || null;
   } catch (e) { return null; }
 }
+
 function buildDashUrl(resource, quality) {
   if (!resource) return null;
   let url = String(resource).replace(/\/\*$/, "").replace(/\/+$/, "");
@@ -371,11 +350,8 @@ function buildDashUrl(resource, quality) {
   return `${url}/index.mpd`;
 }
 
-// ================= dub detail paths (cached) =================
 function fetchDubDetailPaths(detailPath) {
   return __async(this, null, function* () {
-    if (!detailPath) return {};
-    if (dubPathCache.has(detailPath)) return dubPathCache.get(detailPath);
     try {
       const url = `${API_BASE_DETAIL}/wefeed-h5api-bff/detail?detailPath=${encodeURIComponent(detailPath)}`;
       const res = yield fetch(url, { headers: {
@@ -385,22 +361,19 @@ function fetchDubDetailPaths(detailPath) {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
         "x-client-info": "{\"timezone\":\"Asia/Calcutta\"}"
       }});
+      if (!res.ok) return {};
+      const root = yield res.json();
+      const dubs = root && root.data && root.data.subject ? root.data.subject.dubs : null;
       const map = {};
-      if (res.ok) {
-        const root = yield res.json();
-        const dubs = root && root.data && root.data.subject ? root.data.subject.dubs : null;
-        if (Array.isArray(dubs)) for (const d of dubs) {
-          if (d && d.subjectId && d.detailPath && String(d.detailPath).trim()) map[String(d.subjectId)] = d.detailPath;
-        }
+      if (Array.isArray(dubs)) for (const d of dubs) {
+        if (d && d.subjectId && d.detailPath && String(d.detailPath).trim()) map[String(d.subjectId)] = d.detailPath;
       }
-      dubPathCache.set(detailPath, map);
       return map;
-    } catch { dubPathCache.set(detailPath, {}); return {}; }
+    } catch { return {}; }
   });
 }
 
-// ================= play =================
-function playOnce(subDomain, sid, se, ep, dp, h264Only) {
+function playOnce(subDomain, sid, se, ep, dp, token, h264Only) {
   return __async(this, null, function* () {
     const codecs = h264Only ? "supportCodecs%5Bhevc%5D=0&supportCodecs%5Bh264%5D=1"
                             : "supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1";
@@ -412,6 +385,7 @@ function playOnce(subDomain, sid, se, ep, dp, h264Only) {
       "x-client-info": "{\"timezone\":\"Asia/Calcutta\"}", "x-request-lang": "en",
       "x-vip-restrict": h264Only ? "1" : "0", "x-no-high-risk-restrict": "0", "x-source": ""
     };
+    if (token) extra["Authorization"] = `Bearer ${token}`;
     const r = yield movieBoxRequest("GET", url, null, extra, false, "v4");
     if (!r || !r.data || !r.data.data) return null;
     const d = r.data.data;
@@ -419,20 +393,20 @@ function playOnce(subDomain, sid, se, ep, dp, h264Only) {
     return has ? d : null;
   });
 }
-
-function playInfo(subDomain, sid, se, ep, dp) {
+function playInfo(subDomain, sid, se, ep, dp, token) {
   return __async(this, null, function* () {
-    // one shot with both codecs enabled
-    let d = yield playOnce(subDomain, sid, se, ep, dp, false);
-    if (d) return d;
-    // parallel fallback only if the first shot was empty
-    const tries = [
-      playOnce(subDomain, sid, 0, 0, dp, false),
-      playOnce(subDomain, sid, 1, 1, dp, false),
-      playOnce(subDomain, sid, se, ep, dp, true)
-    ];
-    const results = yield Promise.all(tries);
-    return results.find(Boolean) || null;
+    const pairs = [];
+    const add = (a, b) => { if (!pairs.some(([x, y]) => x === a && y === b)) pairs.push([a, b]); };
+    add(se, ep);
+    add(0, 0);
+    add(1, 1);
+    for (const [s, e] of pairs) {
+      for (const h264 of [false, true]) {
+        const d = yield playOnce(subDomain, sid, s, e, dp, token, h264);
+        if (d) return d;
+      }
+    }
+    return null;
   });
 }
 
@@ -443,83 +417,41 @@ function searchMovieBox(query) {
     const body = JSON.stringify({ page: 1, perPage: 20, keyword: query });
     const response = yield movieBoxRequest("POST", url, body, {}, false, "v3");
     if (response && response.data && response.data.data && response.data.data.results) {
-      let all = [];
-      response.data.data.results.forEach((g) => { if (g.subjects) all = all.concat(g.subjects); });
-      return all;
+      let allSubjects = [];
+      response.data.data.results.forEach((group) => { if (group.subjects) allSubjects = allSubjects.concat(group.subjects); });
+      return allSubjects;
     }
     return [];
   });
 }
 function findBestMatch(subjects, tmdbTitle, tmdbYear, mediaType) {
-  const norm = normalizeTitle(tmdbTitle);
+  const normTmdbTitle = normalizeTitle(tmdbTitle);
   const targetType = mediaType === "movie" ? 1 : 2;
-  let best = null, bestScore = 0;
-  for (const s of subjects) {
-    if (s.subjectType !== targetType) continue;
-    const t = normalizeTitle(s.title);
-    const year = s.year || (s.releaseDate ? s.releaseDate.substring(0, 4) : null);
+  let bestMatch = null, bestScore = 0;
+  for (const subject of subjects) {
+    if (subject.subjectType !== targetType) continue;
+    const normTitle = normalizeTitle(subject.title);
+    const year = subject.year || (subject.releaseDate ? subject.releaseDate.substring(0, 4) : null);
     let score = 0;
-    if (t === norm) score += 50;
-    else if (t.includes(norm) || norm.includes(t)) score += 15;
+    if (normTitle === normTmdbTitle) score += 50;
+    else if (normTitle.includes(normTmdbTitle) || normTmdbTitle.includes(normTitle)) score += 15;
     if (tmdbYear && year && tmdbYear == year) score += 35;
-    if (score > bestScore) { bestScore = score; best = s; }
+    if (score > bestScore) { bestScore = score; bestMatch = subject; }
   }
-  return bestScore >= 40 ? best : null;
+  return bestScore >= 40 ? bestMatch : null;
 }
 
-// ================= subtitles (cached, once per stream) =================
-function fetchSubtitles(subjectId, streamId, langLabel) {
-  return __async(this, null, function* () {
-    const key = `${subjectId}|${streamId}|${langLabel}`;
-    if (subtitleCache.has(key)) return subtitleCache.get(key);
-    const out = [];
-    const seen = new Set();
-    const push = (cap) => {
-      if (!cap || !cap.url || seen.has(cap.url)) return;
-      seen.add(cap.url);
-      out.push({
-        url: cap.url,
-        language: cap.lan || cap.lanName || cap.language || "en",
-        name: `${cap.lanName || cap.lan || cap.language || "Subtitle"} (${langLabel})`,
-        headers: { "Referer": API_BASE }
-      });
-    };
-    const [a, b] = yield Promise.all([
-      movieBoxRequest("GET", `${API_BASE}/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=${subjectId}&streamId=${streamId}`, null, {}, false, "v4").catch(() => null),
-      movieBoxRequest("GET", `${API_BASE}/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId=${subjectId}&resourceId=${streamId}&episode=0`, null, {}, false, "v4").catch(() => null)
-    ]);
-    if (a && a.data && a.data.data && Array.isArray(a.data.data.extCaptions)) a.data.data.extCaptions.forEach(push);
-    if (b && b.data && b.data.data && Array.isArray(b.data.data.extCaptions)) b.data.data.extCaptions.forEach(push);
-    subtitleCache.set(key, out);
-    return out;
-  });
-}
-
-// ================= concurrency helper =================
-function mapLimit(items, limit, fn) {
-  return __async(this, null, function* () {
-    const results = new Array(items.length);
-    let i = 0;
-    const workers = Array.from({ length: Math.min(limit, items.length) }, () => (function* () {
-      while (true) {
-        const idx = i++;
-        if (idx >= items.length) return;
-        try { results[idx] = yield fn(items[idx], idx); }
-        catch (e) { results[idx] = null; }
-      }
-    })());
-    yield Promise.all(workers);
-    return results;
-  });
-}
-
-// ================= main =================
+// ================= getStreamLinks =================
 function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", mediaType = "movie") {
   return __async(this, null, function* () {
     const subjectUrl = `${API_BASE}/wefeed-mobile-bff/subject-api/get?subjectId=${subjectId}`;
     const detailRes = yield movieBoxRequest("GET", subjectUrl, null, {}, false, "v4");
-    if (!detailRes || !detailRes.data || !detailRes.data.data) return [];
+    if (!detailRes || !detailRes.data || !detailRes.data.data) {
+      console.log("[MovieBox] Subject fetch failed");
+      return [];
+    }
     const subjectData = detailRes.data.data;
+    console.log(`[MovieBox] Subject: "${subjectData.title}"`);
 
     let subDomain = API_BASE, originalDetailPath = null;
     if (subjectData.detailUrl) {
@@ -540,113 +472,139 @@ function getStreamLinks(subjectId, season = 0, episode = 0, mediaTitle = "", med
     }
     subjectIds.unshift({ id: String(subjectId), lang: originalLang, detailPath: originalDetailPath });
 
-    // warm token in background (non-blocking); harvest from subject-api/get already done
-    if (!isTokenValid(bearerToken)) getCachedToken().catch(() => {});
-
-    // fetch dub paths only if some dub is missing its direct detailPath
     let dubPaths = {};
-    const needDubPaths = subjectIds.some((s) => !s.detailPath && s.id !== String(subjectId));
-    if (needDubPaths && originalDetailPath) dubPaths = yield fetchDubDetailPaths(originalDetailPath);
+    if (originalDetailPath) dubPaths = yield fetchDubDetailPaths(originalDetailPath);
+    console.log(`[MovieBox] dubPaths: ${Object.keys(dubPaths).length}`);
 
+    const token = yield getCachedToken();
     const allStreams = [];
     const seen = new Set();
 
-    // dubs in parallel (cap 4)
-    const perDub = yield mapLimit(subjectIds, DUB_CONCURRENCY, (item) => (function* () {
-      const detailPath = item.detailPath || dubPaths[item.id] || item.id;
-      const playData = yield playInfo(subDomain, item.id, season, episode, detailPath);
-      if (!playData) return [];
-      const local = [];
-      const subJobs = [];
+    for (const item of subjectIds) {
+      try {
+        const detailPath = item.detailPath || dubPaths[item.id] || item.id;
+        console.log(`[MovieBox] → /subject/play ${item.lang} id=${item.id} se=${season} ep=${episode}`);
+        const playData = yield playInfo(subDomain, item.id, season, episode, detailPath, token);
+        if (!playData) { console.log(`[MovieBox]   play empty`); continue; }
 
-      for (const bucket of ["dash", "hls", "streams"]) {
-        const arr = playData[bucket];
-        if (!Array.isArray(arr) || arr.length === 0) continue;
+        for (const bucket of ["dash", "hls", "streams"]) {
+          const arr = playData[bucket];
+          if (!Array.isArray(arr) || arr.length === 0) continue;
 
-        for (const stream of arr) {
-          if (!stream) continue;
-          const streamId = stream.id || `${item.id}|${season}|${episode}`;
-
-          // subtitles once per stream, attached to all resolutions
-          const subPromise = fetchSubtitles(item.id, streamId, item.lang);
-          const idx = subJobs.push(subPromise) - 1;
-
-          const resource = extractPolicyResource(stream.signCookie);
-          if (resource) {
-            const resolutions = String(stream.resolutions || "")
-              .split(",").map((x) => x.trim()).filter(Boolean);
-            const list = resolutions.length ? resolutions : ["1080"];
-            for (const r of list) {
-              const dashUrl = buildDashUrl(resource, r);
-              if (!dashUrl || seen.has(dashUrl)) continue;
-              seen.add(dashUrl);
-              local.push({
-                name: `MovieBox ${item.lang}`,
-                title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${r}p [${bucket.toUpperCase()}]`,
-                url: dashUrl,
-                quality: `${r}p • ${item.lang}`,
-                headers: {
-                  "Referer": subDomain,
-                  "User-Agent": PLAY_UA,
-                  "Cookie": String(stream.signCookie || "").replace(/;\s*$/, "").trim()
-                },
-                subtitles: null,
-                _subIdx: idx,
-                provider: "moviebox"
-              });
+          for (const stream of arr) {
+            if (!stream) continue;
+            const resource = extractPolicyResource(stream.signCookie);
+            if (resource) {
+              console.log(`[MovieBox]   🔓 resource=${resource} (${bucket})`);
+              const resolutions = String(stream.resolutions || "").split(",").map((x) => x.trim()).filter(Boolean);
+              const list = resolutions.length ? resolutions : ["1080"];
+              const streamId = stream.id || `${item.id}|${season}|${episode}`;
+              const subtitles = yield fetchSubtitles(item.id, streamId, item.lang);
+              for (const r of list) {
+                const dashUrl = buildDashUrl(resource, r);
+                if (!dashUrl || seen.has(dashUrl)) continue;
+                seen.add(dashUrl);
+                allStreams.push({
+                  name: `MovieBox ${item.lang}`,
+                  title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${r}p [${bucket.toUpperCase()}]`,
+                  url: dashUrl,
+                  quality: `${r}p • ${item.lang}`,
+                  headers: {
+                    "Referer": subDomain,
+                    "User-Agent": PLAY_UA,
+                    "Cookie": String(stream.signCookie || "").replace(/;\s*$/, "").trim()
+                  },
+                  subtitles,
+                  provider: "moviebox"
+                });
+              }
+              continue;
             }
-            continue;
+
+            if (!stream.url || isDecoyUrl(stream.url)) continue;
+            const formatType = getFormatType(stream.url);
+            const qualLabel = stream.resolutions || stream.quality || "Auto";
+            const qualNum = parseQualityNumber(qualLabel);
+            const quality = qualNum ? `${qualNum}p` : "Auto";
+            const streamId = stream.id || `${item.id}|${season}|${episode}`;
+            const subtitles = yield fetchSubtitles(item.id, streamId, item.lang);
+            if (seen.has(stream.url)) continue;
+            seen.add(stream.url);
+            allStreams.push({
+              name: `MovieBox ${item.lang}`,
+              title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${quality} [${formatType}]`,
+              url: stream.url,
+              quality: `${quality} • ${item.lang}`,
+              headers: __spreadValues({
+                "Referer": subDomain,
+                "User-Agent": PLAY_UA
+              }, stream.signCookie ? { "Cookie": String(stream.signCookie).replace(/;\s*$/, "").trim() } : {}),
+              subtitles,
+              provider: "moviebox"
+            });
           }
-
-          if (!stream.url || isDecoyUrl(stream.url)) continue;
-          const formatType = getFormatType(stream.url);
-          const qualLabel = stream.resolutions || stream.quality || "Auto";
-          const qualNum = parseQualityNumber(qualLabel);
-          const quality = qualNum ? `${qualNum}p` : "Auto";
-          if (seen.has(stream.url)) continue;
-          seen.add(stream.url);
-          local.push({
-            name: `MovieBox ${item.lang}`,
-            title: `${mediaTitle}${season > 0 ? ` S${season}E${episode}` : ""} (${item.lang}) - ${quality} [${formatType}]`,
-            url: stream.url,
-            quality: `${quality} • ${item.lang}`,
-            headers: __spreadValues({
-              "Referer": subDomain,
-              "User-Agent": PLAY_UA
-            }, stream.signCookie ? { "Cookie": String(stream.signCookie).replace(/;\s*$/, "").trim() } : {}),
-            subtitles: null,
-            _subIdx: idx,
-            provider: "moviebox"
-          });
         }
+      } catch (err) {
+        console.error(`[MovieBox Stream Fetch Error] ID: ${item.id}`, err.message);
       }
-
-      const subs = yield Promise.all(subJobs);
-      for (const s of local) s.subtitles = subs[s._subIdx] || [];
-      for (const s of local) delete s._subIdx;
-      return local;
-    })());
-
-    for (const arr of perDub) if (Array.isArray(arr)) allStreams.push(...arr);
+    }
+    console.log(`[MovieBox] === Total: ${allStreams.length} streams ===`);
     return allStreams;
   });
 }
 
-// ================= public =================
+function fetchSubtitles(subjectId, streamId, langLabel) {
+  return __async(this, null, function* () {
+    const subtitles = [];
+    const seen = new Set();
+    const push = (cap) => {
+      if (!cap || !cap.url || seen.has(cap.url)) return;
+      seen.add(cap.url);
+      subtitles.push({
+        url: cap.url,
+        language: cap.lan || cap.lanName || cap.language || "en",
+        name: `${cap.lanName || cap.lan || cap.language || "Subtitle"} (${langLabel})`,
+        headers: { "Referer": API_BASE }
+      });
+    };
+    try {
+      const u = `${API_BASE}/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId=${subjectId}&streamId=${streamId}`;
+      const r = yield movieBoxRequest("GET", u, null, {}, false, "v4");
+      const caps = r && r.data && r.data.data && r.data.data.extCaptions;
+      if (Array.isArray(caps)) caps.forEach(push);
+    } catch {}
+    try {
+      const u = `${API_BASE}/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId=${subjectId}&resourceId=${streamId}&episode=0`;
+      const r = yield movieBoxRequest("GET", u, null, {}, false, "v4");
+      const caps = r && r.data && r.data.data && r.data.data.extCaptions;
+      if (Array.isArray(caps)) caps.forEach(push);
+    } catch {}
+    return subtitles;
+  });
+}
+
+// ================= getStreams =================
 function getStreams(tmdbId, mediaType, seasonNum = 1, episodeNum = 1) {
   return __async(this, null, function* () {
+    console.log(`[MovieBox] === Querying TMDB ${tmdbId} type=${mediaType} S${seasonNum}E${episodeNum} ===`);
     const details = yield fetchTmdbDetails(tmdbId, mediaType);
-    if (!details) return [];
+    if (!details) { console.log("[MovieBox] TMDB details failed"); return []; }
     let subjects = yield searchMovieBox(details.title);
+    console.log(`[MovieBox] Search "${details.title}" → ${subjects.length} results`);
     let bestMatch = findBestMatch(subjects, details.title, details.year, mediaType);
     if (!bestMatch && details.originalTitle && details.originalTitle !== details.title) {
       subjects = yield searchMovieBox(details.originalTitle);
+      console.log(`[MovieBox] Fallback search "${details.originalTitle}" → ${subjects.length} results`);
       bestMatch = findBestMatch(subjects, details.originalTitle, details.year, mediaType);
     }
-    if (!bestMatch) return [];
-    const s = mediaType === "tv" ? seasonNum : 0;
-    const e = mediaType === "tv" ? episodeNum : 0;
-    return yield getStreamLinks(String(bestMatch.subjectId), s, e, details.title, mediaType);
+    if (bestMatch) {
+      console.log(`[MovieBox] Best match: "${bestMatch.title}" id=${bestMatch.subjectId}`);
+      const s = mediaType === "tv" ? seasonNum : 0;
+      const e = mediaType === "tv" ? episodeNum : 0;
+      return yield getStreamLinks(String(bestMatch.subjectId), s, e, details.title, mediaType);
+    }
+    console.log(`[MovieBox] ✗ No matching content found for: ${details.title}`);
+    return [];
   });
 }
 
