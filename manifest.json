@@ -70,7 +70,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/temmov.js",
+      "filename": "providers/test.js",
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
@@ -120,7 +120,7 @@
       "version": "2.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/test.js",
+      "filename": "",
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en", "hi", "ta", "te"]
