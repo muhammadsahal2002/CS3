@@ -110,6 +110,20 @@
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
+    },
+
+
+{
+      "id": "mve",
+      "name": "e",
+      "description": "Multi Lang provider",
+      "version": "2.0.0",
+      "author": "Nuvio Team",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/Test.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8"],
+      "contentLanguage": ["en", "hi", "ta", "te"]
     }
   ]
 }
