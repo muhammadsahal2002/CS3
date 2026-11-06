@@ -114,8 +114,8 @@
 
 
 {
-      "id": "mve",
-      "name": "e",
+      "id": "box",
+      "name": "box",
       "description": "Multi Lang provider",
       "version": "2.0.0",
       "author": "Nuvio Team",
