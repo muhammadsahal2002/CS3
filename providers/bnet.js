@@ -16,15 +16,15 @@ var PROVIDERS = {
     seriesRoots: ['KOREAN TV %26 WEB Series/']
   },
   dhakaflix12: {
-    mainUrl: 'https://server5.ftpbd.net',
-    serverName: 'FTP-5',
-    name: 'FTP-5',
-    kind: 'ftp-html',
-    tvSeriesKeyword: ['TV-WEB-Series'],
-    supportedTypes: ['series'],
-    movieRoots: [],
-    seriesRoots: ['FTP-5/Anime--Cartoon-TV-Series/']
-  },
+  mainUrl: 'https://server5.ftpbd.net',
+  serverName: 'FTP-5',
+  name: 'FTP-5',
+  kind: 'ftp-html',
+  tvSeriesKeyword: ['TV-WEB-Series'],
+  supportedTypes: ['series'],
+  movieRoots: [],
+  seriesRoots: ['FTP-5/Anime--Cartoon-TV-Series/']
+},
   dhakaflix7: {
     mainUrl: 'http://172.16.50.7',
     serverName: 'DHAKA-FLIX-7',
@@ -158,19 +158,8 @@ function buildSearchQueries(title, year) {
   var words = title.split(/\s+/);
   if (words.length > 2) add(words.slice(0, 2).join(' '));
   var stripped = title.replace(/^(The|A|An)\s+/i, '');
-if (stripped !== title) add(stripped);
-
-// Anime sequel suffixes: "Z", "GT", "Super", "Shippuden", "Kai"
-// Also try the bare base title
-var sequelMatch = title.match(/^(.+?)\s+(Z|GT|Super|Shippuden|Kai|Daima)\b/i);
-if (sequelMatch) add(sequelMatch[1]);
-
-// If title is "X: Y", also try "X" (colon already handled above but kept here for clarity)
-// If title has parenthetical, also try without it
-var noParen = title.replace(/\s*\([^)]*\)\s*$/, '').trim();
-if (noParen !== title) add(noParen);
-
-return queries;
+  if (stripped !== title) add(stripped);
+  return queries;
 }
 
 // ---------- Dispatcher ----------
@@ -335,74 +324,39 @@ function searchSeriesAlphabetBuckets(title, provider, providerId) {
 // ══════════════════════════════════════════════════════════
 
 function searchProviderFTP(queries, provider, providerId, wantType) {
-  var rootPath = provider.seriesRoots[0];
-  var rootUrl = joinUrl(provider.mainUrl, rootPath);
-  console.log('[DhakaFlix] FTP root → ' + rootUrl);
+  console.log('[DhakaFlix] FTP seeded roots: ' + provider.seriesRoots.length);
 
-  return listApacheDir(rootUrl, provider).then(function(items) {
-    console.log('[DhakaFlix] FTP root items: ' + items.length);
-    var results = [], seen = {};
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i];
-      if (!it.isFolder) continue;
-      for (var q = 0; q < queries.length; q++) {
-        if (titleMatches(it.name, queries[q])) {
-          if (seen[it.fullUrl]) break;
-          seen[it.fullUrl] = true;
-          results.push({
-            name: it.name,
-            type: 'series',
-            url: it.fullUrl,
-            providerId: providerId,
-            isFile: false,
-            absolute: true
-          });
-          break;
-        }
+  var results = [], seen = {};
+  for (var i = 0; i < provider.seriesRoots.length; i++) {
+    var path = provider.seriesRoots[i];
+    var folderName = decodeURIComponent(path.replace(/\/$/, '').split('/').pop());
+    for (var q = 0; q < queries.length; q++) {
+      if (titleMatches(folderName, queries[q])) {
+        if (seen[path]) break;
+        seen[path] = true;
+        results.push({
+          name: folderName,
+          type: 'series',
+          url: provider.mainUrl + path,
+          providerId: providerId,
+          isFile: false,
+          absolute: true
+        });
+        break;
       }
     }
-    console.log('[DhakaFlix] FTP matched folders: ' + results.length);
-    return results;
-  });
+  }
+  console.log('[DhakaFlix] FTP matched folders: ' + results.length);
+  return Promise.resolve(results);
 }
 
 function titleMatches(folderName, query) {
-  // Normalize: lowercase, strip parens content so "Dragon Ball (1994) Hindi"
-  // becomes "dragon ball hindi", hyphens → spaces so "Naruto-2002-2007"
-  // becomes "naruto 2002 2007".
-  function norm(s) {
-    return s.toLowerCase()
-      .replace(/([^)]*)/g, ' ')     // remove (1994), (2002-2007), etc.
-      .replace(/[[^]]*]/g, ' ')    // remove [Hindi], [1080p], etc.
-      .replace(/[-_.]/g, ' ')
-      .replace(/[^ws]/g, ' ')
-      .replace(/s+/g, ' ')
-      .trim();
-  }
-  var a = norm(folderName);
-  var b = norm(query);
-  if (!a || !b) return false;
-
-  // Direct substring check (most reliable)
+  var a = folderName.toLowerCase();
+  var b = query.toLowerCase();
   if (a.indexOf(b) !== -1) return true;
-
-  // Token-prefix check: does folder start with every query token?
-  var qTokens = b.split(' ').filter(function(t) { return t.length > 1; });
-  var fTokens = a.split(' ').filter(function(t) { return t.length > 1; });
-  if (qTokens.length === 0 || fTokens.length === 0) return false;
-
-  var prefix = true;
-  for (var i = 0; i < qTokens.length; i++) {
-    if (fTokens[i] !== qTokens[i]) { prefix = false; break; }
-  }
-  if (prefix) return true;
-
-  // Fallback: at least 60% of query tokens appear anywhere in the folder name
-  var hits = 0;
-  for (var j = 0; j < qTokens.length; j++) {
-    if (fTokens.indexOf(qTokens[j]) !== -1) hits++;
-  }
-  return hits / qTokens.length >= 0.6;
+  var bw = b.split(/\s+/)[0];
+  var aw = a.split(/\s+/)[0];
+  return bw.length > 3 && aw.indexOf(bw) === 0;
 }
 
 function listApacheDir(url, provider) {
@@ -413,26 +367,38 @@ function listApacheDir(url, provider) {
     })
     .then(function(html) {
       var items = [];
-      var re = /<a\s+href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
+      // h5ai v0.30 fallback table row:
+      // <tr><td class="fb-i"><img src="..." alt="folder|file|folder-parent"/></td>
+      //     <td class="fb-n"><a href="URL">NAME</a></td>
+      //     <td class="fb-d">DATE</td><td class="fb-s">SIZE</td></tr>
+      var rowRe = /<tr>\s*<td class="fb-i">\s*<img[^>]+alt="([^"]+)"[^>]*\/>\s*<\/td>\s*<td class="fb-n">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/td>/gi;
       var m;
-      while ((m = re.exec(html)) !== null) {
-        var href = m[1], text = m[2].trim();
-        if (!href || href === '../' || href === './' || href.charAt(0) === '?') continue;
-        if (href === '/' || href.charAt(0) === '/') continue;
-        if (/^(parent directory|\?c=)/i.test(href) || /^(parent directory)$/i.test(text)) continue;
-        var decodedHref = decodeURIComponent(href);
-        var isFolder = /\/$/.test(decodedHref) || /\/$/.test(text);
-        var isVideo = /\.(mkv|mp4|avi|webm)$/i.test(decodedHref);
-        var name = text || decodedHref.replace(/\/$/, '');
-        if (!name) continue;
+      while ((m = rowRe.exec(html)) !== null) {
+        var alt = m[1].toLowerCase();
+        var href = m[2];
+        var rawName = m[3].replace(/<[^>]+>/g, '').trim();
+
+        if (alt === 'folder-parent') continue;
+        if (!href || href === '..') continue;
+
+        var isFolder = alt === 'folder';
+        var isFile = alt === 'file';
+        if (!isFolder && !isFile) continue;
+
+        var isVideo = isFile && /\.(mkv|mp4|avi|webm|m4v|mov)$/i.test(decodeURIComponent(href));
+
         items.push({
-          name: name,
+          name: decodeURIComponent(rawName),
           href: href,
           isFolder: isFolder,
           isVideo: isVideo,
-          fullUrl: joinUrl(url, href)
+          fullUrl: /^https?:\/\//.test(href)
+            ? href
+            : (url.replace(/\/+$/, '') + '/' + href.replace(/^\/+/, ''))
         });
       }
+      var lastSeg = url.split('/').filter(Boolean).pop() || '';
+      console.log('[DhakaFlix] h5ai items in ' + decodeURIComponent(lastSeg) + ': ' + items.length);
       return items;
     });
 }
@@ -536,11 +502,23 @@ function extractFtpSeason(seasonUrl, provider, seasonNum) {
     items.forEach(function(it) {
       if (!it.isVideo) return;
       counter++;
-      var se = parseEpisodeNumbers(it.name);
+
+      // Filenames like:
+      //  "Naruto Shippuden Episode 373 Team 7 Assemble!_reencoded.mp4"
+      //  "Naruto Shippuden Episode 374 The New Three-Way Deadlock_reencoded.mp4"
+      // Extract "Episode N" (most common) or "SxxExx" or "Exx" or first N.
+      var epNum = 0;
+      var m = it.name.match(/Episode[\s._-]*(\d{1,4})/i);
+      if (!m) m = it.name.match(/S\d{1,2}[\s._-]*E(?:P)?[\s._-]*(\d{1,4})/i);
+      if (!m) m = it.name.match(/\bE(?:p)?[\s._-]*(\d{1,4})\b/i);
+      if (!m) m = it.name.match(/\b(\d{1,4})\b/);
+
+      epNum = m ? parseInt(m[1]) : counter;
+
       eps.push({
         name: it.name,
         season: seasonNum,
-        episode: se.episode || counter,
+        episode: epNum,
         url: it.fullUrl
       });
     });
@@ -562,10 +540,8 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     var r = results[i];
     if (r.type !== wantType) continue;
 
-    // Capture the FIRST 4-digit year anywhere: "Dragon Ball (1994)",
-// "Naruto-2002-2007", "Doraemon (1979) Hindi", "Show (2002-2007)".
-var ym = r.name.match(/b(19d{2}|20d{2})b/);
-var fileYear = ym ? parseInt(ym[1]) : null;
+    var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
+    var fileYear = ym ? parseInt(ym[1]) : null;
 
     if (wantType === 'movie' && targetYear && fileYear) {
       if (Math.abs(fileYear - targetYear) > 1) continue;
@@ -622,16 +598,14 @@ var fileYear = ym ? parseInt(ym[1]) : null;
 
     if (r.isFile) score += 3;
 
-// Language/dub is a TIEBREAKER only — never a penalty.
-// A dubbed-only folder must still win if it's the only match.
-var isDubbed = /b(dubbed|dub|hindi|tamil|telugu|dual[s.-]?audio)b/i.test(r.name);
-r._dubbed = isDubbed;
+    if (/\b(dubbed|dub|hindi|tamil|telugu|dual[\s.-]?audio)\b/i.test(r.name)) {
+      score -= 2;
+    }
 
-if (score > bestScore ||
-    (score === bestScore && best && best._dubbed && !r._dubbed)) {
-  bestScore = score;
-  best = r;
-}
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
   }
 
   if (best) {
@@ -1029,11 +1003,7 @@ function containsAny(text, keywords) {
 }
 
 function clean(s) {
-  return s.toLowerCase()
-    .replace(/[-_.]/g, ' ')       // hyphens/underscores/dots → spaces
-    .replace(/[^ws]/g, ' ')      // parens/brackets → spaces (NOT delete)
-    .replace(/s+/g, ' ')
-    .trim();
+  return s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function extractQuality(name) {
