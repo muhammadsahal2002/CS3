@@ -6,6 +6,7 @@ var PROVIDERS = {
     mainUrl: 'http://172.16.50.14',
     serverName: 'DHAKA-FLIX-14',
     name: 'DhakaFlix 14',
+    kind: 'filebrowser',
     tvSeriesKeyword: ['KOREAN%20TV%20%26%20WEB%20Series'],
     supportedTypes: ['movie', 'series'],
     movieRoots: [
@@ -15,21 +16,20 @@ var PROVIDERS = {
     seriesRoots: ['KOREAN TV %26 WEB Series/']
   },
   dhakaflix12: {
-    mainUrl: 'https://server5.ftpbd.net/',
+    mainUrl: 'https://server5.ftpbd.net',
     serverName: 'FTP-5',
     name: 'FTP-5',
+    kind: 'ftp-html',
     tvSeriesKeyword: ['TV-WEB-Series'],
     supportedTypes: ['series'],
     movieRoots: [],
-    seriesRoots: [
-      'FTP-5/Anime--Cartoon-TV-Series/',
-      
-    ]
+    seriesRoots: ['FTP-5/Anime--Cartoon-TV-Series/']
   },
   dhakaflix7: {
     mainUrl: 'http://172.16.50.7',
     serverName: 'DHAKA-FLIX-7',
     name: 'DhakaFlix 7',
+    kind: 'filebrowser',
     tvSeriesKeyword: [],
     supportedTypes: ['movie'],
     movieRoots: [
@@ -48,6 +48,16 @@ var MAX_RESULTS = 400;
 var USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 ' +
                  '(KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36';
 
+var SEASON_FOLDER_RE = /^(?:s|season|series)[\s._-]*(\d{1,2})$/i;
+
+var NOISE_TOKENS = [
+  'hindi', 'dubbed', 'dub', 'dual', 'audio', 'english', 'eng', 'sub', 'subs',
+  'subtitles', 'multi', 'reencoded', 'reencode', 'x264', 'x265', 'h264', 'h265',
+  'hevc', 'avc', 'aac', 'ac3', 'dts', 'ddp', 'webdl', 'web', 'dl', 'bluray',
+  'brrip', 'hdtv', 'hdrip', 'webrip', 'proper', 'repack', 'extended',
+  'uncut', 'remastered', '10bit', '8bit', 'hdrip', 'hq', 'sd', 'hd'
+];
+
 function fetchWithHeaders(url, options) {
   options = options || {};
   var hostMatch = url.match(/^https?:\/\/([^\/]+)/);
@@ -56,8 +66,11 @@ function fetchWithHeaders(url, options) {
   headers['User-Agent'] = USER_AGENT;
   headers['Accept'] = '*/*';
   headers['Accept-Language'] = 'en-GB,en;q=0.6';
-  headers['Origin'] = 'http://' + host;
-  headers['Referer'] = url;
+  // Only set Origin/Referer for FileBrowser — Apache autoindex doesn't need them
+  if (url.indexOf('http://') === 0 || /^https?:\/\/(?!server5\.ftpbd)/.test(url)) {
+    headers['Origin'] = 'http://' + host;
+    headers['Referer'] = url;
+  }
   options.headers = headers;
   return fetch(url, options);
 }
@@ -149,7 +162,7 @@ function buildSearchQueries(title, year) {
   return queries;
 }
 
-// ---------- Multi-query parallel search + alphabet bucket fallback ----------
+// ---------- Dispatcher ----------
 function searchAllProviders(query, wantType, year) {
   var queries = buildSearchQueries(query, year);
   var ids = Object.keys(PROVIDERS).filter(function(id) {
@@ -160,16 +173,25 @@ function searchAllProviders(query, wantType, year) {
 
   var promises = ids.map(function(id) {
     var provider = PROVIDERS[id];
-    return searchProviderParallel(queries, provider, id, wantType)
-      .then(function(results) {
-        // Series: alphabet bucket fallback when search returns 0
-        if (wantType === 'series' && results.length === 0 &&
-            provider.seriesRoots && provider.seriesRoots.length > 0) {
-          console.log('[DhakaFlix] ' + id + ' empty, alphabet bucket fallback');
-          return searchSeriesAlphabetBuckets(query, provider, id);
-        }
-        return results;
-      })
+
+    var runner;
+    if (provider.kind === 'ftp-html') {
+      runner = searchProviderFTP(queries, provider, id, wantType);
+    } else {
+      runner = searchProviderParallel(queries, provider, id, wantType)
+        .then(function(results) {
+          // Series: alphabet bucket fallback when search returns 0
+          if (wantType === 'series' && results.length === 0 &&
+              provider.seriesRoots && provider.seriesRoots.length > 0 &&
+              provider.kind !== 'ftp-html') {
+            console.log('[DhakaFlix] ' + id + ' empty, alphabet bucket fallback');
+            return searchSeriesAlphabetBuckets(query, provider, id);
+          }
+          return results;
+        });
+    }
+
+    return runner
       .then(function(results) {
         return pickBest(results, query, year, wantType);
       })
@@ -189,6 +211,10 @@ function searchAllProviders(query, wantType, year) {
     return flat;
   });
 }
+
+// ══════════════════════════════════════════════════════════
+//  FILEBROWSER path (DhakaFlix — JSON API)
+// ══════════════════════════════════════════════════════════
 
 function searchProviderParallel(queries, provider, providerId, wantType) {
   var promises = queries.map(function(q) {
@@ -211,7 +237,6 @@ function searchProviderParallel(queries, provider, providerId, wantType) {
   });
 }
 
-// ---------- Single query — with multi-signal series detection ----------
 function searchProvider(query, provider, providerId, wantType) {
   var body = JSON.stringify({
     action: 'get',
@@ -234,12 +259,11 @@ function searchProvider(query, provider, providerId, wantType) {
       var isFile = /\.(mkv|mp4|avi|webm)$/i.test(href);
       var name = nameFromUrl(href);
 
-      // Multi-signal series detection
       var decoded = decodeURIComponent(href);
       var isSeries = containsAny(href, provider.tvSeriesKeyword) ||
                      /\(TV\s+(Mini\s+)?Series\b/i.test(decoded) ||
                      /\bTV-WEB-Series\b/i.test(decoded) ||
-                     /\bSeason\s+\d+\b/i.test(decoded);
+                     parseSeasonFolder(nameFromUrl(href)) !== null;
 
       var itemType = isSeries ? 'series' : 'movie';
       if (wantType && itemType !== wantType) continue;
@@ -254,17 +278,12 @@ function searchProvider(query, provider, providerId, wantType) {
   });
 }
 
-// ---------- Alphabet bucket fallback (dhakaflix12 series) ----------
 function searchSeriesAlphabetBuckets(title, provider, providerId) {
   if (!provider.seriesRoots || provider.seriesRoots.length === 0) {
     return Promise.resolve([]);
   }
-  var firstChar = title.trim().charAt(0).toUpperCase();
-  var bucket;
-  if (/[0-9]/.test(firstChar)) bucket = provider.seriesRoots[0];
-  else if (firstChar >= 'A' && firstChar <= 'L') bucket = provider.seriesRoots[1];
-  else if (firstChar >= 'M' && firstChar <= 'R') bucket = provider.seriesRoots[2];
-  else bucket = provider.seriesRoots[3];
+  // If only one root is configured, always use it.
+  var bucket = provider.seriesRoots[0];
   var url = provider.mainUrl + '/' + provider.serverName + '/' + bucket;
   console.log('[DhakaFlix] Alphabet bucket → ' + bucket);
 
@@ -300,7 +319,198 @@ function searchSeriesAlphabetBuckets(title, provider, providerId) {
     });
 }
 
-// ---------- pickBest — token matching + year hard filter (fixed for MAD) ----------
+// ══════════════════════════════════════════════════════════
+//  FTP-HTML path (server5.ftpbd.net — Apache autoindex)
+// ══════════════════════════════════════════════════════════
+
+function searchProviderFTP(queries, provider, providerId, wantType) {
+  var rootPath = provider.seriesRoots[0];
+  var rootUrl = joinUrl(provider.mainUrl, rootPath);
+  console.log('[DhakaFlix] FTP root → ' + rootUrl);
+
+  return listApacheDir(rootUrl, provider).then(function(items) {
+    console.log('[DhakaFlix] FTP root items: ' + items.length);
+    var results = [], seen = {};
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it.isFolder) continue;
+      for (var q = 0; q < queries.length; q++) {
+        if (titleMatches(it.name, queries[q])) {
+          if (seen[it.fullUrl]) break;
+          seen[it.fullUrl] = true;
+          results.push({
+            name: it.name,
+            type: 'series',
+            url: it.fullUrl,
+            providerId: providerId,
+            isFile: false,
+            absolute: true
+          });
+          break;
+        }
+      }
+    }
+    console.log('[DhakaFlix] FTP matched folders: ' + results.length);
+    return results;
+  });
+}
+
+function titleMatches(folderName, query) {
+  var a = folderName.toLowerCase();
+  var b = query.toLowerCase();
+  if (a.indexOf(b) !== -1) return true;
+  var bw = b.split(/\s+/)[0];
+  var aw = a.split(/\s+/)[0];
+  return bw.length > 3 && aw.indexOf(bw) === 0;
+}
+
+function listApacheDir(url, provider) {
+  return fetchWithHeaders(url)
+    .then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + url);
+      return res.text();
+    })
+    .then(function(html) {
+      var items = [];
+      var re = /<a\s+href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
+      var m;
+      while ((m = re.exec(html)) !== null) {
+        var href = m[1], text = m[2].trim();
+        if (!href || href === '../' || href === './' || href.charAt(0) === '?') continue;
+        if (href === '/' || href.charAt(0) === '/') continue;
+        if (/^(parent directory|\?c=)/i.test(href) || /^(parent directory)$/i.test(text)) continue;
+        var decodedHref = decodeURIComponent(href);
+        var isFolder = /\/$/.test(decodedHref) || /\/$/.test(text);
+        var isVideo = /\.(mkv|mp4|avi|webm)$/i.test(decodedHref);
+        var name = text || decodedHref.replace(/\/$/, '');
+        if (!name) continue;
+        items.push({
+          name: name,
+          href: href,
+          isFolder: isFolder,
+          isVideo: isVideo,
+          fullUrl: joinUrl(url, href)
+        });
+      }
+      return items;
+    });
+}
+
+function loadFtpSeries(url, provider, season, episode, label) {
+  console.log('[DhakaFlix] FTP SERIES GET ' + url);
+  return listApacheDir(url, provider).then(function(items) {
+    var videoFiles = [], seasonFolders = [], otherFolders = [];
+    items.forEach(function(it) {
+      if (it.isFolder) {
+        var sNum = parseSeasonFolder(it.name);
+        if (sNum !== null) seasonFolders.push({ url: it.fullUrl, season: sNum });
+        else otherFolders.push({ url: it.fullUrl, name: it.name });
+      } else if (it.isVideo) {
+        videoFiles.push({ name: it.name, url: it.fullUrl });
+      }
+    });
+    console.log('[DhakaFlix] FTP v=' + videoFiles.length +
+                ' sf=' + seasonFolders.length + ' of=' + otherFolders.length);
+
+    // ── Path 1: direct season folders ──
+    if (seasonFolders.length > 0) {
+      return Promise.all(seasonFolders.map(function(sf) {
+        return extractFtpSeason(sf.url, provider, sf.season);
+      })).then(function(arrs) {
+        var eps = [];
+        arrs.forEach(function(a) { a.forEach(function(e) { eps.push(e); }); });
+        return finalizeEpisodes(eps, season, episode, label);
+      });
+    }
+
+    // ── Path 2: flat video files at root ──
+    if (videoFiles.length > 0) {
+      var eps2 = [], counter = 0;
+      videoFiles.forEach(function(v) {
+        counter++;
+        var se = parseEpisodeNumbers(v.name);
+        eps2.push({
+          name: v.name,
+          season: se.season || 1,
+          episode: se.episode || counter,
+          url: v.url
+        });
+      });
+      return finalizeEpisodes(eps2, season, episode, label);
+    }
+
+    // ── Path 3: descend into non-season folders (one level) ──
+    if (otherFolders.length > 0) {
+      return Promise.all(otherFolders.map(function(fu) {
+        return listApacheDir(fu.url, provider).then(function(sub) {
+          var nestedSeasons = [], nestedFiles = [];
+          sub.forEach(function(it) {
+            if (it.isFolder) {
+              var sNum = parseSeasonFolder(it.name);
+              if (sNum !== null) nestedSeasons.push({ url: it.fullUrl, season: sNum });
+            } else if (it.isVideo) {
+              nestedFiles.push(it);
+            }
+          });
+          if (nestedSeasons.length > 0) {
+            return Promise.all(nestedSeasons.map(function(sf) {
+              return extractFtpSeason(sf.url, provider, sf.season);
+            })).then(function(arrs) {
+              var eps = [];
+              arrs.forEach(function(a) { a.forEach(function(e) { eps.push(e); }); });
+              return eps;
+            });
+          }
+          var eps = [], counter = 0;
+          nestedFiles.forEach(function(it) {
+            counter++;
+            var se = parseEpisodeNumbers(it.name);
+            eps.push({
+              name: it.name,
+              season: se.season || 1,
+              episode: se.episode || counter,
+              url: it.fullUrl
+            });
+          });
+          return eps;
+        }).catch(function() { return []; });
+      })).then(function(arrs) {
+        var eps = [];
+        arrs.forEach(function(a) { a.forEach(function(e) { eps.push(e); }); });
+        return finalizeEpisodes(eps, season, episode, label);
+      });
+    }
+
+    return [];
+  }).catch(function(err) {
+    console.log('[DhakaFlix] FTP load failed: ' + err.message);
+    return [];
+  });
+}
+
+function extractFtpSeason(seasonUrl, provider, seasonNum) {
+  console.log('[DhakaFlix] FTP S' + seasonNum + ' GET ' + seasonUrl);
+  return listApacheDir(seasonUrl, provider).then(function(items) {
+    var eps = [], counter = 0;
+    items.forEach(function(it) {
+      if (!it.isVideo) return;
+      counter++;
+      var se = parseEpisodeNumbers(it.name);
+      eps.push({
+        name: it.name,
+        season: seasonNum,
+        episode: se.episode || counter,
+        url: it.fullUrl
+      });
+    });
+    console.log('[DhakaFlix] FTP S' + seasonNum + ' → ' + eps.length);
+    return eps;
+  }).catch(function() { return []; });
+}
+
+// ══════════════════════════════════════════════════════════
+//  pickBest — token matching + year hard filter
+// ══════════════════════════════════════════════════════════
 function pickBest(results, targetTitle, targetYear, wantType) {
   var targetTokens = clean(targetTitle).split(' ').filter(function(t) {
     return t.length > 1;
@@ -314,7 +524,6 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     var ym = r.name.match(/\((\d{4})\)/) || r.name.match(/\b(19\d{2}|20\d{2})\b/);
     var fileYear = ym ? parseInt(ym[1]) : null;
 
-    // Hard year filter for movies
     if (wantType === 'movie' && targetYear && fileYear) {
       if (Math.abs(fileYear - targetYear) > 1) continue;
     }
@@ -339,44 +548,40 @@ function pickBest(results, targetTitle, targetYear, wantType) {
     else if (coverage >= 0.4) score = 10;
     else score = 5;
 
-    // ═══ POSITION BONUS ═══
-    // If the query's FIRST token appears at the START of the folder name,
-    // it's very likely the actual show title, not an episode name
     var firstToken = targetTokens[0];
     if (firstToken) {
       var firstPos = nameTokens.indexOf(firstToken);
-      if (firstPos === 0) score += 15;         // starts with target — strong signal
-      else if (firstPos === 1) score += 5;     // second position — decent
-      else if (firstPos >= 3) score -= 10;     // buried — likely episode name
+      if (firstPos === 0) score += 15;
+      else if (firstPos === 1) score += 5;
+      else if (firstPos >= 3) score -= 10;
     }
 
-    // ═══ CONSECUTIVE TOKEN BONUS ═══
-    // Real titles have all tokens in order at the start:
-    // "two and a half men" (consecutive) vs "supernatural s06e02 two and a half men" (not from start)
     var consecutive = 0;
     for (var k = 0; k < targetTokens.length; k++) {
       var pos = nameTokens.indexOf(targetTokens[k]);
-      if (pos === k) consecutive++;   // token at expected position
+      if (pos === k) consecutive++;
       else break;
     }
-    if (consecutive === targetTokens.length) score += 10;  // perfect prefix
+    if (consecutive === targetTokens.length) score += 10;
 
-    // Year alignment for movies
     if (wantType === 'movie' && targetYear && fileYear) {
       var d = Math.abs(fileYear - targetYear);
       if (d === 0) score += 10;
       else if (d === 1) score += 3;
     }
 
-    // Year alignment for series — the show year range should include or be near target
     if (wantType === 'series' && targetYear && fileYear) {
       var dS = Math.abs(fileYear - targetYear);
-      if (dS <= 2) score += 8;   // series often has year range close to start
+      if (dS <= 2) score += 8;
       else if (dS <= 5) score += 3;
-      else if (dS > 15) score -= 5;  // 2020 for 2003 show — likely wrong
+      else if (dS > 15) score -= 5;
     }
 
     if (r.isFile) score += 3;
+
+    if (/\b(dubbed|dub|hindi|tamil|telugu|dual[\s.-]?audio)\b/i.test(r.name)) {
+      score -= 2;
+    }
 
     if (score > bestScore) {
       bestScore = score;
@@ -393,6 +598,7 @@ function pickBest(results, targetTitle, targetYear, wantType) {
   }
   return best;
 }
+
 // ---------- processMatches — dispatches movie vs series ----------
 function processMatches(matches, wantType, season, episode) {
   if (!matches.length) return Promise.resolve([]);
@@ -404,16 +610,21 @@ function processMatches(matches, wantType, season, episode) {
     // Fast path — search already returned a file
     if (match.isFile) {
       var q = dfQuality(match.name);
+      var u = match.absolute ? match.url : constructUrl(provider.mainUrl, match.url);
       return Promise.resolve([{
         name: label,
         title: match.name + (q !== 'Unknown' ? ' (' + q + ')' : ''),
-        url: constructUrl(provider.mainUrl, match.url),
+        url: u,
         quality: q, provider: 'dhakaflix'
       }]);
     }
 
     // Folder path
     if (wantType === 'series') {
+      if (provider.kind === 'ftp-html') {
+        var seriesUrl = match.absolute ? match.url : constructUrl(provider.mainUrl, match.url);
+        return loadFtpSeries(seriesUrl, provider, season, episode, label);
+      }
       return loadSeriesContent(match.url, provider, season, episode, label);
     }
     return loadMovieContent(match.url, provider, label);
@@ -428,7 +639,7 @@ function processMatches(matches, wantType, season, episode) {
   });
 }
 
-// ---------- Movie loader (simple, one level, with sub-folder fallback) ----------
+// ---------- Movie loader (FileBrowser) ----------
 function loadMovieContent(url, provider, label) {
   var fullUrl = constructUrl(provider.mainUrl, url);
   console.log('[DhakaFlix] MOVIE GET ' + fullUrl);
@@ -485,7 +696,7 @@ function loadMovieContent(url, provider, label) {
     });
 }
 
-// ---------- Series loader (season folders + extractSeason) ----------
+// ---------- Series loader (FileBrowser) ----------
 function loadSeriesContent(url, provider, season, episode, label) {
   var fullUrl = constructUrl(provider.mainUrl, url);
   console.log('[DhakaFlix] SERIES GET ' + fullUrl);
@@ -505,14 +716,16 @@ function loadSeriesContent(url, provider, season, episode, label) {
         var name = $a.text();
         var isFolder = $row.find('td.fb-i > img[alt="folder"]').length > 0;
 
-        if (isFolder && /season/i.test(name)) {
-          var sm = name.match(/season[\s]*(\d+)/i);
-          seasonFolders.push({
-            url: constructUrl(provider.mainUrl, link),
-            season: sm ? parseInt(sm[1]) : 0
-          });
-        } else if (isFolder && link) {
-          otherFolders.push(constructUrl(provider.mainUrl, link));
+        if (isFolder && link) {
+          var sNum = parseSeasonFolder(name);
+          if (sNum !== null) {
+            seasonFolders.push({
+              url: constructUrl(provider.mainUrl, link),
+              season: sNum
+            });
+          } else {
+            otherFolders.push(constructUrl(provider.mainUrl, link));
+          }
         } else if (link && /\.(mkv|mp4|avi|webm)$/i.test(link)) {
           videoFiles.push({
             name: name, url: constructUrl(provider.mainUrl, link)
@@ -523,7 +736,6 @@ function loadSeriesContent(url, provider, season, episode, label) {
       console.log('[DhakaFlix] SERIES v=' + videoFiles.length +
                   ' sf=' + seasonFolders.length + ' of=' + otherFolders.length);
 
-      // Season folders — load in parallel
       if (seasonFolders.length > 0) {
         var sfPromises = seasonFolders.map(function(sf) {
           return extractSeason(sf.url, provider, sf.season);
@@ -537,21 +749,21 @@ function loadSeriesContent(url, provider, season, episode, label) {
         });
       }
 
-      // Flat episodes at root
       if (videoFiles.length > 0) {
-        var eps2 = videoFiles.map(function(v, i) {
+        var eps2 = [], counter = 0;
+        videoFiles.forEach(function(v) {
+          counter++;
           var se = parseEpisodeNumbers(v.name);
-          return {
+          eps2.push({
             name: v.name,
             season: se.season || 1,
-            episode: se.episode || (i + 1),
+            episode: se.episode || counter,
             url: v.url
-          };
+          });
         });
         return finalizeEpisodes(eps2, season, episode, label);
       }
 
-      // Sub-folders (non-season named) — try each, one level
       if (otherFolders.length > 0) {
         var subPromises = otherFolders.map(function(fu) {
           return fetchWithHeaders(fu)
@@ -594,7 +806,6 @@ function loadSeriesContent(url, provider, season, episode, label) {
 }
 
 function finalizeEpisodes(eps, season, episode, label) {
-  // Filter to requested episode if given
   if (season && episode) {
     var filtered = eps.filter(function(e) {
       return e.season === season && e.episode === episode;
@@ -603,32 +814,35 @@ function finalizeEpisodes(eps, season, episode, label) {
   }
   return eps.map(function(e) {
     var prefix = 'S' + pad2(e.season) + 'E' + pad2(e.episode);
+    var prettyName = cleanEpisodeTitle(e.name || '');
     var q = dfQuality(e.name || '');
     return {
       name: label,
-      title: '[' + prefix + '] ' + e.name +
+      title: '[' + prefix + '] ' + prettyName +
              (q !== 'Unknown' ? ' (' + q + ')' : ''),
       url: e.url, quality: q, provider: 'dhakaflix'
     };
   });
 }
 
-// ---------- Season folder extractor ----------
+// ---------- Season folder extractor (FileBrowser) ----------
 function extractSeason(seasonUrl, provider, seasonNum) {
   console.log('[DhakaFlix] S' + seasonNum + ' GET ' + seasonUrl);
   return fetchWithHeaders(seasonUrl)
     .then(function(res) { return res.text(); })
     .then(function(html) {
       var $ = load(html);
-      var episodes = [];
+      var episodes = [], counter = 0;
       $('tbody > tr:gt(1)').each(function(_, row) {
         var $a = $(row).find('td.fb-n > a');
         var link = $a.attr('href');
         if (link && /\.(mkv|mp4|avi|webm)$/i.test(link)) {
+          counter++;
+          var se = parseEpisodeNumbers($a.text());
           episodes.push({
             name: $a.text(),
             season: seasonNum,
-            episode: episodes.length + 1,
+            episode: se.episode || counter,
             url: constructUrl(provider.mainUrl, link)
           });
         }
@@ -639,14 +853,53 @@ function extractSeason(seasonUrl, provider, seasonNum) {
     .catch(function() { return []; });
 }
 
+// ---------- Universal season folder detector ----------
+function parseSeasonFolder(name) {
+  var n = name.replace(/[\/\s]+$/, '').trim();
+  var m = n.match(SEASON_FOLDER_RE);
+  if (m) return parseInt(m[1]);
+  m = n.match(/season[\s._-]*(\d{1,2})/i);
+  if (m) return parseInt(m[1]);
+  return null;
+}
+
+// ---------- Robust episode number parser ----------
 function parseEpisodeNumbers(name) {
-  var m = name.match(/S(\d{1,2})E(\d{1,3})/i);
-  if (m) return { season: parseInt(m[1]), episode: parseInt(m[2]) };
-  m = name.match(/(\d{1,2})x(\d{1,3})/);
-  if (m) return { season: parseInt(m[1]), episode: parseInt(m[2]) };
-  m = name.match(/(?:Episode|Ep|E)\s*[-._ ]?\s*(\d{1,3})/i);
-  if (m) return { season: 1, episode: parseInt(m[1]) };
+  var n = decodeURIComponent(name || '');
+  var m;
+
+  m = n.match(/S(\d{1,2})[\s._-]*E(?:P)?[\s._-]*(\d{1,4})/i);
+  if (m) return { season: +m[1], episode: +m[2] };
+
+  m = n.match(/\b(\d{1,2})x(\d{1,4})\b/);
+  if (m) return { season: +m[1], episode: +m[2] };
+
+  m = n.match(/Season[\s._-]*(\d{1,2})[\s._-]*(?:Episode|Ep|E)[\s._-]*(\d{1,4})/i);
+  if (m) return { season: +m[1], episode: +m[2] };
+
+  m = n.match(/(?:^|[\s._\-(])(?:Episode|Ep|E)[\s._-]*(\d{1,4})(?:[\s._\-)\]]|$)/i);
+  if (m) return { season: 1, episode: +m[1] };
+
+  m = n.match(/(?:^|[\s._\-[])(\d{1,4})(?:[\s._\-\]]|$)/);
+  if (m && +m[1] < 1000) return { season: 1, episode: +m[1] };
+
   return { season: 1, episode: 0 };
+}
+
+// ---------- Strip language/codec noise from filename ----------
+function cleanEpisodeTitle(name) {
+  var base = name.replace(/\.[a-z0-9]{2,5}$/i, '');
+  base = base.replace(/[_\.]/g, ' ');
+  base = base.replace(/\b(720p|1080p|2160p|4k|480p|360p)\b/gi, '');
+  var words = base.split(/\s+/).filter(function(w) {
+    if (!w) return false;
+    var lw = w.toLowerCase();
+    if (NOISE_TOKENS.indexOf(lw) !== -1) return false;
+    if (/^\d{3,4}p$/.test(lw)) return false;
+    if (/^[\[\(\{].*[\]\)\}]$/.test(w)) return false;
+    return true;
+  });
+  return words.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 // ---------- HTML parser ----------
@@ -703,14 +956,24 @@ function makeRow(rowHtml) {
 
 // ---------- Helpers ----------
 function constructUrl(base, path) {
+  if (/^https?:\/\//.test(path)) return path;
   var cleanPath = path.replace(/([^:]\/)\/+/g, '$1');
   return base.replace(/\/$/, '') + '/' + cleanPath.replace(/^\//, '');
 }
+
+function joinUrl(base, rel) {
+  if (/^https?:\/\//.test(rel)) return rel;
+  base = base.replace(/\/+$/, '');
+  rel = rel.replace(/^\/+/, '');
+  return base + '/' + rel;
+}
+
 function nameFromUrl(href) {
   var d = decodeURIComponent(href);
   var m = d.match(/.*\/([^/]+)(?:\/[^/]*)*$/);
   return m ? m[1] : '';
 }
+
 function containsAny(text, keywords) {
   if (!keywords || !keywords.length) return false;
   var lower = text.toLowerCase();
@@ -719,16 +982,18 @@ function containsAny(text, keywords) {
   }
   return false;
 }
+
 function clean(s) {
   return s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
 }
+
 function extractQuality(name) {
-  var m = name.match(/\b(720p|1080p|2160p|4K)\b/i);
+  var m = name.match(/\b(720p|1080p|2160p|4K|480p|360p)\b/i);
   return m ? m[1].toUpperCase() : 'Unknown';
 }
 
 function dfQuality(name) {
-  var m = name.match(/\b(720p|1080p|2160p|4K)\b/i);
+  var m = name.match(/\b(720p|1080p|2160p|4K|480p|360p)\b/i);
   return m ? 'DF ' + m[1].toUpperCase() : 'Unknown';
 }
 
