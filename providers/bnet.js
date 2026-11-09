@@ -16,15 +16,15 @@ var PROVIDERS = {
     seriesRoots: ['KOREAN TV %26 WEB Series/']
   },
   dhakaflix12: {
-  mainUrl: 'https://server5.ftpbd.net',
-  serverName: 'FTP-5',
-  name: 'FTP-5',
-  kind: 'ftp-html',
-  tvSeriesKeyword: ['TV-WEB-Series'],
-  supportedTypes: ['series'],
-  movieRoots: [],
-  seriesRoots: ['FTP-5/Anime--Cartoon-TV-Series/']
-},
+    mainUrl: 'https://server5.ftpbd.net',
+    serverName: 'FTP-5',
+    name: 'FTP-5',
+    kind: 'ftp-html',
+    tvSeriesKeyword: ['TV-WEB-Series'],
+    supportedTypes: ['series'],
+    movieRoots: [],
+    seriesRoots: ['FTP-5/Anime--Cartoon-TV-Series/']
+  },
   dhakaflix7: {
     mainUrl: 'http://172.16.50.7',
     serverName: 'DHAKA-FLIX-7',
@@ -324,39 +324,71 @@ function searchSeriesAlphabetBuckets(title, provider, providerId) {
 // ══════════════════════════════════════════════════════════
 
 function searchProviderFTP(queries, provider, providerId, wantType) {
-  console.log('[DhakaFlix] FTP seeded roots: ' + provider.seriesRoots.length);
+  var rootPath = provider.seriesRoots[0];
+  var rootUrl = joinUrl(provider.mainUrl, rootPath);
+  console.log('[DhakaFlix] FTP root → ' + rootUrl);
 
-  var results = [], seen = {};
-  for (var i = 0; i < provider.seriesRoots.length; i++) {
-    var path = provider.seriesRoots[i];
-    var folderName = decodeURIComponent(path.replace(/\/$/, '').split('/').pop());
-    for (var q = 0; q < queries.length; q++) {
-      if (titleMatches(folderName, queries[q])) {
-        if (seen[path]) break;
-        seen[path] = true;
-        results.push({
-          name: folderName,
-          type: 'series',
-          url: provider.mainUrl + path,
-          providerId: providerId,
-          isFile: false,
-          absolute: true
-        });
-        break;
+  return listApacheDir(rootUrl, provider).then(function(items) {
+    console.log('[DhakaFlix] FTP root items: ' + items.length);
+    var results = [], seen = {};
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it.isFolder) continue;
+      for (var q = 0; q < queries.length; q++) {
+        if (titleMatches(it.name, queries[q])) {
+          if (seen[it.fullUrl]) break;
+          seen[it.fullUrl] = true;
+          results.push({
+            name: it.name,
+            type: 'series',
+            url: it.fullUrl,
+            providerId: providerId,
+            isFile: false,
+            absolute: true
+          });
+          break;
+        }
       }
     }
-  }
-  console.log('[DhakaFlix] FTP matched folders: ' + results.length);
-  return Promise.resolve(results);
+    console.log('[DhakaFlix] FTP matched folders: ' + results.length);
+    return results;
+  });
 }
 
 function titleMatches(folderName, query) {
-  var a = folderName.toLowerCase();
-  var b = query.toLowerCase();
+  function norm(s) {
+    return s.toLowerCase()
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/\[[^\]]*\]/g, ' ')
+      .replace(/[-_\.:]/g, ' ')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  var a = norm(folderName);
+  var b = norm(query);
+  if (!a || !b) return false;
+
+  // Direct substring (most reliable for "Naruto-Shippuden-2007-2017" vs "Naruto: Shippuden")
   if (a.indexOf(b) !== -1) return true;
-  var bw = b.split(/\s+/)[0];
-  var aw = a.split(/\s+/)[0];
-  return bw.length > 3 && aw.indexOf(bw) === 0;
+
+  // Prefix token match
+  var qTokens = b.split(' ').filter(function(t) { return t.length > 1; });
+  var fTokens = a.split(' ').filter(function(t) { return t.length > 1; });
+  if (qTokens.length === 0 || fTokens.length === 0) return false;
+
+  var prefix = true;
+  for (var i = 0; i < qTokens.length; i++) {
+    if (fTokens[i] !== qTokens[i]) { prefix = false; break; }
+  }
+  if (prefix) return true;
+
+  // 60% token coverage fallback
+  var hits = 0;
+  for (var j = 0; j < qTokens.length; j++) {
+    if (fTokens.indexOf(qTokens[j]) !== -1) hits++;
+  }
+  return hits / qTokens.length >= 0.6;
 }
 
 function listApacheDir(url, provider) {
@@ -366,12 +398,12 @@ function listApacheDir(url, provider) {
       return res.text();
     })
     .then(function(html) {
+      console.log('[DhakaFlix] h5ai HTML length:', html.length);
       var items = [];
-      // h5ai v0.30 fallback table row:
-      // <tr><td class="fb-i"><img src="..." alt="folder|file|folder-parent"/></td>
-      //     <td class="fb-n"><a href="URL">NAME</a></td>
-      //     <td class="fb-d">DATE</td><td class="fb-s">SIZE</td></tr>
-      var rowRe = /<tr>\s*<td class="fb-i">\s*<img[^>]+alt="([^"]+)"[^>]*\/>\s*<\/td>\s*<td class="fb-n">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/td>/gi;
+      // h5ai v0.30 rows:
+      // <tr><td class="fb-i"><img ... alt="folder|file|folder-parent"/></td>
+      //     <td class="fb-n"><a href="/FTP-5/...">Name</a></td>...
+      var rowRe = /<td class="fb-i">\s*<img[^>]+alt="([^"]+)"[^>]*\/>\s*<\/td>\s*<td class="fb-n">\s*<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
       var m;
       while ((m = rowRe.exec(html)) !== null) {
         var alt = m[1].toLowerCase();
@@ -379,16 +411,18 @@ function listApacheDir(url, provider) {
         var rawName = m[3].replace(/<[^>]+>/g, '').trim();
 
         if (alt === 'folder-parent') continue;
-        if (!href || href === '..') continue;
+        if (!href || href === '..' || href === './') continue;
 
         var isFolder = alt === 'folder';
         var isFile = alt === 'file';
         if (!isFolder && !isFile) continue;
 
-        var isVideo = isFile && /\.(mkv|mp4|avi|webm|m4v|mov)$/i.test(decodeURIComponent(href));
+        var decodedHref = decodeURIComponent(href);
+        var isVideo = isFile && /\.(mkv|mp4|avi|webm|m4v|mov)$/i.test(decodedHref);
+        var name = decodeURIComponent(rawName).replace(/\/$/, '');
 
         items.push({
-          name: decodeURIComponent(rawName),
+          name: name,
           href: href,
           isFolder: isFolder,
           isVideo: isVideo,
@@ -502,23 +536,11 @@ function extractFtpSeason(seasonUrl, provider, seasonNum) {
     items.forEach(function(it) {
       if (!it.isVideo) return;
       counter++;
-
-      // Filenames like:
-      //  "Naruto Shippuden Episode 373 Team 7 Assemble!_reencoded.mp4"
-      //  "Naruto Shippuden Episode 374 The New Three-Way Deadlock_reencoded.mp4"
-      // Extract "Episode N" (most common) or "SxxExx" or "Exx" or first N.
-      var epNum = 0;
-      var m = it.name.match(/Episode[\s._-]*(\d{1,4})/i);
-      if (!m) m = it.name.match(/S\d{1,2}[\s._-]*E(?:P)?[\s._-]*(\d{1,4})/i);
-      if (!m) m = it.name.match(/\bE(?:p)?[\s._-]*(\d{1,4})\b/i);
-      if (!m) m = it.name.match(/\b(\d{1,4})\b/);
-
-      epNum = m ? parseInt(m[1]) : counter;
-
+      var se = parseEpisodeNumbers(it.name);
       eps.push({
         name: it.name,
         season: seasonNum,
-        episode: epNum,
+        episode: se.episode || counter,
         url: it.fullUrl
       });
     });
