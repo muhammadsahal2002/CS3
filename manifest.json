@@ -102,13 +102,13 @@
 
 
 {
-      "id": "test",
-      "name": "test",
-      "description": "Multi Lang provider",
+      "id": "bnet",
+      "name": "Bnet FTP",
+      "description": "If doesn't work use 1.1.1.1 VPN",
       "version": "2.0.0",
       "author": "Nuvio Team",
       "supportedTypes": ["movie", "tv"],
-      "filename": "",
+      "filename": "providers/bnet.js",
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en", "hi", "ta", "te"]
