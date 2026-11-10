@@ -94,7 +94,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/test.js",
+      "filename": "providers/mlbd.js",
       "enabled": true,
       "formats": ["mp4", "m3u8"],
       "contentLanguage": ["en"]
