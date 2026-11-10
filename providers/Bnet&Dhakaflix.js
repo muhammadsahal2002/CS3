@@ -18,17 +18,14 @@ var PROVIDERS = {
     seriesRoots: ['KOREAN TV %26 WEB Series/']
   },
   dhakaflix12: {
-    mainUrl: 'http://172.16.50.12',
+    mainUrl: 'https://server5.ftpbd.net/',
     serverName: 'DHAKA-FLIX-12',
     name: 'DhakaFlix 12',
     tvSeriesKeyword: ['TV-WEB-Series'],
     supportedTypes: ['series'],
     movieRoots: [],
     seriesRoots: [
-      'TV-WEB-Series/TV Series ★%20 0%20 —%20 9/',
-      'TV-WEB-Series/TV Series ♥%20 A%20 —%20 L/',
-      'TV-WEB-Series/TV Series ♦%20 M%20 —%20 R/',
-      'TV-WEB-Series/TV Series ♦%20 S%20 —%20 Z/'
+      'FTP-5/Anime--Cartoon-TV-Series/'
     ]
   },
   dhakaflix7: {
