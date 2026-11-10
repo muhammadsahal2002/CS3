@@ -21,7 +21,7 @@
       "version": "1.0.0",
       "author": "You",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/bnet.js",
+      "filename": "providers/bn.js",
       "enabled": true,
       "hasSettings": true,
       "formats": ["m3u8"],
