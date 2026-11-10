@@ -31,6 +31,9 @@ var CONFIG = {
     USER_AGENT: "Mozilla/5.0 (Linux; Android 12; SM-M025F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.181 Mobile Safari/537.36"
 };
 
+// [UPDATED] MegaPlay / Vidwish / Vidtube calls + playback use this UA (same as the working Java)
+var MEGAPLAY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
 var MEGAPLAY_TOKEN_KEY         = "MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s";
 var MEGAPLAY_TOKEN_LIFETIME    = 604800;
 var MEGAPLAY_FALLBACK_KEY_SEED = "i?LMTAx0Q6,:}50U";
@@ -39,6 +42,9 @@ var MEGAPLAY_FALLBACK_IV_SEED  = "W0;27ToaUpl_P%'c";
 var MEGAPLAY_HEX_IDS_RE  = /\/([a-f0-9]{32})\/([a-f0-9]{32})\//i;
 var MEGAPLAY_KEY_PAIR_RE = /[A-Za-z]\w*="([^"]{16})",[A-Za-z]\w*="([^"]{16})"/;
 var MEGAPLAY_FILE_RE     = /"file"\s*:\s*"([^"]+)"/;
+
+// [UPDATED] the Java registers MegaPlay, Vidwish and Vidtube (same API on all three)
+var EMBED_HOST_RE        = /megaplay|vidwish|vidtube/i;
 
 // =========================================================================
 // Crypto
@@ -471,6 +477,68 @@ function fetchMegaplayKeySeeds(baseUrl) {
         .catch(function() { return null; });
 }
 
+// [NEW] resolve a playlist uri against the (unsigned) master url, like parseVariants() in the Java
+function resolvePlaylistUrl(uri, masterUrl) {
+    if (/^https?:\/\//i.test(uri)) return uri;
+    var b = masterUrl.split("?")[0];
+    if (uri.indexOf("//") === 0) return "https:" + uri;
+    if (uri.charAt(0) === "/") {
+        var om = /^(https?:\/\/[^\/]+)/i.exec(b);
+        return (om ? om[1] : "") + uri;
+    }
+    return b.substring(0, b.lastIndexOf("/") + 1) + uri;
+}
+
+// [NEW] read #EXT-X-STREAM-INF lines -> [{ url, quality }]
+function parseMegaplayVariants(masterUrl, masterText) {
+    var out = [];
+    var lines = masterText.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.indexOf("#EXT-X-STREAM-INF:") !== 0) continue;
+        var rm = /RESOLUTION=(\d+)x(\d+)/.exec(line);
+        var quality = rm ? parseInt(rm[2], 10) : null;
+        var uri = null;
+        for (var j = i + 1; j < lines.length; j++) {
+            var l = lines[j].trim();
+            if (l && l.charAt(0) !== "#") { uri = l; i = j; break; }
+        }
+        if (!uri) continue;
+        out.push({ url: resolvePlaylistUrl(uri, masterUrl), quality: quality });
+    }
+    out.sort(function(a, b) { return (b.quality || 0) - (a.quality || 0); });
+    return out;
+}
+
+// [NEW] sign the master, fetch it, sign every quality variant (the Java's emitLinks).
+// embedBase = the api host that served the stream; Referer = embedBase + "/".
+function finalizeMegaplay(embedBase, m3u8) {
+    var playHeaders = {
+        "User-Agent": MEGAPLAY_UA,
+        "Referer": embedBase + "/"
+    };
+    var signedMaster = signMegaplayUrl(m3u8);
+
+    return fetch(signedMaster, { headers: playHeaders })
+        .then(function(r) {
+            log("resolveMegaplay: master HTTP", r.status);
+            return r.ok ? r.text() : null;
+        })
+        .catch(function(e) { logErr("resolveMegaplay: master fetch failed:", e.message); return null; })
+        .then(function(text) {
+            var variants = text ? parseMegaplayVariants(m3u8, text) : [];
+            log("resolveMegaplay: variants =", variants.length);
+
+            var entries = variants.map(function(v) {
+                return { url: signMegaplayUrl(v.url), quality: v.quality };
+            });
+            // no variants -> use the signed master itself (old behaviour)
+            if (!entries.length) entries = [{ url: signedMaster, quality: null }];
+
+            return { headers: playHeaders, entries: entries };
+        });
+}
+
 function resolveMegaplay(embed) {
     if (!embed) return Promise.resolve(null);
     if (embed.indexOf("autostart") === -1) {
@@ -482,7 +550,7 @@ function resolveMegaplay(embed) {
     var primaryHost = hostMatch ? "https://" + hostMatch[1] : "https://megaplay.buzz";
 
     return fetch(embed, {
-        headers: headers({ "Referer": CONFIG.BASE_URL, "Origin": CONFIG.BASE_URL })
+        headers: headers({ "User-Agent": MEGAPLAY_UA, "Referer": CONFIG.BASE_URL, "Origin": CONFIG.BASE_URL })
     })
     .then(function(r) { return r.ok ? r.text() : null; })
     .then(function(html) {
@@ -496,7 +564,11 @@ function resolveMegaplay(embed) {
 
         var dm = html.match(/data-domain=["']([^"']+)["']/);
         var assetOrigin = dm ? "https://" + dm[1] : primaryHost;
-        var audioType = embed.indexOf("/dub") !== -1 ? "dub" : "sub";
+
+        // [UPDATED] same order as the Java: url (/dub|/sub) -> page "type:" -> default sub
+        var um = embed.match(/\/(dub|sub)(?:[\/?#]|$)/);
+        var tm = html.match(/type\s*:\s*['"](dub|sub)['"]/);
+        var audioType = um ? um[1] : (tm ? tm[1] : "sub");
         log("resolveMegaplay: audioType =", audioType);
 
         var apiHosts = [primaryHost];
@@ -508,10 +580,10 @@ function resolveMegaplay(embed) {
             log("resolveMegaplay: GET", endpoint);
             return fetch(url, {
                 headers: {
-                    "User-Agent": CONFIG.USER_AGENT,
+                    "User-Agent": MEGAPLAY_UA,
                     "Accept": "*/*",
                     "X-Requested-With": "XMLHttpRequest",
-                    "Origin": assetOrigin,
+                    "Origin": apiHost,
                     "Referer": embed
                 }
             })
@@ -519,6 +591,8 @@ function resolveMegaplay(embed) {
                 log("  ->", endpoint, "HTTP", r.status);
                 return r.ok ? r.json() : null;
             })
+            // [UPDATED] remember which api host answered (used for key seeds + Referer)
+            .then(function(json) { return json ? { data: json, apiHost: apiHost } : null; })
             .catch(function(e) { logErr("  ->", endpoint, "failed:", e.message); return null; });
         }
 
@@ -533,8 +607,10 @@ function resolveMegaplay(embed) {
 
         return tryAll(0, 0);
     })
-    .then(function(data) {
-        if (!data) { logErr("resolveMegaplay: no data"); return null; }
+    .then(function(res) {
+        if (!res) { logErr("resolveMegaplay: no data"); return null; }
+        var data = res.data;
+        var apiBase = res.apiHost;
         var payload = data.result || data;
         log("resolveMegaplay: payload keys =", Object.keys(payload).join(","));
 
@@ -549,15 +625,12 @@ function resolveMegaplay(embed) {
 
         if (plainFile) {
             log("resolveMegaplay: plain file");
-            return {
-                url: signMegaplayUrl(plainFile),
-                headers: { "Referer": "https://megaplay.buzz/", "Origin": "https://megaplay.buzz" }
-            };
+            return finalizeMegaplay(apiBase, plainFile);
         }
 
         if (payload.enc) {
             log("resolveMegaplay: enc length =", payload.enc.length);
-            return fetchMegaplayKeySeeds(primaryHost).then(function(dynamic) {
+            return fetchMegaplayKeySeeds(apiBase).then(function(dynamic) {
                 var seeds = [];
                 if (dynamic) seeds.push(dynamic);
                 seeds.push([MEGAPLAY_FALLBACK_KEY_SEED, MEGAPLAY_FALLBACK_IV_SEED]);
@@ -566,10 +639,7 @@ function resolveMegaplay(embed) {
                     var m3u8 = decryptMegaplayEnc(payload.enc, seeds[i][0], seeds[i][1]);
                     if (m3u8) {
                         log("resolveMegaplay: decrypted");
-                        return {
-                            url: signMegaplayUrl(m3u8),
-                            headers: { "Referer": "https://megaplay.buzz/", "Origin": "https://megaplay.buzz" }
-                        };
+                        return finalizeMegaplay(apiBase, m3u8);
                     }
                 }
                 logErr("resolveMegaplay: all seeds failed");
@@ -602,7 +672,8 @@ function resolveFromAnimeEntry(best, episodeNum, isMovie) {
                     return getEmbed(linkId, best.url);
                 })
                 .then(function(embed) {
-                    if (!embed || embed.indexOf("megaplay") === -1) return null;
+                    // [UPDATED] megaplay + vidwish + vidtube
+                    if (!embed || !EMBED_HOST_RE.test(embed)) return null;
                     return resolveMegaplay(embed);
                 });
         });
@@ -639,14 +710,19 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return resolveFromAnimeEntry(best, mappedEpisode, isMovie)
                         .then(function(stream) {
                             if (!stream) { logErr("no stream resolved"); return []; }
-                            log("  SUCCESS");
-                            return [{
-                                name: "AnikotoTV",
-                                title: isMovie ? "Movie DUB" : "1080p DUB",
-                                url: stream.url,
-                                quality: "Anikoto 1080p",
-                                headers: stream.headers
-                            }];
+                            log("  SUCCESS:", stream.entries.length, "stream(s)");
+
+                            // [UPDATED] one entry per quality (old code returned a single master url)
+                            return stream.entries.map(function(e) {
+                                var q = e.quality ? e.quality + "p" : "1080p";
+                                return {
+                                    name: "AnikotoTV",
+                                    title: isMovie ? "Movie " + q + " DUB" : q + " DUB",
+                                    url: e.url,
+                                    quality: "Anikoto " + q,
+                                    headers: stream.headers
+                                };
+                            });
                         });
                 });
             });
@@ -657,4 +733,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
     });
 }
 
-module.exports = { getStreams };
+module.exports = {
+    getStreams: getStreams,
+    // used only by test.js
+    _internals: {
+        searchAnime: searchAnime,
+        resolveFromAnimeEntry: resolveFromAnimeEntry
+    }
+};
