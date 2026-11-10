@@ -1,5 +1,5 @@
 /**
- * movielinkbd — Nuvio plugin (QuickJS-safe, optimized)
+ * movielinkbd — Nuvio plugin (QuickJS-safe)
  *
  * getStreams(tmdbId, mediaType, season, episode) → stream array
  */
@@ -10,13 +10,9 @@ const FALLBACK_URL = 'https://sefcng.movielinkbd.li';
 const TMDB_API_KEY = '1865f43a0549ca50d341dd9ab8b29f49';
 const TMDB_BASE    = 'https://api.themoviedb.org/3';
 
-// ⚡ FIX 6: raise threshold, don't pad with weak candidates
-const MIN_SCORE_TO_TRY    = 400;
-// ⚡ FIX 5: fewer attempts (4th-6th rarely succeed)
-const MAX_ATTEMPTS        = 3;
-// ⚡ FIX 1: how many to race in parallel when first fails
-const PARALLEL_FALLBACK   = 3;
-const FETCH_TIMEOUT_MS    = 15000;
+const MIN_SCORE_TO_TRY    = 200;
+const MAX_ATTEMPTS        = 6;
+const FETCH_TIMEOUT_MS    = 20000;
 
 const BASE_HEADERS = {
   'sec-ch-ua':          '"Brave";v="155", "Chromium";v="155", "Not(A:Brand";v="24"',
@@ -34,8 +30,7 @@ const BASE_HEADERS = {
 };
 
 // ================= state =================
-// ⚡ FIX 2: hardcoded base — skip hub resolution
-let resolvedBase = FALLBACK_URL;
+let resolvedBase = null;
 let hpToken      = null;
 const mgCache    = {};
 
@@ -48,7 +43,6 @@ const ASIAN_LANGS = new Set(['ko','ja','zh','cn','th','tl','id','ms','hi','ta','
 const ASIAN_COUNTRIES = new Set(['KR','JP','CN','TW','HK','TH','PH','ID','MY','IN','BD','PK','VN']);
 const STOPWORDS = new Set(['the','a','an','of','and','or','in','on','at','to','for']);
 
-// --- pure-JS base64 decoder ---
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 function base64ToBytes(str) {
   const clean = String(str).replace(/[^A-Za-z0-9+/=]/g, '');
@@ -199,7 +193,7 @@ function qualityName(q) {
 // ================= TMDB =================
 async function tmdbDetailById(tmdbId, mediaType) {
   const url = `${TMDB_BASE}/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`;
-  const res = await fetchWithTimeout(url, { headers: { 'Accept': 'application/json' } }, 12000);
+  const res = await fetchWithTimeout(url, { headers: { 'Accept': 'application/json' } }, 15000);
   if (!res.ok) throw new Error(`TMDB ${res.status}`);
   const data = await res.json();
   return {
@@ -255,8 +249,22 @@ async function httpGetHtml(url, extraHeaders = {}) {
   return { html: r.text, base: r.url };
 }
 
-// ⚡ FIX 2: resolveBase now returns the constant immediately
 async function resolveBase() {
+  if (resolvedBase) return resolvedBase;
+  try {
+    const r = await httpGet(HUB_URL);
+    if (r.status === 200) {
+      const m = r.text.match(/href="(https?:\/\/[^"]*movielinkbd\.li[^"]*)"/i);
+      if (m) {
+        const u = new URL(m[1]);
+        resolvedBase = u.protocol + '//' + u.host;
+        log('resolved base:', resolvedBase);
+        return resolvedBase;
+      }
+    }
+  } catch (e) { log('hub resolve failed:', e.message || e); }
+  resolvedBase = FALLBACK_URL;
+  log('fallback base:', resolvedBase);
   return resolvedBase;
 }
 
@@ -458,24 +466,21 @@ async function loadDetail(url) {
   return { title, url: fixedUrl, type: typeFromUrl(fixedUrl), episodes };
 }
 
-// ================= link generation =================
+// ================= link generation (⚡ parallel mgToken) =================
 async function generateLinks(blob) {
   const base = await resolveBase();
-  const out = [];
   const lines = blob.split('\n');
-  // ⚡ parallelize mgToken fetches for multiple qualities of the same CDN
   const parsed = lines.map(line => {
     const parts = line.split('|');
     if (parts.length < 3) return null;
     return { q: parts[0], label: parts[1], rawLink: parts.slice(2).join('|') };
   }).filter(Boolean);
 
-  const withTokens = await Promise.all(parsed.map(async p => {
+  return Promise.all(parsed.map(async p => {
     const link = await withMgToken(p.rawLink, base);
     const type = link.indexOf('.m3u8') >= 0 ? 'HLS' : 'VIDEO';
     return { quality: p.q, label: p.label, url: link, type, referer: base + '/' };
   }));
-  return withTokens;
 }
 
 // ================= pick episode =================
@@ -508,12 +513,12 @@ function pickEpisode(episodes, mediaType, seasonNum, episodeNum) {
 
 // ================= try one =================
 async function tryOneCandidate(card, tmdbDetails, mediaType, seasonNum, episodeNum) {
-  log('── try: "' + card.title + '" (score ' + card._score + ') ──');
+  log('── try candidate: "' + card.title + '" (score ' + card._score + ') ──');
   let detail;
   try {
     detail = await loadDetail(card.url);
   } catch (e) {
-    log('  ✗ detail failed: ' + (e.message || e));
+    log('  ✗ detail fetch failed: ' + (e.message || e));
     return null;
   }
   if (!detail.episodes.length) {
@@ -521,35 +526,19 @@ async function tryOneCandidate(card, tmdbDetails, mediaType, seasonNum, episodeN
     return null;
   }
   const target = pickEpisode(detail.episodes, mediaType, seasonNum, episodeNum);
-  if (!target) { log('  ✗ no episode'); return null; }
-  log('  → S' + target.season + 'E' + target.number + ' "' + target.name + '"');
+  if (!target) { log('  ✗ no usable episode'); return null; }
+  log('  → S' + target.season + 'E' + target.number + ' — "' + target.name + '"');
 
   let links;
   try {
     links = await generateLinks(target.data);
   } catch (e) {
-    log('  ✗ link gen: ' + (e.message || e));
+    log('  ✗ link gen failed: ' + (e.message || e));
     return null;
   }
   if (!links.length) { log('  ✗ no links'); return null; }
   log('  ✓ ' + links.length + ' stream(s)');
   return { detail, target, links, card };
-}
-
-// ⚡ FIX 1: hybrid parallel race
-function raceFirstSuccess(promises) {
-  return new Promise((resolve) => {
-    let pending = promises.length;
-    if (pending === 0) return resolve(null);
-    promises.forEach(p => {
-      p.then(r => {
-        if (r) resolve(r);
-        else if (--pending === 0) resolve(null);
-      }).catch(() => {
-        if (--pending === 0) resolve(null);
-      });
-    });
-  });
 }
 
 // ================= controller =================
@@ -571,60 +560,69 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   }
   console.log('[MovieLinkBD] TMDB: "' + details._title + '" (' + details._year + ')');
 
-  // ⚡ FIX 3: parallel search queries
+  // 2. Search — ⚡ PARALLEL when there are 2 queries
   const queries = [details._title];
   if (details.original_title && details.original_title !== details._title) {
     queries.push(details.original_title);
   }
 
-  const searchResults = await Promise.all(
-    queries.map(q => mlinkSearch(q).catch(() => []))
-  );
   let cards = [];
-  for (let i = 0; i < searchResults.length; i++) {
-    console.log('[MovieLinkBD] Search "' + queries[i] + '" → ' + searchResults[i].length + ' card(s)');
-    if (searchResults[i].length > cards.length) cards = searchResults[i];
+  if (queries.length === 1) {
+    try {
+      cards = await mlinkSearch(queries[0]);
+      console.log('[MovieLinkBD] Search "' + queries[0] + '" → ' + cards.length + ' card(s)');
+    } catch (e) {
+      console.log('[MovieLinkBD] Search "' + queries[0] + '" failed: ' + (e.message || e));
+    }
+  } else {
+    const searchResults = await Promise.all(queries.map(q =>
+      mlinkSearch(q).then(r => {
+        console.log('[MovieLinkBD] Search "' + q + '" → ' + r.length + ' card(s)');
+        return r;
+      }).catch(e => {
+        console.log('[MovieLinkBD] Search "' + q + '" failed: ' + (e.message || e));
+        return [];
+      })
+    ));
+    for (let i = 0; i < searchResults.length; i++) {
+      if (searchResults[i].length > cards.length) cards = searchResults[i];
+    }
   }
   if (!cards.length) {
-    console.log('[MovieLinkBD] ✗ no cards (' + (Date.now() - t0) + 'ms)');
+    console.log('[MovieLinkBD] no cards (' + (Date.now() - t0) + 'ms)');
     return [];
   }
 
   // 3. Rank
   const ranked = rankCandidates(cards, details, {});
   console.log('[MovieLinkBD] Ranking:');
-  for (let i = 0; i < Math.min(5, ranked.length); i++) {
+  for (let i = 0; i < Math.min(8, ranked.length); i++) {
     const r = ranked[i];
     console.log('  ' + (i === 0 ? '→' : ' ') + ' [' + i + '] ' + r.title + ' | ' + r.type + ' | ' + r._score);
   }
 
   // 4. Attempt list
   const attemptList = ranked.filter(r => r._score >= MIN_SCORE_TO_TRY);
+  if (attemptList.length < 3) {
+    for (let i = 0; i < Math.min(3, ranked.length); i++) {
+      if (attemptList.indexOf(ranked[i]) < 0) attemptList.push(ranked[i]);
+    }
+  }
   const toTry = attemptList.slice(0, MAX_ATTEMPTS);
-  if (!toTry.length) {
-    console.log('[MovieLinkBD] ✗ no candidates above ' + MIN_SCORE_TO_TRY + ' (' + (Date.now() - t0) + 'ms)');
-    return [];
+  console.log('[MovieLinkBD] Trying ' + toTry.length + ' candidate(s)');
+
+  // 5. Iterate SEQUENTIALLY (original behavior)
+  let result = null;
+  for (let i = 0; i < toTry.length; i++) {
+    result = await tryOneCandidate(toTry[i], details, mediaType, seasonNum, episodeNum);
+    if (result) break;
   }
-  console.log('[MovieLinkBD] Trying top ' + toTry.length + ' sequentially, racing fallbacks');
-
-  // ⚡ FIX 1: try first sequentially, then race remaining in parallel
-  let result = await tryOneCandidate(toTry[0], details, mediaType, seasonNum, episodeNum);
-
-  if (!result && toTry.length > 1) {
-    const remaining = toTry.slice(1, 1 + PARALLEL_FALLBACK);
-    console.log('[MovieLinkBD] First failed, racing ' + remaining.length + ' in parallel');
-    const promises = remaining.map(c =>
-      tryOneCandidate(c, details, mediaType, seasonNum, episodeNum).catch(() => null)
-    );
-    result = await raceFirstSuccess(promises);
-  }
-
   if (!result) {
-    console.log('[MovieLinkBD] ✗ all candidates failed (' + (Date.now() - t0) + 'ms)');
+    console.log('[MovieLinkBD] all candidates failed (' + (Date.now() - t0) + 'ms)');
     return [];
   }
 
-  // 6. Output
+  // 6. Nuvio output
   const { target, links, card } = result;
   console.log('[MovieLinkBD] ✓ "' + card.title + '" S' + target.season + 'E' + target.number +
               ' in ' + (Date.now() - t0) + 'ms');
