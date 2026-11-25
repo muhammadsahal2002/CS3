@@ -5,7 +5,6 @@ const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const BASE_URL = "https://net52.cc/mobile";
 const HOST = "https://net52.cc";
-
 const OMDb_API_KEY = "8d6935ed";
 
 const DEFAULT_HEADERS = {
@@ -19,25 +18,153 @@ const DEFAULT_HEADERS = {
   "Connection": "keep-alive"
 };
 
-// ---------- In-memory token (survives QuickJS re-evaluation via globalThis) ----------
-// Still purely in-memory: gone when the app process dies. No file, no storage, no hosting.
-let cookieHeader = (typeof globalThis !== "undefined" && globalThis.__nf_cookie) || null;
-let unlockPromise = (typeof globalThis !== "undefined" && globalThis.__nf_unlockPromise) || null;
-
-const UNLOCK_TIMEOUT_MS = 45000;
-const POLL_MS = 2000;
 const OTT = "nf";
+const UNLOCK_TIMEOUT_MS = 45000;
+const POLL_MS = 750;              // was 2000 — faster polling
+const STORE_KEY = "nf_cookie_v1";
 
 function log(msg) { console.log("[NetflixNF] " + msg); }
-
 function getTimestamp() { return Math.floor(Date.now() / 1000); }
 function delay(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
-function currentCookie() {
-  return cookieHeader || (typeof globalThis !== "undefined" && globalThis.__nf_cookie) || null;
+// =========================================================================
+// 1) PROBE — what does Nuvio's QuickJS expose?
+// =========================================================================
+(function probeGlobals() {
+  try {
+    var keys = [];
+    for (var k in globalThis) keys.push(k);
+    var interesting = keys.filter(function(k) {
+      return /storage|store|async|mmkv|fs|file|sqlite|pref|native|bridge|disk/i.test(k);
+    });
+    log("PROBE globals count=" + keys.length);
+    log("PROBE interesting=[" + interesting.join(",") + "]");
+    ["AsyncStorage", "MMKV", "storage", "Storage", "nativeModule",
+     "NativeModules", "bridge", "ReactNative", "RNFS", "fs",
+     "__turboModuleProxy", "nativeCallSyncHook"].forEach(function(n) {
+      try {
+        var v = globalThis[n];
+        log("PROBE " + n + " = " + (v === undefined ? "undefined" : typeof v));
+      } catch (e) { log("PROBE " + n + " threw " + e.message); }
+    });
+  } catch (e) { log("PROBE outer error: " + e.message); }
+})();
+
+// =========================================================================
+// 2) Persistent store abstraction
+//    Tries: AsyncStorage -> MMKV -> localStorage -> globalThis -> memory
+// =========================================================================
+const store = (function() {
+  var backend = "memory";
+  var memStore = {};
+  var as = null, mmkv = null;
+
+  // detect AsyncStorage
+  try {
+    if (typeof globalThis !== "undefined" && globalThis.AsyncStorage && typeof globalThis.AsyncStorage.getItem === "function") {
+      as = globalThis.AsyncStorage;
+      backend = "AsyncStorage";
+    }
+  } catch (e) {}
+
+  // detect MMKV
+  if (!as) {
+    try {
+      if (typeof globalThis !== "undefined" && globalThis.MMKV && typeof globalThis.MMKV.getString === "function") {
+        mmkv = globalThis.MMKV;
+        backend = "MMKV";
+      }
+    } catch (e) {}
+  }
+
+  // detect localStorage
+  if (!as && !mmkv) {
+    try {
+      if (typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
+        try { localStorage.setItem("__probe__", "1"); localStorage.removeItem("__probe__"); backend = "localStorage"; }
+        catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  if (backend === "memory") backend = "memory";   // final fallback
+
+  log("STORE backend = " + backend);
+
+  return {
+    backend: backend,
+    get: function(key) {
+      try {
+        if (as) return Promise.resolve(as.getItem(key));
+        if (mmkv) return Promise.resolve(mmkv.getString(key));
+        if (backend === "localStorage") return Promise.resolve(localStorage.getItem(key));
+        return Promise.resolve(memStore[key] || null);
+      } catch (e) { return Promise.resolve(null); }
+    },
+    set: function(key, value) {
+      try {
+        if (as) return Promise.resolve(as.setItem(key, value));
+        if (mmkv) { mmkv.set(key, value); return Promise.resolve(); }
+        if (backend === "localStorage") { localStorage.setItem(key, value); return Promise.resolve(); }
+        memStore[key] = value;
+        return Promise.resolve();
+      } catch (e) { return Promise.resolve(); }
+    },
+    del: function(key) {
+      try {
+        if (as) return Promise.resolve(as.removeItem(key));
+        if (mmkv) { if (mmkv.delete) mmkv.delete(key); return Promise.resolve(); }
+        if (backend === "localStorage") { localStorage.removeItem(key); return Promise.resolve(); }
+        delete memStore[key];
+        return Promise.resolve();
+      } catch (e) { return Promise.resolve(); }
+    }
+  };
+})();
+
+// =========================================================================
+// 3) Cookie state (in-memory per-context, restored from store on first use)
+// =========================================================================
+let cookieHeader = null;
+let unlockPromise = null;
+let restored = false;
+
+function currentCookie() { return cookieHeader; }
+
+async function loadPersistedCookie() {
+  if (restored) return;
+  restored = true;
+  try {
+    const raw = await store.get(STORE_KEY);
+    if (!raw) { log("  no persisted cookie"); return; }
+    const obj = JSON.parse(raw);
+    if (obj && obj.cookie && obj.expiry && obj.expiry > Date.now() && isTokenUsable(obj.t_hash_t)) {
+      cookieHeader = obj.cookie;
+      log("💾 Cookie restored from " + store.backend + " (expires in " +
+          Math.round((obj.expiry - Date.now()) / 60000) + " min)");
+    } else {
+      log("  persisted cookie expired or invalid");
+    }
+  } catch (e) { log("  restore failed: " + e.message); }
 }
 
-// ---------- Cookie parsing ----------
+async function persistCookie(tok) {
+  var expiry = Date.now() + 12 * 3600 * 1000 - 10 * 60 * 1000;  // 12h - 10min skew
+  // if token has embedded ts, use that
+  var parts = String(tok).split("::");
+  if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
+    expiry = Number(parts[2]) * 1000 + 12 * 3600 * 1000 - 10 * 60 * 1000;
+  }
+  var cookie = "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
+  var payload = JSON.stringify({ cookie: cookie, t_hash_t: tok, expiry: expiry });
+  await store.set(STORE_KEY, payload);
+  log("💾 Cookie persisted to " + store.backend + " (expires in " +
+      Math.round((expiry - Date.now()) / 60000) + " min)");
+}
+
+// =========================================================================
+// 4) Cookie parsing
+// =========================================================================
 function cookiePairs(res) {
   var raw = [];
   try {
@@ -59,7 +186,6 @@ function cookiePairs(res) {
   });
   return out;
 }
-
 function pairValue(pairs, name) {
   for (var i = 0; i < pairs.length; i++) {
     if (pairs[i].indexOf(name + "=") === 0) return pairs[i].slice(name.length + 1);
@@ -70,6 +196,11 @@ function decode(v) { try { return decodeURIComponent(v); } catch (e) { return v;
 function isTokenUsable(t) {
   if (!t || typeof t !== "string") return false;
   if (t.indexOf("::99") !== -1) return false;
+  var parts = t.split("::");
+  if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
+    var age = Date.now() / 1000 - Number(parts[2]);
+    if (age >= 43200) return false;
+  }
   return true;
 }
 function tokenFromResponse(res) {
@@ -79,7 +210,9 @@ function tokenFromResponse(res) {
   return isTokenUsable(tok) ? tok : null;
 }
 
-// ---------- Unlock handshake ----------
+// =========================================================================
+// 5) Unlock handshake
+// =========================================================================
 function appHomeHeaders(cookie) {
   var h = {
     "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -91,13 +224,13 @@ function appHomeHeaders(cookie) {
 }
 
 async function unlockSession() {
-  log("🔓 Unlocking session (first search of this app run)...");
+  log("🔓 Unlocking session (no valid persisted cookie)...");
 
   const homeRes = await fetch(HOST + "/mobile/home?app=1", { headers: appHomeHeaders() });
   let tok = tokenFromResponse(homeRes);
   if (tok) {
     log("✅ Token came with the first response");
-    return "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
+    return tok;
   }
 
   const initialCookie = cookiePairs(homeRes).join("; ");
@@ -144,58 +277,56 @@ async function unlockSession() {
       });
     } catch (e) { continue; }
 
+    // Check cookie first
     tok = tokenFromResponse(vRes);
-    if (tok) {
-      log("✅ Token received after verify");
-      return "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
-    }
+    if (tok) { log("✅ Token received after verify (cookie)"); return tok; }
 
+    // Check JSON body for token field (faster path)
     let j = null;
     try { j = await vRes.json(); } catch (e) {}
-    if (j && j.statusup === "All Done") {
-      log("  All Done → reloading home...");
-      try {
-        const r2 = await fetch(HOST + "/mobile/home?app=1", { headers: appHomeHeaders(pollCookie) });
-        tok = tokenFromResponse(r2);
-        if (tok) {
-          log("✅ Token received after home reload");
-          return "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
-        }
-      } catch (e) {}
+    if (j) {
+      var tJson = j.t_hash_t || j.token || (j.data && j.data.t_hash_t);
+      if (tJson && isTokenUsable(tJson)) {
+        log("✅ Token received after verify (JSON)");
+        return decode(tJson);
+      }
+      if (j.statusup === "All Done") {
+        log("  All Done → reloading home...");
+        try {
+          const r2 = await fetch(HOST + "/mobile/home?app=1", { headers: appHomeHeaders(pollCookie) });
+          tok = tokenFromResponse(r2);
+          if (tok) { log("✅ Token received after home reload"); return tok; }
+        } catch (e) {}
+      }
     }
   }
   throw new Error("Unlock timed out after " + (UNLOCK_TIMEOUT_MS / 1000) + "s");
 }
 
-// ---------- ensureCookie: memory-only, dedup, persists via globalThis ----------
+// =========================================================================
+// 6) ensureCookie — restore from store, else unlock, then persist
+// =========================================================================
 async function ensureCookie() {
-  const existing = currentCookie();
-  if (existing) { cookieHeader = existing; return existing; }   // ← instant on every later call
+  await loadPersistedCookie();
+  if (cookieHeader) return cookieHeader;
+  if (unlockPromise) return unlockPromise;
 
-  const inflight = unlockPromise ||
-    (typeof globalThis !== "undefined" && globalThis.__nf_unlockPromise) || null;
-  if (inflight) return inflight;
-
-  unlockPromise = unlockSession().then(function(c) {
+  unlockPromise = unlockSession().then(async function(tok) {
+    cookieHeader = "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
+    await persistCookie(tok);
+    log("💾 Cookie ready for this and future searches");
     unlockPromise = null;
-    cookieHeader = c;
-    if (typeof globalThis !== "undefined") {
-      globalThis.__nf_cookie = c;
-      globalThis.__nf_unlockPromise = null;
-    }
-    log("💾 Cookie cached for this app session");
-    return c;
+    return cookieHeader;
   }).catch(function(e) {
     unlockPromise = null;
-    if (typeof globalThis !== "undefined") globalThis.__nf_unlockPromise = null;
     throw e;
   });
-
-  if (typeof globalThis !== "undefined") globalThis.__nf_unlockPromise = unlockPromise;
   return unlockPromise;
 }
 
-// ---------- Language priority ----------
+// =========================================================================
+// 7) Language priority
+// =========================================================================
 function langPriority(title) {
   var t = (title || "").toLowerCase();
   if (/\bhindi\b/.test(t)) return 100;
@@ -218,7 +349,9 @@ function normalizeTitleForSearch(str) {
   return String(str || "").replace(/[^a-zA-Z0-9\s]/g, "").replace(/\s+/g, " ").trim();
 }
 
-// ---------- TMDB / OMDb ----------
+// =========================================================================
+// 8) TMDB / OMDb
+// =========================================================================
 async function getImdbId(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
@@ -236,7 +369,6 @@ async function getImdbTitle(imdbId) {
   } catch (e) { log(`OMDb failed: ${e.message}`); }
   return null;
 }
-
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   const h = { ...DEFAULT_HEADERS };
   const ck = currentCookie();
@@ -245,7 +377,6 @@ function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   if (extra) Object.assign(h, extra);
   return h;
 }
-
 async function fetchJson(url, options = {}) {
   const resp = await fetch(url, options);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
@@ -261,7 +392,9 @@ async function getTmdbInfo(tmdbId, mediaType) {
   return { title, year };
 }
 
-// ---------- Net52 API ----------
+// =========================================================================
+// 9) Net52 API
+// =========================================================================
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
@@ -315,7 +448,9 @@ async function getPlaylist(id, title) {
   return data[0];
 }
 
-// ---------- Main getStreams ----------
+// =========================================================================
+// 10) Main getStreams
+// =========================================================================
 async function getStreams(tmdbId, mediaType, season, episode) {
   await ensureCookie();
 
