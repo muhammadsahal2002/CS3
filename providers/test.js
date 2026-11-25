@@ -6,7 +6,6 @@ const TMDB_BASE = "https://api.themoviedb.org/3";
 const BASE_URL = "https://net52.cc/mobile";
 const HOST = "https://net52.cc";
 
-// OMDb API key
 const OMDb_API_KEY = "8d6935ed";
 
 const DEFAULT_HEADERS = {
@@ -20,22 +19,22 @@ const DEFAULT_HEADERS = {
   "Connection": "keep-alive"
 };
 
-// ---------- In-memory token (generated once per app session) ----------
-let cookieHeader = null;      // full Cookie string, reused for every search
-let unlockPromise = null;     // dedup concurrent unlocks
+// ---------- In-memory token (survives QuickJS re-evaluation via globalThis) ----------
+// Still purely in-memory: gone when the app process dies. No file, no storage, no hosting.
+let cookieHeader = (typeof globalThis !== "undefined" && globalThis.__nf_cookie) || null;
+let unlockPromise = (typeof globalThis !== "undefined" && globalThis.__nf_unlockPromise) || null;
 
 const UNLOCK_TIMEOUT_MS = 45000;
 const POLL_MS = 2000;
-const OTT = "nf";             // Netflix
+const OTT = "nf";
 
 function log(msg) { console.log("[NetflixNF] " + msg); }
 
-function getTimestamp() {
-  return Math.floor(Date.now() / 1000);
-}
+function getTimestamp() { return Math.floor(Date.now() / 1000); }
+function delay(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
-function delay(ms) {
-  return new Promise(function(r) { setTimeout(r, ms); });
+function currentCookie() {
+  return cookieHeader || (typeof globalThis !== "undefined" && globalThis.__nf_cookie) || null;
 }
 
 // ---------- Cookie parsing ----------
@@ -67,17 +66,12 @@ function pairValue(pairs, name) {
   }
   return null;
 }
-
-function decode(v) {
-  try { return decodeURIComponent(v); } catch (e) { return v; }
-}
-
-function isTokenUsable(token) {
-  if (!token || typeof token !== "string") return false;
-  if (token.indexOf("::99") !== -1) return false;
+function decode(v) { try { return decodeURIComponent(v); } catch (e) { return v; } }
+function isTokenUsable(t) {
+  if (!t || typeof t !== "string") return false;
+  if (t.indexOf("::99") !== -1) return false;
   return true;
 }
-
 function tokenFromResponse(res) {
   var v = pairValue(cookiePairs(res), "t_hash_t");
   if (!v) return null;
@@ -85,7 +79,7 @@ function tokenFromResponse(res) {
   return isTokenUsable(tok) ? tok : null;
 }
 
-// ---------- Unlock handshake (ad verification) ----------
+// ---------- Unlock handshake ----------
 function appHomeHeaders(cookie) {
   var h = {
     "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -99,7 +93,6 @@ function appHomeHeaders(cookie) {
 async function unlockSession() {
   log("🔓 Unlocking session (first search of this app run)...");
 
-  // 1) hit home, look for token cookie OR data-addhash
   const homeRes = await fetch(HOST + "/mobile/home?app=1", { headers: appHomeHeaders() });
   let tok = tokenFromResponse(homeRes);
   if (tok) {
@@ -115,7 +108,6 @@ async function unlockSession() {
 
   log("  addhash found, triggering sponsor step...");
 
-  // 2) trigger userver (fire and forget)
   try {
     const domain = HOST.replace(/^https?:\/\//, "");
     fetch("https://userver." + domain + "/?hee5=" + encodeURIComponent(addhash) + "&a=y&t=" + Math.random(), {
@@ -129,7 +121,6 @@ async function unlockSession() {
     }).catch(function() {});
   } catch (e) {}
 
-  // 3) poll verify2.php
   const pollCookie = "ext_name=ojplmecpdpgccookcobabopnaifgidhf; addhash=" +
     encodeURIComponent(addhash) + "; " + initialCookie;
   const start = Date.now();
@@ -159,7 +150,6 @@ async function unlockSession() {
       return "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
     }
 
-    // "All Done" → reload home to grab token
     let j = null;
     try { j = await vRes.json(); } catch (e) {}
     if (j && j.statusup === "All Done") {
@@ -174,23 +164,34 @@ async function unlockSession() {
       } catch (e) {}
     }
   }
-
   throw new Error("Unlock timed out after " + (UNLOCK_TIMEOUT_MS / 1000) + "s");
 }
 
-// ---------- ensureCookie: memory-only, dedup concurrent ----------
+// ---------- ensureCookie: memory-only, dedup, persists via globalThis ----------
 async function ensureCookie() {
-  if (cookieHeader) return cookieHeader;          // ← instant on every search after the first
-  if (unlockPromise) return unlockPromise;        // ← concurrent calls share one unlock
+  const existing = currentCookie();
+  if (existing) { cookieHeader = existing; return existing; }   // ← instant on every later call
+
+  const inflight = unlockPromise ||
+    (typeof globalThis !== "undefined" && globalThis.__nf_unlockPromise) || null;
+  if (inflight) return inflight;
+
   unlockPromise = unlockSession().then(function(c) {
     unlockPromise = null;
     cookieHeader = c;
-    log("💾 Cookie cached in memory for this app session");
+    if (typeof globalThis !== "undefined") {
+      globalThis.__nf_cookie = c;
+      globalThis.__nf_unlockPromise = null;
+    }
+    log("💾 Cookie cached for this app session");
     return c;
   }).catch(function(e) {
     unlockPromise = null;
+    if (typeof globalThis !== "undefined") globalThis.__nf_unlockPromise = null;
     throw e;
   });
+
+  if (typeof globalThis !== "undefined") globalThis.__nf_unlockPromise = unlockPromise;
   return unlockPromise;
 }
 
@@ -202,11 +203,9 @@ function langPriority(title) {
   if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
   return 10;
 }
-
 function pickBestResult(results, year) {
   if (!results || !results.length) return null;
-  var best = null;
-  var bestScore = -1;
+  var best = null, bestScore = -1;
   for (var i = 0; i < results.length; i++) {
     var r = results[i];
     var score = langPriority(r.t) * 10;
@@ -215,7 +214,6 @@ function pickBestResult(results, year) {
   }
   return best;
 }
-
 function normalizeTitleForSearch(str) {
   return String(str || "").replace(/[^a-zA-Z0-9\s]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -224,26 +222,16 @@ function normalizeTitleForSearch(str) {
 async function getImdbId(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
-  try {
-    const data = await fetchJson(url);
-    return data.imdb_id || null;
-  } catch (e) {
-    log(`Failed to get IMDb ID: ${e.message}`);
-    return null;
-  }
+  try { const d = await fetchJson(url); return d.imdb_id || null; }
+  catch (e) { log(`Failed to get IMDb ID: ${e.message}`); return null; }
 }
-
 async function getImdbTitle(imdbId) {
   if (!imdbId) return null;
   try {
-    const url = `https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`;
-    const resp = await fetch(url);
+    const resp = await fetch(`https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    if (data.Response === "True" && data.Title) {
-      log(`OMDb title: "${data.Title}"`);
-      return data.Title;
-    }
+    if (data.Response === "True" && data.Title) { log(`OMDb title: "${data.Title}"`); return data.Title; }
     log(`OMDb error: ${data.Error || 'Unknown'}`);
   } catch (e) { log(`OMDb failed: ${e.message}`); }
   return null;
@@ -251,7 +239,8 @@ async function getImdbTitle(imdbId) {
 
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   const h = { ...DEFAULT_HEADERS };
-  if (cookieHeader) h["Cookie"] = cookieHeader;
+  const ck = currentCookie();
+  if (ck) h["Cookie"] = ck;
   if (requestedWith) h["X-Requested-With"] = requestedWith;
   if (extra) Object.assign(h, extra);
   return h;
@@ -262,7 +251,6 @@ async function fetchJson(url, options = {}) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
   return resp.json();
 }
-
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
   const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
@@ -276,23 +264,18 @@ async function getTmdbInfo(tmdbId, mediaType) {
 // ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
+  const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
   if (data.status !== "y") throw new Error("Search failed: " + (data.error || "unknown"));
   return data.searchResult || [];
 }
-
 async function searchWithFallback(originalTitle, year, imdbTitle) {
   let searchTitle = imdbTitle || originalTitle;
   let results = await search(searchTitle).catch(() => []);
   if (results.length > 0) {
     log(`Found ${results.length} results with IMDb title: "${searchTitle}"`);
     if (year) {
-      const filtered = results.filter(item => item.y === year);
-      if (filtered.length > 0) {
-        log(`Filtered to ${filtered.length} results with year ${year}`);
-        return filtered;
-      }
+      const f = results.filter(item => item.y === year);
+      if (f.length > 0) { log(`Filtered to ${f.length} results with year ${year}`); return f; }
     }
     return results;
   }
@@ -301,54 +284,40 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
   results = await search(normalized).catch(() => []);
   if (results.length === 0) return [];
   if (year) {
-    const filtered = results.filter(item => item.y === year);
-    if (filtered.length > 0) {
-      log(`Filtered to ${filtered.length} results with year ${year}`);
-      return filtered;
-    }
+    const f = results.filter(item => item.y === year);
+    if (f.length > 0) { log(`Filtered to ${f.length} results with year ${year}`); return f; }
   }
   return results;
 }
-
 async function getPost(id) {
   const url = `${BASE_URL}/post.php?id=${id}&t=${getTimestamp()}`;
-  const headers = buildHeaders({}, "XMLHttpRequest");
-  const data = await fetchJson(url, { headers });
+  const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
   if (data.status !== "y") throw new Error("Post failed: " + (data.error || "unknown"));
   return data;
 }
-
 async function getEpisodes(seasonId, seriesId) {
-  let allEpisodes = [];
-  let page = 1;
-  let hasNext = true;
+  let all = [], page = 1, hasNext = true;
   while (hasNext) {
     let url = `${BASE_URL}/episodes.php?s=${seasonId}&series=${seriesId}&t=${getTimestamp()}`;
     if (page > 1) url += `&page=${page}`;
-    const headers = buildHeaders({}, "XMLHttpRequest");
-    const data = await fetchJson(url, { headers });
+    const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
     if (!data.episodes) break;
-    allEpisodes = allEpisodes.concat(data.episodes);
-    if (data.nextPageShow === 1 && data.nextPage) {
-      page = data.nextPage;
-    } else {
-      hasNext = false;
-    }
+    all = all.concat(data.episodes);
+    if (data.nextPageShow === 1 && data.nextPage) page = data.nextPage;
+    else hasNext = false;
   }
-  return allEpisodes;
+  return all;
 }
-
 async function getPlaylist(id, title) {
   const url = `${BASE_URL}/playlist.php?id=${id}&t=${encodeURIComponent(title)}&tm=${getTimestamp()}&lang=null&hd=on`;
-  const headers = buildHeaders({}, "app.netmirror.nmv2");
-  const data = await fetchJson(url, { headers });
+  const data = await fetchJson(url, { headers: buildHeaders({}, "app.netmirror.nmv2") });
   if (!Array.isArray(data) || data.length === 0) throw new Error("Empty playlist response");
   return data[0];
 }
 
 // ---------- Main getStreams ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
-  await ensureCookie();                          // ← first search unlocks, rest reuse
+  await ensureCookie();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
   const title = tmdbInfo.title;
@@ -367,17 +336,13 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   if (!results.length) throw new Error(`No results found for "${title}"`);
 
   log("All search results:");
-  for (const item of results) {
-    log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
-  }
+  for (const item of results) log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
 
-  // ---- YEAR FILTERING: Strict for Movies, Flexible for Series ----
   let candidates = [];
-
   if (isMovieType && year) {
-    const existingYearMatches = results.filter(item => item.y === year);
-    if (existingYearMatches.length > 0) {
-      candidates = existingYearMatches;
+    const existing = results.filter(item => item.y === year);
+    if (existing.length > 0) {
+      candidates = existing;
       log(`✅ Found ${candidates.length} movie results with year ${year}`);
     } else {
       log(`Fetching year from post.php for ${results.length} movie candidates...`);
@@ -386,10 +351,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
           const post = await getPost(item.id);
           const itemYear = post.year || "";
           log(`  "${item.t}" → year: "${itemYear}"`);
-          if (itemYear === year) candidates.push({ ...item, y: itemYear, post: post });
-        } catch (e) {
-          log(`  Failed to get year for "${item.t}": ${e.message}`);
-        }
+          if (itemYear === year) candidates.push({ ...item, y: itemYear, post });
+        } catch (e) { log(`  Failed to get year for "${item.t}": ${e.message}`); }
       }
       if (candidates.length === 0) throw new Error(`No movies found with year ${year}`);
       log(`✅ Found ${candidates.length} movie results with year ${year}`);
@@ -402,52 +365,38 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const post = await getPost(item.id);
         const itemYear = post.year || "";
         log(`  "${item.t}" → year: "${itemYear}"`);
-        item.y = itemYear;
-        item.post = post;
-      } catch (e) {
-        log(`  Failed to get year for "${item.t}": ${e.message}`);
-      }
+        item.y = itemYear; item.post = post;
+      } catch (e) { log(`  Failed to get year for "${item.t}": ${e.message}`); }
     }
     if (year) {
-      const yearMatches = results.filter(item => item.y === year);
-      if (yearMatches.length > 0) {
-        log(`✅ Found ${yearMatches.length} results with year ${year} (preferred)`);
-        candidates = [...yearMatches, ...results.filter(item => item.y !== year)];
-      } else {
-        log(`⚠️ No results with year ${year}, using all results`);
-      }
+      const ym = results.filter(item => item.y === year);
+      if (ym.length > 0) {
+        log(`✅ Found ${ym.length} results with year ${year} (preferred)`);
+        candidates = [...ym, ...results.filter(item => item.y !== year)];
+      } else log(`⚠️ No results with year ${year}, using all results`);
     }
   }
 
   let selected = pickBestResult(candidates, year);
-  if (!selected) {
-    selected = candidates[0];
-    log(`No language pick, using first: "${selected.t}" (${selected.y})`);
-  } else {
-    log(`Selected: "${selected.t}" (${selected.y})`);
-  }
+  if (!selected) { selected = candidates[0]; log(`No language pick, using first: "${selected.t}" (${selected.y})`); }
+  else log(`Selected: "${selected.t}" (${selected.y})`);
 
   const post = selected.post || await getPost(selected.id);
   log(`Type: ${post.type}, title: ${post.title}`);
 
   let contentId;
   const isMovie = (post.type === "m" || mediaType === "movie");
-
   if (isMovie) {
     contentId = post.main_id || selected.id;
     log(`Movie, using ID: ${contentId}`);
   } else {
     const seasonList = post.season || [];
     let targetSeasonId = null;
-    for (const s of seasonList) {
-      if (parseInt(s.s, 10) === season) { targetSeasonId = s.id; break; }
-    }
+    for (const s of seasonList) if (parseInt(s.s, 10) === season) { targetSeasonId = s.id; break; }
     if (!targetSeasonId) throw new Error(`Season ${season} not found`);
     log(`Season ID: ${targetSeasonId}`);
-
     const episodes = await getEpisodes(targetSeasonId, selected.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
-
     let targetEp = null;
     for (const ep of episodes) {
       const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
@@ -468,17 +417,16 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   if (playlist.tracks && playlist.tracks.length) {
     for (const track of playlist.tracks) {
       let url = track.file || "";
-      if (url && url.indexOf("http") !== 0) {
-        url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
-      }
+      if (url && url.indexOf("http") !== 0) url = (url.indexOf("//") === 0) ? "https:" + url : "https://net52.cc" + url;
       subtitles.push({
-        url: url,
+        url,
         language: track.label || "Unknown",
         default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
       });
     }
   }
 
+  const ck = currentCookie();
   return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
@@ -489,10 +437,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       headers: {
         Referer: "https://net52.cc/",
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
-        "Cookie": cookieHeader,
+        "Cookie": ck,
         "Origin": "https://net52.cc"
       },
-      subtitles: subtitles
+      subtitles
     };
   });
 }
