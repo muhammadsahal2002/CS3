@@ -1,20 +1,25 @@
 /**
- * NetMirror Disney+ provider for Nuvio  (pure JS, no dependencies, Promise chains)
+ * NetMirror Disney+ provider for Nuvio
+ * (pure JS, no deps, Promise chains, NO hosted token — local cache only)
+ *
+ * Token handling (NO hosting):
+ *   1. memory cache
+ *   2. persisted copy (globalThis / localStorage / AsyncStorage / file in Node+Termux)
+ *   3. unlock handshake (ad-verification) as last resort, then persisted
+ *   The token's own embedded timestamp decides how long it is reused (12h).
  *
  * Flow:
- *   1. TMDB id  -> title(s)
- *   2. unlock session (ad-verification handshake) -> t_hash_t token cookie (cached 12h)
- *   3. GET /mobile/hs/search.php?s=<title>                 -> NetMirror content id
- *   4. movie  : playable id = content id
- *      series : GET /mobile/hs/post.php?id=<id>            -> title + season list
- *               GET /mobile/hs/episodes.php?s=<seasonId>&series=<id>&page=N -> episode id
- *   5. GET /mobile/hs/playlist.php?id=<playId>&t=<title>&tm=<ts> -> { sources[], tracks[] }
- *   6. one stream per source, with Referer + Cookie headers
+ *   TMDB id -> title(s) [+ OMDb IMDb title] -> search.php -> pick (year + language rules)
+ *   -> movie: playlist.php  |  series: post.php -> episodes.php -> playlist.php
  *
- * ASSUMPTIONS (not verified, see test-netmirror.js --raw to check them):
- *   - search.php returns { searchResult: [{ id, t }] }
- *   - post.php returns { title, season: [{ id, s }], episodes: [...] }
- *   - episodes.php returns { episodes: [{ id, ep, s }], nextPageShow }
+ * Features kept from mobile_nf.js:
+ *   - OMDb/IMDb title as an extra search term (OMDb key = "8d6935ed")
+ *   - year filter: strict for movies, flexible for series
+ *   - language priority (Hindi > English > unmarked > other Indian languages)
+ *   - post.type "m" = movie, post.main_id as the movie id
+ *   - playlist.php with lang=null&hd=on and the app header, plain call as fallback
+ *
+ * NO TOKEN HOSTING: TOKEN_URL / fetchRemoteToken / t_hash-from-hosted are removed.
  */
 
 "use strict";
@@ -34,23 +39,25 @@ function logErr() {
 log("=== provider file loaded ===");
 
 var CONFIG = {
+    NAME: "NetMirror Disney+",
     BASE_URL: "https://net52.cc",
     OTT: "dp",                 // Disney+
     PREFIX: "hs/",             // Disney+ path prefix
     TMDB_API_KEY: "439c478a771f35c05022f9feabcca01c",
     TMDB_BASE: "https://api.themoviedb.org/3",
+    OMDB_API_KEY: "8d6935ed",  // from your mobile_nf.js (kept, optional)
     UA: "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/144.0.7559.132 Safari/537.36 /OS.Gatu v3.0",
     UNLOCK_TIMEOUT_MS: 45000,
     POLL_MS: 2000,
     TOKEN_TTL_MS: 43200000,    // 12h
+    TOKEN_SKEW_MS: 600000,     // stop reusing 10 min before the real expiry
     MIN_SCORE: 40,
-    COOKIE_OVERRIDE: ""        // full cookie string, skips the unlock (used by test-netmirror.js --cookie)
+    MAX_YEAR_LOOKUPS: 6,
+    COOKIE_OVERRIDE: ""        // full cookie string, skips every token step (test --cookie)
 };
 
+var STORE_KEY = "netmirror_session_v1";
 var ABUSE_MARKERS = ["220884", "Only Valid Users Allowed"];
-
-// session cache (lost on app restart, that is fine)
-var session = { token: null, expiry: 0 };
 
 // =========================================================================
 // Small helpers
@@ -116,21 +123,46 @@ function similarity(a, b) {
     return maxLen > 0 ? (1 - dist / maxLen) * 50 : 0;
 }
 
-function titleScore(a, b) {
-    return similarity(normalize(a), normalize(b));
+var LANG_WORDS_RE = /\b(hindi|english|tamil|telugu|malayalam|kannada|bengali|marathi)\b/gi;
+
+function stripLangTags(title) {
+    return String(title || "").replace(LANG_WORDS_RE, " ").replace(/[\(\[\{]\s*[\)\]\}]/g, " ");
 }
 
-// "S2", "Season 2", "2", 2 -> 2   (null when there is no digit)
+function titleScore(itemTitle, wanted) {
+    return similarity(normalize(stripLangTags(itemTitle)), normalize(wanted));
+}
+
+function langPriority(title) {
+    var t = String(title || "").toLowerCase();
+    if (/\bhindi\b/.test(t)) return 100;
+    if (/\benglish\b/.test(t)) return 90;
+    if (!/\b(tamil|telugu|malayalam|kannada|bengali|marathi)\b/.test(t)) return 50;
+    return 10;
+}
+
+function plainSearchTitle(str) {
+    return String(str || "").replace(/[^a-zA-Z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
 function numberOf(v) {
     var d = String(v === undefined || v === null ? "" : v).replace(/\D/g, "");
     return d ? parseInt(d, 10) : null;
 }
 
+function unique(list) {
+    var seen = {};
+    var out = [];
+    list.forEach(function(x) {
+        if (x && !seen[x]) { seen[x] = true; out.push(x); }
+    });
+    return out;
+}
+
 // =========================================================================
-// Cookies
+// Cookies + token rules  (no hosting)
 // =========================================================================
 
-// Set-Cookie of a response -> ["name=value", ...]
 function cookiePairs(res) {
     var raw = [];
     try {
@@ -143,7 +175,6 @@ function cookiePairs(res) {
             var x = res.headers.get("x-set-cookie");
             if (x) s += (s ? ", " : "") + x;
         } catch (e2) {}
-        // split joined cookies, but not at the comma inside "Expires=Wed, 21 Oct ..."
         raw = s ? s.split(/,(?=\s*[A-Za-z0-9_\-]+=)/) : [];
     }
     var out = [];
@@ -165,12 +196,11 @@ function decode(v) {
     try { return decodeURIComponent(v); } catch (e) { return v; }
 }
 
-// t_hash_t looks like "hash::ip::timestamp::flag"; "::99" = banned, timestamp > 12h = stale
 function isTokenUsable(token) {
     if (!token || typeof token !== "string") return false;
     if (token.indexOf("::99") !== -1) return false;
     var parts = token.split("::");
-    if (parts.length < 3) return true;          // no timestamp, assume usable
+    if (parts.length < 3) return true;
     var ts = parts[2];
     if (/^\d{10}$/.test(ts)) {
         var age = Date.now() / 1000 - Number(ts);
@@ -179,13 +209,14 @@ function isTokenUsable(token) {
     return true;
 }
 
-function saveToken(tok) {
-    session.token = tok;
-    session.expiry = Date.now() + CONFIG.TOKEN_TTL_MS;
-    return tok;
+function tokenExpiry(token) {
+    var parts = String(token || "").split("::");
+    if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
+        return Number(parts[2]) * 1000 + CONFIG.TOKEN_TTL_MS - CONFIG.TOKEN_SKEW_MS;
+    }
+    return Date.now() + CONFIG.TOKEN_TTL_MS - CONFIG.TOKEN_SKEW_MS;
 }
 
-// token out of a response's Set-Cookie (or null)
 function tokenFromResponse(res) {
     var v = pairValue(cookiePairs(res), "t_hash_t");
     if (!v) return null;
@@ -194,7 +225,138 @@ function tokenFromResponse(res) {
 }
 
 // =========================================================================
-// Unlock session (ad-verification handshake)
+// Session storage  (memory + persisted copy — NO hosted record)
+// =========================================================================
+
+var session = { token: null, expiry: 0, source: "" };
+var backends = null;
+
+function globalObject() {
+    if (typeof globalThis !== "undefined") return globalThis;
+    if (typeof global !== "undefined") return global;
+    if (typeof window !== "undefined") return window;
+    return null;
+}
+
+function getBackends() {
+    if (backends) return backends;
+    backends = [];
+    var g = globalObject();
+
+    if (g) {
+        backends.push({
+            name: "global",
+            get: function() { return Promise.resolve(g.__netmirrorSession ? String(g.__netmirrorSession) : null); },
+            set: function(v) { g.__netmirrorSession = v; return Promise.resolve(); },
+            del: function() { try { delete g.__netmirrorSession; } catch (e) { g.__netmirrorSession = null; } return Promise.resolve(); }
+        });
+    }
+
+    try {
+        if (typeof localStorage !== "undefined" && localStorage && typeof localStorage.getItem === "function") {
+            // probe write (private mode can throw on setItem)
+            try {
+                localStorage.setItem("__nm_probe__", "1");
+                localStorage.removeItem("__nm_probe__");
+                backends.push({
+                    name: "localStorage",
+                    get: function() { return Promise.resolve(localStorage.getItem(STORE_KEY)); },
+                    set: function(v) { localStorage.setItem(STORE_KEY, v); return Promise.resolve(); },
+                    del: function() { localStorage.removeItem(STORE_KEY); return Promise.resolve(); }
+                });
+            } catch (e) {}
+        }
+    } catch (e) {}
+
+    try {
+        var AS = g && g.AsyncStorage ? g.AsyncStorage : null;
+        if (!AS && typeof require === "function") {
+            try {
+                var m = require("@react-native-async-storage/async-storage");
+                AS = m && (m.default || m);
+            } catch (e1) {}
+        }
+        if (AS && typeof AS.getItem === "function") {
+            backends.push({
+                name: "AsyncStorage",
+                get: function() { return Promise.resolve(AS.getItem(STORE_KEY)); },
+                set: function(v) { return Promise.resolve(AS.setItem(STORE_KEY, v)); },
+                del: function() { return Promise.resolve(AS.removeItem(STORE_KEY)); }
+            });
+        }
+    } catch (e2) {}
+
+    try {
+        if (typeof process !== "undefined" && process.versions && process.versions.node && typeof require === "function") {
+            var fs = require("fs");
+            var file = (process.env && process.env.NETMIRROR_SESSION_FILE) ||
+                (((process.env && process.env.HOME) || ".") + "/.netmirror-session.json");
+            backends.push({
+                name: "file",
+                get: function() { try { return Promise.resolve(fs.readFileSync(file, "utf8")); } catch (e) { return Promise.resolve(null); } },
+                set: function(v) { try { fs.writeFileSync(file, v); } catch (e) {} return Promise.resolve(); },
+                del: function() { try { fs.unlinkSync(file); } catch (e) {} return Promise.resolve(); }
+            });
+        }
+    } catch (e3) {}
+
+    log("  storage backends:", backends.map(function(b) { return b.name; }).join(", ") || "none");
+    return backends;
+}
+
+function sessionValid(s) {
+    return !!(s && s.token && s.expiry > Date.now() && isTokenUsable(s.token));
+}
+
+function setSessionMemory(token, source) {
+    session.token = token;
+    session.expiry = tokenExpiry(token);
+    session.source = source || "";
+}
+
+function persistSession() {
+    if (!sessionValid(session)) return Promise.resolve();
+    var payload = JSON.stringify({ token: session.token, expiry: session.expiry });
+    return Promise.all(getBackends().map(function(b) {
+        return Promise.resolve().then(function() { return b.set(payload); }).catch(function() {});
+    })).then(function() {
+        log("  token saved (" + getBackends().map(function(b) { return b.name; }).join("+") + "), reusable for ~" +
+            Math.round((session.expiry - Date.now()) / 60000) + " min");
+    });
+}
+
+function loadStoredSession() {
+    var list = getBackends();
+    function tryBackend(i) {
+        if (i >= list.length) return Promise.resolve(null);
+        return Promise.resolve().then(function() { return list[i].get(); }).then(function(raw) {
+            var s = null;
+            try { s = raw ? JSON.parse(raw) : null; } catch (e) {}
+            if (sessionValid(s)) return { s: s, from: list[i].name };
+            return tryBackend(i + 1);
+        }).catch(function() { return tryBackend(i + 1); });
+    }
+    return tryBackend(0).then(function(found) {
+        if (!found) return false;
+        session.token = found.s.token;
+        session.expiry = found.s.expiry;
+        session.source = "stored:" + found.from;
+        log("  reusing saved token from", found.from, "(~" + Math.round((session.expiry - Date.now()) / 60000) + " min left)");
+        return true;
+    });
+}
+
+function clearSession() {
+    session.token = null;
+    session.expiry = 0;
+    session.source = "";
+    return Promise.all(getBackends().map(function(b) {
+        return Promise.resolve().then(function() { return b.del(); }).catch(function() {});
+    }));
+}
+
+// =========================================================================
+// Unlock handshake (Vega-derived, no hosting)
 // =========================================================================
 
 function appHomeHeaders(cookie) {
@@ -207,7 +369,6 @@ function appHomeHeaders(cookie) {
     return h;
 }
 
-// resolves a usable token string, or null
 function unlockSession() {
     var base = CONFIG.BASE_URL;
     log("  unlock: start");
@@ -215,7 +376,7 @@ function unlockSession() {
     return fetch(base + "/mobile/home?app=1", { headers: appHomeHeaders() })
         .then(function(res) {
             var tok = tokenFromResponse(res);
-            if (tok) { log("  unlock: token came with the first response"); return { token: saveToken(tok) }; }
+            if (tok) { log("  unlock: token came with the first response"); return { token: tok }; }
 
             var initialCookie = cookiePairs(res).join("; ");
             return res.text().then(function(html) {
@@ -227,7 +388,6 @@ function unlockSession() {
             if (state.token) return state.token;
             if (!state.addhash) { logErr("  unlock: no data-addhash on the home page"); return null; }
 
-            // sponsor step, fire and forget
             var domain = base.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
             fetch("https://userver." + domain + "/?hee5=" + encodeURIComponent(state.addhash) + "&a=y&t=" + Math.random(), {
                 headers: {
@@ -263,7 +423,7 @@ function unlockSession() {
                     });
                 }).then(function(res) {
                     var tok = tokenFromResponse(res);
-                    if (tok) return saveToken(tok);
+                    if (tok) return tok;
 
                     return res.text().then(function(txt) {
                         var j = null;
@@ -271,10 +431,7 @@ function unlockSession() {
                         if (j && j.statusup === "All Done") {
                             log("  unlock: verified, reloading home for the token");
                             return fetch(base + "/mobile/home?app=1", { headers: appHomeHeaders(pollCookie) })
-                                .then(function(r2) {
-                                    var t2 = tokenFromResponse(r2);
-                                    return t2 ? saveToken(t2) : null;
-                                });
+                                .then(function(r2) { return tokenFromResponse(r2); });
                         }
                         return poll();
                     });
@@ -288,17 +445,31 @@ function unlockSession() {
         });
 }
 
-// full cookie header for API calls
+// =========================================================================
+// Cookie for API calls
+// =========================================================================
+
+function cookieFromSession() {
+    return "t_hash_t=" + session.token + "; hd=on; ott=" + CONFIG.OTT;
+}
+
 function getCookie(forceFresh) {
     if (CONFIG.COOKIE_OVERRIDE) return Promise.resolve(CONFIG.COOKIE_OVERRIDE);
 
-    if (!forceFresh && session.token && Date.now() < session.expiry && isTokenUsable(session.token)) {
-        return Promise.resolve("t_hash_t=" + session.token + "; hd=on; ott=" + CONFIG.OTT);
-    }
-    return unlockSession().then(function(tok) {
-        if (tok) return "t_hash_t=" + tok + "; hd=on; ott=" + CONFIG.OTT;
-        logErr("  no token, continuing without it (may fail)");
-        return "hd=on; ott=" + CONFIG.OTT;
+    if (!forceFresh && sessionValid(session)) return Promise.resolve(cookieFromSession());
+
+    var stored = forceFresh ? Promise.resolve(false) : loadStoredSession();
+    return stored.then(function(ok) {
+        if (ok) return cookieFromSession();
+
+        return unlockSession().then(function(tok) {
+            if (!tok) {
+                logErr("  no token, continuing without it (may fail)");
+                return "hd=on; ott=" + CONFIG.OTT;
+            }
+            setSessionMemory(tok, "unlock");
+            return persistSession().then(cookieFromSession);
+        });
     });
 }
 
@@ -306,21 +477,21 @@ function getCookie(forceFresh) {
 // API helpers
 // =========================================================================
 
-function apiHeaders(cookie) {
+function apiHeaders(cookie, requestedWith) {
     var h = {
         "User-Agent": CONFIG.UA,
         "Referer": CONFIG.BASE_URL + "/home",
         "Origin": CONFIG.BASE_URL,
         "Accept": "application/json, text/plain, */*"
     };
+    if (requestedWith) h["X-Requested-With"] = requestedWith;
     if (cookie) h["Cookie"] = cookie;
     return h;
 }
 
-// GET json (resolves null on any problem)
-function apiGet(path, cookie) {
+function apiGet(path, cookie, requestedWith) {
     var url = path.indexOf("http") === 0 ? path : CONFIG.BASE_URL + path;
-    return fetch(url, { headers: apiHeaders(cookie) })
+    return fetch(url, { headers: apiHeaders(cookie, requestedWith === undefined ? "XMLHttpRequest" : requestedWith) })
         .then(function(r) {
             log("  GET", url.replace(CONFIG.BASE_URL, "").slice(0, 100), "-> HTTP", r.status);
             return r.text();
@@ -339,86 +510,165 @@ function mobilePath(file, withPrefix) {
 }
 
 // =========================================================================
-// TMDB
+// TMDB / OMDb
 // =========================================================================
 
-function getTmdbTitles(tmdbId, mediaType) {
+function getTmdbInfo(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
         "?api_key=" + CONFIG.TMDB_API_KEY;
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(d) {
-            if (!d) return [];
+            if (!d) return null;
             var main = mediaType === "tv" ? (d.name || d.original_name) : (d.title || d.original_title);
             var orig = mediaType === "tv" ? d.original_name : d.original_title;
-            var titles = [];
-            if (main) titles.push(main);
-            if (orig && orig !== main) titles.push(orig);
-            log("  tmdb: titles =", titles.join(" | "));
-            return titles;
+            var date = d.release_date || d.first_air_date || "";
+            var info = {
+                titles: unique([main, orig]),
+                year: date ? String(date).substring(0, 4) : ""
+            };
+            log("  tmdb: titles =", info.titles.join(" | "), "| year =", info.year || "?");
+            return info;
         })
-        .catch(function() { return []; });
+        .catch(function() { return null; });
+}
+
+function getOmdbTitle(tmdbId, mediaType) {
+    if (!CONFIG.OMDB_API_KEY) return Promise.resolve(null);
+    var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
+        "/external_ids?api_key=" + CONFIG.TMDB_API_KEY;
+    return fetch(url)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+            if (!d || !d.imdb_id) return null;
+            return fetch("https://www.omdbapi.com/?i=" + d.imdb_id + "&plot=short&r=json&apikey=" + CONFIG.OMDB_API_KEY)
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(o) {
+                    var t = o && o.Response === "True" && o.Title ? o.Title : null;
+                    log("  omdb title =", t);
+                    return t;
+                });
+        })
+        .catch(function() { return null; });
 }
 
 // =========================================================================
-// Search + metadata
+// Search + choosing the right entry
 // =========================================================================
 
-// -> [{ id, title }]
 function searchContent(query, cookie) {
-    var path = mobilePath("search.php", true) + "?s=" + encodeURIComponent(query) + "&t=" + nowSec();
-    return apiGet(path, cookie).then(function(d) {
-        if (!d) return [];
-        var list = Array.isArray(d) ? d : (d.searchResult || d.results || d.data || []);
-        var out = [];
-        (Array.isArray(list) ? list : []).forEach(function(x) {
-            var id = x && (x.id !== undefined ? x.id : x.ID);
-            var title = x && (x.t || x.title || x.name);
-            if (id !== undefined && id !== null && title) out.push({ id: String(id), title: String(title) });
-        });
-        log("  search \"" + query + "\":", out.length, "results");
-        return out;
-    });
-}
-
-function findContent(titles, cookie) {
-    function tryTitle(i) {
-        if (i >= titles.length) return Promise.resolve(null);
-        return searchContent(titles[i], cookie).then(function(items) {
-            var best = null;
-            var bestScore = -1;
-            items.forEach(function(it) {
-                var s = 0;
-                titles.forEach(function(t) { s = Math.max(s, titleScore(it.title, t)); });
-                if (s > bestScore) { bestScore = s; best = it; }
+    function run(extra) {
+        var path = mobilePath("search.php", true) + "?s=" + encodeURIComponent(query) + "&t=" + nowSec() + extra;
+        return apiGet(path, cookie).then(function(d) {
+            if (!d) return [];
+            if (d.status === "n") { logErr("  search refused:", d.error || ""); return []; }
+            var list = Array.isArray(d) ? d : (d.searchResult || d.results || d.data || []);
+            var out = [];
+            (Array.isArray(list) ? list : []).forEach(function(x) {
+                var id = x && (x.id !== undefined ? x.id : x.ID);
+                var title = x && (x.t || x.title || x.name);
+                if (id !== undefined && id !== null && title) {
+                    out.push({ id: String(id), title: String(title), year: x.y ? String(x.y) : "" });
+                }
             });
-            if (best && bestScore >= CONFIG.MIN_SCORE) {
-                log("  match:", best.title, "(score " + bestScore.toFixed(1) + ") id =", best.id);
-                return best;
-            }
-            return tryTitle(i + 1);
+            return out;
         });
     }
-    return tryTitle(0);
+    return run("&ADSearch=false").then(function(items) {
+        if (items.length) return items;
+        return run("");
+    }).then(function(items) {
+        log("  search \"" + query + "\":", items.length, "results");
+        return items;
+    });
 }
 
 function postInfo(id, cookie) {
     return apiGet(mobilePath("post.php", true) + "?id=" + encodeURIComponent(id) + "&t=" + nowSec(), cookie);
 }
 
-// all episodes of one season (follows paging)
+function bestScore(item, scoreTitles) {
+    var s = 0;
+    scoreTitles.forEach(function(t) { s = Math.max(s, titleScore(item.title, t)); });
+    return s;
+}
+
+function chooseCandidate(items, scoreTitles, year, isMovie, cookie) {
+    var scored = items.map(function(it) {
+        return { item: it, score: bestScore(it, scoreTitles) };
+    }).filter(function(x) { return x.score >= CONFIG.MIN_SCORE; });
+    if (!scored.length) return Promise.resolve(null);
+
+    function pick(list, preferYear) {
+        var best = null;
+        var bestKey = -1;
+        list.forEach(function(x) {
+            var key = (preferYear && year && x.item.year === year ? 1000000 : 0) +
+                langPriority(x.item.title) * 1000 + x.score;
+            if (key > bestKey) { bestKey = key; best = x; }
+        });
+        return best ? best.item : null;
+    }
+
+    if (!year) return Promise.resolve(pick(scored, false));
+
+    if (!isMovie) {
+        return Promise.resolve(pick(scored, true));
+    }
+
+    var withYear = scored.filter(function(x) { return x.item.year === year; });
+    if (withYear.length) return Promise.resolve(pick(withYear, false));
+
+    var toCheck = scored.slice(0, CONFIG.MAX_YEAR_LOOKUPS);
+    var matched = [];
+    return toCheck.reduce(function(chain, x) {
+        return chain.then(function() {
+            return postInfo(x.item.id, cookie).then(function(post) {
+                var py = post && post.year ? String(post.year) : "";
+                log("  \"" + x.item.title + "\" -> year", py || "?");
+                if (py === year) {
+                    x.item.year = py;
+                    x.item.post = post;
+                    matched.push(x);
+                }
+            });
+        });
+    }, Promise.resolve()).then(function() {
+        if (!matched.length) { logErr("  no movie with year", year); return null; }
+        return pick(matched, false);
+    });
+}
+
+function findContent(queries, scoreTitles, year, isMovie, cookie) {
+    function tryQuery(i) {
+        if (i >= queries.length) return Promise.resolve(null);
+        return searchContent(queries[i], cookie).then(function(items) {
+            if (!items.length) return tryQuery(i + 1);
+            return chooseCandidate(items, scoreTitles, year, isMovie, cookie).then(function(hit) {
+                if (hit) { log("  picked:", hit.title, "(" + (hit.year || "?") + ") id =", hit.id); return hit; }
+                return tryQuery(i + 1);
+            });
+        });
+    }
+    return tryQuery(0);
+}
+
+// =========================================================================
+// Series: seasons + episodes
+// =========================================================================
+
 function getSeasonEpisodes(seriesId, seasonId, cookie) {
     var all = [];
     function page(n) {
         if (n > 12) return Promise.resolve(all);
         var path = mobilePath("episodes.php", true) + "?s=" + encodeURIComponent(seasonId) +
-            "&series=" + encodeURIComponent(seriesId) + "&t=" + nowSec() + "&page=" + n;
+            "&series=" + encodeURIComponent(seriesId) + "&t=" + nowSec() + (n > 1 ? "&page=" + n : "");
         return apiGet(path, cookie).then(function(d) {
             if (!d) return all;
             var eps = Array.isArray(d.episodes) ? d.episodes : [];
             all = all.concat(eps);
-            var more = d.nextPageShow;
-            if (eps.length && (more === 1 || more === "1" || more === true)) return page(n + 1);
+            var more = d.nextPageShow === 1 || d.nextPageShow === "1" || d.nextPageShow === true;
+            if (eps.length && more) return page(d.nextPage ? Number(d.nextPage) || n + 1 : n + 1);
             return all;
         });
     }
@@ -430,18 +680,23 @@ function pickEpisode(list, episode) {
     for (i = 0; i < list.length; i++) {
         if (numberOf(list[i].ep !== undefined ? list[i].ep : list[i].episode) === episode) return list[i];
     }
-    return list[episode - 1] || null;
+    return null;
 }
 
-// -> { playId, title } or null
 function resolvePlayable(hit, isMovie, season, episode, cookie) {
-    if (isMovie) return Promise.resolve({ playId: hit.id, title: hit.title });
+    var postPromise = hit.post ? Promise.resolve(hit.post) : postInfo(hit.id, cookie);
 
-    return postInfo(hit.id, cookie).then(function(info) {
-        if (!info) return null;
-        var title = info.title || hit.title;
-        var seasons = Array.isArray(info.season) ? info.season : [];
-        var inlineEps = Array.isArray(info.episodes) ? info.episodes : [];
+    return postPromise.then(function(post) {
+        if (!post) return null;
+        var title = post.title || hit.title;
+        log("  post: type =", post.type, "| title =", post.title);
+
+        if (isMovie || post.type === "m") {
+            return { playId: String(post.main_id || hit.id), title: title };
+        }
+
+        var seasons = Array.isArray(post.season) ? post.season : [];
+        var inlineEps = Array.isArray(post.episodes) ? post.episodes : [];
 
         var wanted = null;
         seasons.forEach(function(s) {
@@ -449,15 +704,21 @@ function resolvePlayable(hit, isMovie, season, episode, cookie) {
         });
         if (!wanted && seasons.length === 1 && season === 1) wanted = seasons[0];
 
+        function inlineForSeason() {
+            if (!inlineEps.length) return [];
+            var s0 = numberOf(inlineEps[0].s);
+            return (s0 === null || s0 === season) ? inlineEps : [];
+        }
+
         var epsPromise;
         if (wanted) {
             epsPromise = getSeasonEpisodes(hit.id, wanted.id, cookie).then(function(list) {
-                // post.php already carries the first season's episodes
-                return list.length || wanted !== seasons[0] ? list : inlineEps;
+                return list.length ? list : inlineForSeason();
             });
         } else if (!seasons.length) {
             epsPromise = Promise.resolve(inlineEps);
         } else {
+            logErr("  season", season, "not found (site has", seasons.length, "seasons)");
             epsPromise = Promise.resolve([]);
         }
 
@@ -467,7 +728,7 @@ function resolvePlayable(hit, isMovie, season, episode, cookie) {
                 logErr("  S" + season + "E" + episode, "not found (" + list.length + " episodes seen)");
                 return null;
             }
-            log("  episode: S" + season + "E" + episode, "-> id", ep.id);
+            log("  episode: S" + season + "E" + episode, "->", ep.t || "", "id", ep.id);
             return { playId: String(ep.id), title: title };
         });
     });
@@ -477,9 +738,9 @@ function resolvePlayable(hit, isMovie, season, episode, cookie) {
 // Playlist + streams
 // =========================================================================
 
-function playlistUrl(playId, title, withPrefix) {
+function playlistPath(playId, title, withPrefix, extras) {
     return mobilePath("playlist.php", withPrefix) + "?id=" + encodeURIComponent(playId) +
-        "&t=" + encodeURIComponent(title) + "&tm=" + nowSec();
+        "&t=" + encodeURIComponent(title) + "&tm=" + nowSec() + (extras ? "&lang=null&hd=on" : "");
 }
 
 function normalizePlaylist(d) {
@@ -487,12 +748,15 @@ function normalizePlaylist(d) {
     return p && Array.isArray(p.sources) && p.sources.length ? p : null;
 }
 
-// prefix path first, plain path as fallback
 function fetchPlaylist(playId, title, cookie) {
-    return apiGet(playlistUrl(playId, title, true), cookie).then(function(d) {
+    return apiGet(playlistPath(playId, title, true, true), cookie, "app.netmirror.nmv2").then(function(d) {
         var p = normalizePlaylist(d);
         if (p) return p;
-        return apiGet(playlistUrl(playId, title, false), cookie).then(normalizePlaylist);
+        return apiGet(playlistPath(playId, title, true, false), cookie).then(function(d2) {
+            var p2 = normalizePlaylist(d2);
+            if (p2) return p2;
+            return apiGet(playlistPath(playId, title, false, false), cookie).then(normalizePlaylist);
+        });
     });
 }
 
@@ -510,8 +774,6 @@ function absoluteUrl(u) {
     return CONFIG.BASE_URL + u;
 }
 
-// playlist + a check of the first source; one retry with a fresh session when abused.
-// ctx.cookie is updated when the session is refreshed.
 function getPlaylistChecked(playId, title, ctx) {
     function attempt(retried) {
         return fetchPlaylist(playId, title, ctx.cookie).then(function(pl) {
@@ -522,14 +784,12 @@ function getPlaylistChecked(playId, title, ctx) {
             return fetch(first, { headers: apiHeaders(ctx.cookie) })
                 .then(function(r) { return r.text(); })
                 .then(function(txt) { return isAbused(txt); })
-                .catch(function() { return false; })      // check failed -> try anyway
+                .catch(function() { return false; })
                 .then(function(abused) {
                     if (!abused) return pl;
                     if (retried) { logErr("  session still rejected after retry"); return null; }
                     log("  session rejected, getting a fresh one");
-                    session.token = null;
-                    session.expiry = 0;
-                    return getCookie(true).then(function(c) {
+                    return clearSession().then(function() { return getCookie(true); }).then(function(c) {
                         ctx.cookie = c;
                         return attempt(true);
                     });
@@ -544,10 +804,13 @@ function buildSubtitles(pl) {
     (Array.isArray(pl.tracks) ? pl.tracks : []).forEach(function(tr) {
         var uri = absoluteUrl(tr.file || "");
         if (!uri) return;
+        var label = tr.label || "Unknown";
         subs.push({
-            title: tr.label || "Subtitle",
-            language: tr.label || "English",
+            url: uri,
             uri: uri,
+            title: label,
+            language: label,
+            default: label.toLowerCase().indexOf("english") !== -1,
             type: uri.indexOf(".vtt") !== -1 ? "text/vtt" : "application/x-subrip"
         });
     });
@@ -558,6 +821,7 @@ function streamHeaders(cookie) {
     return {
         "User-Agent": CONFIG.UA,
         "Referer": CONFIG.BASE_URL + "/",
+        "Origin": CONFIG.BASE_URL,
         "Accept": "*/*",
         "Cookie": cookie
     };
@@ -571,7 +835,6 @@ function buildStreams(pl, cookie, label) {
         var url = absoluteUrl(src.file || "");
         if (!url || isAbused(url)) return;
 
-        // the first source is the adaptive master playlist ("Auto"), the others are fixed qualities
         var q = "1080";
         var isAuto = false;
         var l = String(src.label || "").toLowerCase();
@@ -582,7 +845,7 @@ function buildStreams(pl, cookie, label) {
         else if (l.indexOf("360p") !== -1) q = "360";
 
         var stream = {
-            name: "NetMirror Disney+",
+            name: CONFIG.NAME,
             title: label + " " + (src.label || "HLS") + (isAuto ? "" : " (" + q + "p)"),
             url: url,
             quality: isAuto ? "Auto" : q + "p",
@@ -592,7 +855,6 @@ function buildStreams(pl, cookie, label) {
         streams.push(stream);
     });
 
-    // Auto (adaptive master) first, then best quality down
     function rank(st) { return st.quality === "Auto" ? 100000 : parseInt(st.quality, 10) || 0; }
     streams.sort(function(a, b) { return rank(b) - rank(a); });
     return streams;
@@ -610,27 +872,38 @@ function getStreams(tmdbId, mediaType, season, episode) {
     log("========== getStreams ==========");
     log("  tmdbId =", tmdbId, "mediaType =", mediaType, "S" + season + "E" + episode);
 
-    return getTmdbTitles(tmdbId, mediaType).then(function(titles) {
-        if (!titles.length) { logErr("no title, aborting"); return []; }
+    return getTmdbInfo(tmdbId, mediaType).then(function(info) {
+        if (!info || !info.titles.length) { logErr("no title, aborting"); return []; }
 
-        var ctx = { cookie: null };
-        return getCookie().then(function(cookie) {
-            ctx.cookie = cookie;
-            return findContent(titles, ctx.cookie);
-        }).then(function(hit) {
-            if (!hit) { logErr("not found on netmirror"); return []; }
+        return getOmdbTitle(tmdbId, mediaType).then(function(omdbTitle) {
+            var scoreTitles = unique([omdbTitle].concat(info.titles));
+            var queries = [];
+            scoreTitles.forEach(function(t) {
+                queries.push(t);
+                var plain = plainSearchTitle(t);
+                if (plain && plain !== t) queries.push(plain);
+            });
+            queries = unique(queries);
 
-            return resolvePlayable(hit, isMovie, season, episode, ctx.cookie).then(function(target) {
-                if (!target) return [];
+            var ctx = { cookie: null };
+            return getCookie().then(function(cookie) {
+                ctx.cookie = cookie;
+                return findContent(queries, scoreTitles, info.year, isMovie, ctx.cookie);
+            }).then(function(hit) {
+                if (!hit) { logErr("not found on netmirror"); return []; }
 
-                return getPlaylistChecked(target.playId, target.title, ctx).then(function(pl) {
-                    if (!pl) { logErr("no playlist"); return []; }
-                    var label = isMovie
-                        ? target.title
-                        : target.title + " S" + (season < 10 ? "0" : "") + season + "E" + (episode < 10 ? "0" : "") + episode;
-                    var streams = buildStreams(pl, ctx.cookie, label);
-                    log("  SUCCESS:", streams.length, "stream(s)");
-                    return streams;
+                return resolvePlayable(hit, isMovie, season, episode, ctx.cookie).then(function(target) {
+                    if (!target) return [];
+
+                    return getPlaylistChecked(target.playId, target.title, ctx).then(function(pl) {
+                        if (!pl) { logErr("no playlist"); return []; }
+                        var label = isMovie
+                            ? target.title
+                            : target.title + " S" + (season < 10 ? "0" : "") + season + "E" + (episode < 10 ? "0" : "") + episode;
+                        var streams = buildStreams(pl, ctx.cookie, label);
+                        log("  SUCCESS:", streams.length, "stream(s)");
+                        return streams;
+                    });
                 });
             });
         });
@@ -642,21 +915,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
 module.exports = {
     getStreams: getStreams,
-    // used only by test-netmirror.js
     _internals: {
         getCookie: getCookie,
         unlockSession: unlockSession,
         searchContent: searchContent,
         findContent: findContent,
+        chooseCandidate: chooseCandidate,
         postInfo: postInfo,
         getSeasonEpisodes: getSeasonEpisodes,
         resolvePlayable: resolvePlayable,
         getPlaylistChecked: getPlaylistChecked,
         buildStreams: buildStreams,
         isTokenUsable: isTokenUsable,
+        langPriority: langPriority,
         cookiePairs: cookiePairs,
-        getSession: function() { return { token: session.token, expiry: session.expiry }; },
-        setSession: function(token, expiry) { session.token = token; session.expiry = expiry; },
+        getSession: function() { return { token: session.token, expiry: session.expiry, source: session.source }; },
+        clearSession: clearSession,
+        resetMemory: function() { session.token = null; session.expiry = 0; session.source = ""; },
         CONFIG: CONFIG
     }
 };
