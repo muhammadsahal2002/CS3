@@ -4,8 +4,8 @@
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 // Cloudflare Worker (token source) - EDIT THESE TWO
-const CF_URL = "https://nftoken.YOURNAME.workers.dev";
-const CF_KEY = "k9x2mQ7pLr4";
+const CF_URL = "https://nftoken.taharimbadhon27.workers.dev/";
+const CF_KEY = "wx9am76cgk";
 const BASE_URL = "https://net52.cc/mobile";
 
 const DEFAULT_HEADERS = {
