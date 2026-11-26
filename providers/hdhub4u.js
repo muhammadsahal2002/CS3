@@ -7,8 +7,8 @@
 "use strict";
 
 // ====== EDIT IF NEEDED ======
-var MAIN_URL = "https://hdhub4u.hot/";   // default found in the smali; the live domain changes often
-var DOMAINS_URL = "https://new17.hdhub4u.cl/";                         // optional: JSON with {"HDHUB4u":"https://...","hubcloud":"https://..."}
+var MAIN_URL = "https://new17.hdhub4u.cl";   // Fallback domain. The script auto-updates this via API!
+var DOMAINS_URL = "";                        // Not needed since we use fetchLiveDomain()
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 // =============================
 
@@ -208,6 +208,37 @@ function b64decode(s) {
 function substringAfter(s, d) { var i = s.indexOf(d); return i < 0 ? s : s.slice(i + d.length); }
 function substringAfterLast(s, d) { var i = s.lastIndexOf(d); return i < 0 ? s : s.slice(i + d.length); }
 function substringBefore(s, d) { var i = s.indexOf(d); return i < 0 ? s : s.slice(0, i); }
+
+async function fetchLiveDomain() {
+  // The exact API endpoint from the site's script
+  var apiEndpoint = "https://h4.suncdn.org/host/";
+  
+  // The API requires a "version" parameter based on the date/hour
+  var now = new Date();
+  var v = now.getFullYear() + "" + (now.getMonth() + 1) + "" + now.getDate() + now.getHours();
+
+  try {
+    var res = await fetch(apiEndpoint + "?v=" + v, { headers: SITE_HEADERS });
+    if (res.ok) {
+      var data = await res.json();
+      if (data && data.c) {
+        // data.c is base64 encoded (e.g., "aHR0cHM6Ly9uZXcxNy5oZGh1YjR1LmNsLz91dG09bW4x")
+        var decoded = base64Decode(data.c);
+        if (decoded && decoded.indexOf("http") === 0) {
+          // Strip the "/?utm=mn1" part so we just get the base domain
+          var baseDomain = decoded.split("?")[0].replace(/\/+$/, "");
+          log("✅ API found live domain: " + baseDomain);
+          return baseDomain;
+        }
+      }
+    }
+  } catch (e) {
+    log("❌ API failed: " + e.message);
+  }
+  
+  log("⚠️ Using fallback domain: " + MAIN_URL);
+  return MAIN_URL;
+}
 
 async function loadDomains() {
   if (!DOMAINS_URL) return;
@@ -1007,6 +1038,10 @@ async function getTmdbInfo(tmdbId, mediaType) {
 
 async function getStreams(tmdbId, mediaType, season, episode) {
   await loadDomains();
+  
+  // Auto-detect the live domain via their official API
+  MAIN_URL = await fetchLiveDomain();
+  
   var info = await getTmdbInfo(tmdbId, mediaType);
   var isMovie = mediaType === "movie";
   log("TMDB: \"" + info.title + "\" (" + info.year + ") " + (isMovie ? "Movie" : "S" + season + "E" + episode));
