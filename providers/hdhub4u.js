@@ -7,8 +7,8 @@
 "use strict";
 
 // ====== EDIT IF NEEDED ======
-var MAIN_URL = "https://new17.hdhub4u.cl";   // default found in the smali; the live domain changes often
-var DOMAINS_URL = "";                         // optional: JSON with {"HDHUB4u":"https://...","hubcloud":"https://..."}
+var MAIN_URL = "https://hdhub4u.hot/";   // default found in the smali; the live domain changes often
+var DOMAINS_URL = "https://new17.hdhub4u.cl/";                         // optional: JSON with {"HDHUB4u":"https://...","hubcloud":"https://..."}
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 // =============================
 
