@@ -13,7 +13,7 @@ var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 // =============================
 
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var SEARCH_API = "https://search.pingora.fyi/collections/post/documents/search?q="; // kept for compatibility; full URL built in searchSiteFull
+var SEARCH_API = "https://search.pingora.fyi/collections/post/documents/search?q="; 
 var UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36";
 var SITE_HEADERS = {
   "User-Agent": UA,
@@ -234,6 +234,10 @@ function qualityOf(s) {
 
 function pushLink(out, name, title, url, referer, quality, subtitles) {
   if (!url || !/^https?:\/\//i.test(url)) return;
+  
+  // Explicitly skip googleusercontent to prevent broken ExoPlayer/MPV streams
+  if (/googleusercontent\.com/i.test(url)) return;
+
   for (var i = 0; i < out.length; i++) if (out[i].url === url) return;
   out.push({
     name: name,
@@ -269,8 +273,17 @@ async function hubdrive(url, referer, out, depth) {
   var href = btn ? attr(btn, "href") : "";
   if (!href.trim()) return;
   href = absUrl(url, href);
-  if (/hubcloud/i.test(href)) await hubcloud(href, url, out, depth);
-  else await resolveLink(href, url, out, depth + 1);
+  if (/hubcloud/i.test(href)) {
+    var tmp = [];
+    await hubcloud(href, url, tmp, depth);
+    tmp.forEach(function(l) {
+      l.name = "HubDrive " + l.name;
+      l.title = "HubDrive " + l.title;
+      pushLink(out, l.name, l.title, l.url, referer, l.quality, l.subtitles);
+    });
+  } else {
+    await resolveLink(href, url, out, depth + 1);
+  }
 }
 
 // ---- Hblinks ----
@@ -326,13 +339,10 @@ async function hubcdn(url, referer, out, depth) {
     }
   }
   if (!final) return;
-  pushLink(out, "HUBCDN", "HUBCDN", final, url, "Auto");
+  pushLink(out, "HUBCDN", "HUBCDN [1080p]", final, url, "1080p");
 }
 
 // ---- HubCloud ----
-// The page steps are ported from HubCloud.smali. The per-button handler (HubCloud$getUrl$2)
-// was not in the upload, so the button handling below is [RECONSTRUCTED] from the known behaviour
-// of this extractor (FSL / Download File / BuzzServer / PixelDrain / 10Gbps-S3).
 async function hubcloud(url, referer, out, depth) {
   depth = depth || 0;
   if (HUBCLOUD_BASE) url = url.replace(/^https?:\/\/[^\/]+/i, HUBCLOUD_BASE);
@@ -345,40 +355,54 @@ async function hubcloud(url, referer, out, depth) {
     if (h0) realUrl = /^http/i.test(h0) ? h0 : base + "/" + h0.replace(/^\/+/, "");
   }
   var doc = await getDoc(realUrl, { "User-Agent": UA, "Referer": url });
+  
   var sizeEl = selectFirst(doc, "i#size");
   var size = sizeEl ? text(sizeEl) : "";
+  
   var headEl = selectFirst(doc, "div.card-header");
   var header = headEl ? text(headEl) : "";
-  var quality = qualityOf(header);
-  var label = "HubCloud" + (size ? " [" + size + "]" : "");
+  
+  var quality = qualityOf(header) || "1080p";
+  var sizeStr = size ? " [" + size + "]" : "";
+  var format = /BluRay|Blu-Ray/i.test(header) ? "BluRay" : "WEB-DL";
+  var audio = "DDP2";
+  if (/5\.1/i.test(header)) audio = "DD5.1";
+  else if (/2\.0/i.test(header)) audio = "DD2.0";
+
   var buttons = selectAll(doc, "a.btn");
+  
   await Promise.all(buttons.map(async function(b) {
     var link = attr(b, "href").trim();
     var t = text(b);
     if (!link) return;
     link = absUrl(realUrl, link);
+    
     try {
       if (/BuzzServer/i.test(t)) {
         var res = await fetch(link + "/download", { redirect: "manual", headers: { "User-Agent": UA, "Referer": link } });
         var hx = res.headers.get("hx-redirect") || res.headers.get("location");
-        if (hx) pushLink(out, "HubCloud", label + " BuzzServer", absUrl(link, hx), link, quality);
-      } else if (/pixeldra|PixelServer/i.test(t) || /pixeldrain/i.test(link)) {
+        if (hx) {
+          var finalUrl = absUrl(link, hx);
+          var title = "HubCloud [BuzzServer] " + format + " " + audio + sizeStr + " " + quality;
+          pushLink(out, "HubCloud", title, finalUrl, link, quality);
+        }
+      } 
+      else if (/pixeldra|PixelServer/i.test(t) || /pixeldrain/i.test(link)) {
         var id = (/\/(?:u|file)\/([A-Za-z0-9]+)/.exec(link) || [])[1];
         var dl = id ? hostOf(link) + "/api/file/" + id + "?download" : link;
-        pushLink(out, "HubCloud", label + " PixelDrain", dl, link, quality);
-      } else if (/10\s*Gbps|S3 Server/i.test(t)) {
-        var cur = link;
-        for (var i = 0; i < 6; i++) {
-          var r2 = await fetch(cur, { redirect: "manual", headers: { "User-Agent": UA } });
-          var loc = r2.headers.get("location");
-          if (!loc) break;
-          if (loc.indexOf("link=") >= 0) { cur = substringAfter(loc, "link="); break; }
-          cur = absUrl(cur, loc);
-        }
-        pushLink(out, "HubCloud", label + " 10Gbps", cur, link, quality);
-      } else if (/FSL|Download File/i.test(t)) {
-        pushLink(out, "HubCloud", label + " " + t, link, realUrl, quality);
-      } else if (depth < 2) {
+        var title = "HubCloud [PixelDrain] " + format + " " + audio + sizeStr + " " + quality;
+        pushLink(out, "HubCloud", title, dl, link, quality);
+      } 
+      else if (/FSL|Download File|FSLv2/i.test(t)) {
+        var serverName = /FSLv2/i.test(t) ? "FSLv2" : "FSL";
+        var title = "HubCloud [" + serverName + " Server] " + format + " " + audio + sizeStr + " " + quality;
+        pushLink(out, "HubCloud", title, link, realUrl, quality);
+      } 
+      else if (/10\s*Gbps|S3 Server/i.test(t)) {
+        // Skip entirely. These are Google Drive uploads that break players.
+        return;
+      } 
+      else if (depth < 2) {
         await resolveLink(link, realUrl, out, depth + 1);
       }
     } catch (e) { log("hubcloud button failed (" + t + "): " + e.message); }
@@ -387,13 +411,11 @@ async function hubcloud(url, referer, out, depth) {
 
 // =========================================================================
 // [NEW] Ported from the extra smali files
-//   UtilsKt (getRedirectLinks, cleanTitle, pen, encode, loadSourceNameExtractor),
-//   PixelDrainDev, VidStack, Search / RequestParams / TextMatchInfo / ResponseDataLocal / VideoLocal
 // =========================================================================
 
-var QUALITY_HINTS = {};   // link url -> "1080p" taken from the text of the page link
+var QUALITY_HINTS = {}; 
 
-// ---- base64 / UTF-8 / rot13 (UtilsKt.encode + pen) ----
+// ---- base64 / UTF-8 / rot13 ----
 var B64CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 function base64Bytes(s) {
@@ -420,13 +442,8 @@ function utf8Decode(b) {
   return s;
 }
 
-// CloudStream base64Decode(): base64 text -> UTF-8 string
 function base64Decode(s) { return utf8Decode(base64Bytes(s)); }
-
-// UtilsKt.encode(): despite the name it just base64-decodes
 function encode(value) { return base64Decode(value); }
-
-// UtilsKt.pen(): ROT13
 function pen(value) {
   return String(value).replace(/[A-Za-z]/g, function(ch) {
     var base = ch <= "Z" ? 65 : 97;
@@ -434,7 +451,7 @@ function pen(value) {
   });
 }
 
-// ---- UtilsKt.getRedirectLinks: decode the "?id=" shortener pages ----
+// ---- UtilsKt.getRedirectLinks ----
 async function getRedirectLinks(url) {
   try {
     var r = await getText(url, { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" });
@@ -452,7 +469,6 @@ async function getRedirectLinks(url) {
       if (encodedUrl) return encodedUrl;
     }
 
-    // fallback of the original: fetch "<blog_url>?re=<data>" and read the body text
     var data = encode(String(json && json.data || "")).trim();
     var blog = String(json && json.blog_url || "").trim();
     var direct = "";
@@ -460,7 +476,7 @@ async function getRedirectLinks(url) {
       var d = await getText((blog + "?re=" + data).trim(), { "User-Agent": UA });
       var body = selectFirst(parseHtml(d.body), "body");
       direct = (body ? text(body) : String(d.body)).trim();
-    } catch (e2) { /* runCatching in the original */ }
+    } catch (e2) { }
     return direct;
   } catch (e) {
     log("Error processing links " + e.message);
@@ -468,7 +484,7 @@ async function getRedirectLinks(url) {
   }
 }
 
-// ---- UtilsKt.cleanTitle: "Dune Part Two (2024) Hindi 1080p" -> "Dune Part Two (2024)" ----
+// ---- UtilsKt.cleanTitle ----
 function cleanTitle(title) {
   var cleaned = String(title || "").replace(/[^\x20-\x7E\p{L}\p{N}]/gu, " ").trim();
   var base = cleaned.split("(")[0].trim().replace(/\s+/g, " ");
@@ -482,13 +498,12 @@ function cleanTitle(title) {
   return extras.length ? base + extras.map(function(e) { return " (" + e + ")"; }).join("") : base;
 }
 
-// ---- PixelDrain / PixelDrainDev (Extractors.kt) ----
-// PixelDrain mainUrl = https://pixeldrain.com, PixelDrainDev mainUrl = https://pixeldrain.dev
+// ---- PixelDrain ----
 function pixelDrainDownloadUrl(url) {
   var host = hostOf(url);
   var mainUrl = /pixeldrain\.dev/i.test(host) ? "https://pixeldrain.dev"
               : (/pixeldrain\./i.test(host) ? host : "https://pixeldrain.com");
-  if (/download/.test(url)) return url;                       // already a direct download url
+  if (/download/.test(url)) return url; 
   var clean = String(url).split("#")[0].split("?")[0];
   var m = /\/([^\/]+)$/.exec(clean);
   var id = m ? m[1] : "";
@@ -497,11 +512,10 @@ function pixelDrainDownloadUrl(url) {
 }
 
 function pixelDrain(url, referer, out) {
-  pushLink(out, "PixelDrain", "PixelDrain", pixelDrainDownloadUrl(url), url, "Auto");
+  pushLink(out, "PixelDrain", "PixelDrain [1080p]", pixelDrainDownloadUrl(url), url, "1080p");
 }
 
-// ---- pure-JS AES (decrypt only, 128/192/256, CBC + PKCS7) for VidStack ----
-// [RECONSTRUCTED] AesHelper.decryptAES was not in the upload: hex ciphertext, UTF-8 key and IV, AES/CBC/PKCS5.
+// ---- pure-JS AES for VidStack ----
 var AES_TABLES = null;
 
 function aesTables() {
@@ -582,7 +596,7 @@ function aesDecryptBlock(block, ks) {
 
 function strBytes(s) {
   var out = [];
-  for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i) & 0xff);   // key/iv are ASCII
+  for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i) & 0xff); 
   return out;
 }
 
@@ -594,7 +608,6 @@ function hexBytes(h) {
   return out;
 }
 
-// -> decrypted UTF-8 string, or null when the data / padding is not valid
 function aesCbcDecrypt(cipherText, keyStr, ivStr) {
   try {
     var data = hexBytes(cipherText) || base64Bytes(cipherText);
@@ -615,14 +628,14 @@ function aesCbcDecrypt(cipherText, keyStr, ivStr) {
   } catch (e) { return null; }
 }
 
-// ---- VidStack (Extractors.kt) : hubstream / hdstream4u embeds ----
+// ---- VidStack ----
 var VIDSTACK_KEY = "kiemtienmua911ca";
 var VIDSTACK_IVS = ["1234567890oiuytr", "0123456789abcdef"];
 var VIDSTACK_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0";
 
 function vidstackBaseUrl(url, fallback) {
   var m = /^(https?):\/\/([^\/?#:]+)/i.exec(url || "");
-  return m ? m[1].toLowerCase() + "://" + m[2] : fallback;     // protocol://host (no port), like ktor
+  return m ? m[1].toLowerCase() + "://" + m[2] : fallback; 
 }
 
 async function vidstack(url, referer, out, opts) {
@@ -635,8 +648,6 @@ async function vidstack(url, referer, out, opts) {
   var r = await getText(base + "/api/v1/video?id=" + hash, { "User-Agent": VIDSTACK_UA });
   var encoded = r.body.trim();
 
-  // The original takes the first IV that decrypts. A wrong IV only garbles the first 16 bytes, so
-  // prefer the IV whose plaintext really contains "source" and fall back to the first one that decrypts.
   var plain = null, firstOk = null;
   for (var i = 0; i < VIDSTACK_IVS.length; i++) {
     var p = aesCbcDecrypt(encoded, VIDSTACK_KEY, VIDSTACK_IVS[i]);
@@ -657,20 +668,18 @@ async function vidstack(url, referer, out, opts) {
     while ((mm = pr.exec(sec[1])) !== null) {
       var rawPath = mm[2].split("#")[0];
       if (rawPath.length > 0) {
-        // the original builds mainUrl + path; the embed's own host is the right base for hubstream / hdstream4u
         subs.push({ language: mm[1], url: absUrl(base, rawPath.replace(/\\\//g, "/")) });
       }
     }
   }
   if (!m3u8) { log("vidstack: no source in the decrypted data"); return; }
 
-  // the original sends the link with https -> http; keep that first and the untouched https url as a backup
   var asHttp = m3u8.replace(/https/g, "http");
-  pushLink(out, name, name, asHttp, url, "Auto", subs);
-  if (asHttp !== m3u8) pushLink(out, name, name + " (https)", m3u8, url, "Auto", subs);
+  pushLink(out, name, name + " [Auto]", asHttp, url, "Auto", subs);
+  if (asHttp !== m3u8) pushLink(out, name, name + " (https) [Auto]", m3u8, url, "Auto", subs);
 }
 
-// ---- data models: Search / RequestParams / TextMatchInfo (typesense search api) ----
+// ---- data models ----
 function pickField(o, snake, camel, def) {
   if (!o) return def;
   if (o[snake] !== undefined && o[snake] !== null) return o[snake];
@@ -700,7 +709,6 @@ function parseRequestParams(j) {
   };
 }
 
-// [RECONSTRUCTED] the Hit class was not uploaded: document + text match info, as the typesense api returns it
 function parseHit(h) {
   var d = (h && h.document) || {};
   return {
@@ -728,7 +736,6 @@ function parseSearch(j) {
   };
 }
 
-// ---- data models: ResponseDataLocal / VideoLocal (Cinemeta episode metadata) ----
 function intOrNull(v) { var n = parseInt(v, 10); return isNaN(n) ? null : n; }
 
 function parseVideoLocal(v) {
@@ -745,7 +752,6 @@ function parseVideoLocal(v) {
   };
 }
 
-// [RECONSTRUCTED] MetaLocal was not uploaded: only the videos list is used
 function parseResponseDataLocal(j) {
   var m = (j && j.meta) || {};
   return { meta: { id: m.id || "", imdbId: m.imdb_id || m.imdbId || "", name: m.name || "", videos: (m.videos || []).map(parseVideoLocal) } };
@@ -761,7 +767,6 @@ async function getImdbId(tmdbId, mediaType) {
   } catch (e) { return null; }
 }
 
-// episode title for the stream label (never blocks or breaks the main flow)
 async function getEpisodeMeta(tmdbId, season, episode) {
   try {
     var imdb = await getImdbId(tmdbId, "tv");
@@ -777,22 +782,28 @@ async function getEpisodeMeta(tmdbId, season, episode) {
   return null;
 }
 
-// ---- UtilsKt.loadSourceNameExtractor ----
-// [RECONSTRUCTED] the lambda class was not uploaded. It runs the matching extractor and re-labels what comes out:
-// optional source prefix, and the quality of the page link when the extractor itself could not tell ("Auto").
+// ---- loadSourceNameExtractor ----
 async function loadSourceNameExtractor(source, url, referer, quality, out, depth) {
   var tmp = [];
   await resolveLink(url, referer, tmp, depth || 0);
   tmp.forEach(function(l) {
-    if (source) l.name = source + " [" + l.name + "]";
-    if (quality && (!l.quality || l.quality === "Auto")) l.quality = quality;
-    for (var i = 0; i < out.length; i++) if (out[i].url === l.url) return;
+    if (source && l.name !== source) {
+      l.name = source + " " + l.name;
+    }
+    if (quality && (!l.quality || l.quality === "Auto")) {
+      l.quality = quality;
+      if (l.title.indexOf(quality) < 0) {
+        l.title = l.title.trim() + " " + quality;
+      }
+    }
+    for (var i = 0; i < out.length; i++) {
+      if (out[i].url === l.url) return;
+    }
     out.push(l);
   });
 }
 
-// ---- hbplay.pages.dev/?u=<base64 URL>&m=<mime>&t=<base64 filename> ----
-// The `u` param base64-decodes to a direct media URL (usually Cloudflare R2 / AWS S3).
+// ---- hbplay ----
 function hbplay(url, referer, out) {
   var u = substringAfter(url, "u=");
   if (!u) { log("hbplay: no u= param"); return; }
@@ -809,22 +820,20 @@ function hbplay(url, referer, out) {
     try { filename = base64Decode(tB64); } catch (e) { filename = ""; }
   }
   var quality = qualityOf(filename || decoded);
-  pushLink(out, "Hbplay", "Hbplay" + (quality !== "Auto" ? " [" + quality + "]" : ""), decoded, url, quality);
+  pushLink(out, "Hbplay", "Hbplay [FSL Server] " + (quality !== "Auto" ? quality : "1080p"), decoded, url, quality);
 }
 
-// ---- Router (CloudStream loadExtractor equivalent for the hosts above) ----
+// ---- Router ----
 async function resolveLink(url, referer, out, depth) {
   depth = depth || 0;
   if (depth > 3 || !url) return;
   var u = url.toLowerCase();
 
-  // [NEW] HDHub4U shortener pages ("?id="): decode the real link first (UtilsKt.getRedirectLinks)
   if (u.indexOf("?id=") >= 0) {
     var real = await getRedirectLinks(url);
     if (real && real !== url && /^https?:\/\//i.test(real)) {
-      // If the decoded URL is already a media file, emit it directly.
       if (/\.(mkv|mp4|m3u8|webm|mov)(\?|$)/i.test(real)) {
-        pushLink(out, "HubCloud", "HubCloud", real, url, "Auto");
+        pushLink(out, "HubCloud", "HubCloud [Direct] 1080p", real, url, "1080p");
         return;
       }
       return resolveLink(real, url, out, depth + 1);
@@ -836,14 +845,14 @@ async function resolveLink(url, referer, out, depth) {
   if (/hubdrive\./.test(u)) return hubdrive(url, referer, out, depth);
   if (/hblinks\./.test(u)) return hblinks(url, referer, out, depth);
   if (/hubcdn\./.test(u)) return hubcdn(url, referer, out, depth);
-  if (/hbplay\.pages\.dev/.test(u)) return hbplay(url, referer, out);   // [NEW] direct base64-wrapped media URL
-  if (/pixeldrain\./.test(u)) return pixelDrain(url, referer, out);     // [NEW] PixelDrain + PixelDrainDev
-  // [NEW] hdstream4u / hubstream embeds are VidStack players
+  if (/hbplay\.pages\.dev/.test(u)) return hbplay(url, referer, out);
+  if (/pixeldrain\./.test(u)) return pixelDrain(url, referer, out);
+  
   if (/hdstream4u|hubstream|vidstack/.test(u)) {
     var nm = /hdstream4u/.test(u) ? "Hdstream4u" : (/hubstream/.test(u) ? "Hubstream" : "Vidstack");
     return vidstack(url, referer, out, { name: nm });
   }
-  // CloudStream built-ins that Nuvio doesn't handle; skip quietly instead of spamming the log.
+  
   if (/streamtape|gofile\.io|doodstream|mixdrop|streamlare|streamhub|mp4upload|filemoon|streamwish|voe\.sx|streamhide|streamvid|dailymotion|youtube\.com|youtu\.be|ok\.ru|viddhidepro|vidhide/i.test(u)) {
     return;
   }
@@ -855,7 +864,6 @@ async function resolveLink(url, referer, out, depth) {
 // =========================================================================
 function norm(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
 
-// [NEW] uses the Search / RequestParams / TextMatchInfo models ported from the smali
 async function searchSiteFull(query, page) {
   var today = new Date().toISOString().slice(0, 10);
   var url =
@@ -893,7 +901,7 @@ async function searchSiteFull(query, page) {
       title: h.title,
       permalink: h.permalink,
       category: h.category,
-      tmScore: Number(h.textMatchInfo.score) || 0      // typesense relevance, used as a tie-breaker
+      tmScore: Number(h.textMatchInfo.score) || 0      
     };
   }).filter(function(r) { return r.permalink; });
   return { search: search, results: results };
@@ -939,7 +947,7 @@ function movieLinks(doc, pageUrl) {
     if (!href || href[0] === "#" || badLink(href) || /how-to-download/i.test(href)) return;
     if (href.indexOf("?id=") >= 0 || HOST_RE.test(href) || QUALITY_RE.test(t)) {
       href = absUrl(pageUrl, href);
-      if (/\d{3,4}\s*p|4k|2160/i.test(t)) QUALITY_HINTS[href] = qualityOf(t);   // [NEW] used by loadSourceNameExtractor
+      if (/\d{3,4}\s*p|4k|2160/i.test(t)) QUALITY_HINTS[href] = qualityOf(t);
       if (links.indexOf(href) < 0) links.push(href);
     }
   });
@@ -970,7 +978,6 @@ async function seriesLinks(doc, pageUrl, episode) {
   });
   if (map[episode] && map[episode].length) return map[episode];
 
-  // Fallback: quality "pack" links -> page with "Episode N" h5 links
   var out = [];
   var packs = selectAll(doc, "h3 a, h4 a").filter(function(a) { return /1080|720|4K|2160/i.test(text(a)); });
   await Promise.all(packs.map(async function(p) {
@@ -1007,7 +1014,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   var isMovie = mediaType === "movie";
   log("TMDB: \"" + info.title + "\" (" + info.year + ") " + (isMovie ? "Movie" : "S" + season + "E" + episode));
 
-  // [NEW] episode title from Cinemeta (VideoLocal), fetched in parallel, never blocks the result
   var metaPromise = isMovie ? Promise.resolve(null) : getEpisodeMeta(tmdbId, parseInt(season, 10), parseInt(episode, 10));
 
   var first = await searchSiteFull(info.title, 1);
@@ -1018,7 +1024,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }
   var picked = pickResult(results, info.title, info.year, isMovie, season);
 
-  // [NEW] nothing good on page 1 but the index has more hits (Search.found / RequestParams.perPage)
   var perPage = first.search.requestParams.perPage || results.length || 15;
   for (var pg = 2; !picked && pg <= 3 && first.search.found > (pg - 1) * perPage; pg++) {
     try {
@@ -1043,21 +1048,31 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }));
   if (!out.length) throw new Error("No playable links extracted");
 
-  // [NEW] label the streams with the episode title when Cinemeta knows it
   var meta = await metaPromise;
   if (meta && meta.title) {
     var tag = "S" + (season < 10 ? "0" : "") + season + "E" + (episode < 10 ? "0" : "") + episode + " " + meta.title;
     out.forEach(function(s) { s.title = tag + " | " + s.title; });
   }
 
-  var rank = function(q) { return parseInt(q, 10) || 0; };
-  out.sort(function(a, b) { return rank(b.quality) - rank(a.quality); });
+  // Sort: Quality first, then CDN friendliness
+  var qualityRank = function(q) { return parseInt(q, 10) || 0; };
+  var cdnRank = function(u) {
+    if (/r2\.cloudflarestorage\.com/.test(u)) return 400;   
+    if (/\.workers\.dev/.test(u))            return 300;    
+    if (/pixeldrain\./.test(u))              return 200;    
+    return 150;
+  };
+  out.sort(function(a, b) {
+    var dq = qualityRank(b.quality) - qualityRank(a.quality);
+    if (dq !== 0) return dq;
+    return cdnRank(b.url) - cdnRank(a.url);
+  });
+  
   return out;
 }
 
 module.exports = {
   getStreams: getStreams,
-  // used only by the offline tests
   _internals: {
     getRedirectLinks: getRedirectLinks, cleanTitle: cleanTitle, pen: pen, base64Decode: base64Decode,
     pixelDrainDownloadUrl: pixelDrainDownloadUrl, vidstack: vidstack, aesCbcDecrypt: aesCbcDecrypt,
