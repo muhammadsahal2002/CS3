@@ -3,11 +3,10 @@
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
-const TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
+// Cloudflare Worker (token source) - EDIT THESE TWO
+const CF_URL = "https://nftoken.taharimbadhon27.workers.dev/";
+const CF_KEY = "wx9am76cgk";
 const BASE_URL = "https://net52.cc/mobile";
-
-// OMDb API key
-const OMDb_API_KEY = "8d6935ed";
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -64,50 +63,16 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ---------- Get IMDb ID from TMDB ----------
-async function getImdbId(tmdbId, mediaType) {
-  const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
-  try {
-    const data = await fetchJson(url);
-    return data.imdb_id || null;
-  } catch (e) {
-    log(`Failed to get IMDb ID: ${e.message}`);
-    return null;
-  }
-}
-
-// ---------- Get IMDb title using OMDb ----------
-async function getImdbTitle(imdbId) {
-  if (!imdbId) return null;
-  
-  try {
-    const url = `https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    if (data.Response === "True" && data.Title) {
-      log(`OMDb title: "${data.Title}"`);
-      return data.Title;
-    } else {
-      log(`OMDb error: ${data.Error || 'Unknown'}`);
-    }
-  } catch (e) {
-    log(`OMDb failed: ${e.message}`);
-  }
-  return null;
-}
-
 // ---------- Token ----------
 async function fetchToken() {
 const now = Date.now();
 if (tokenCache && (now - tokenFetchedAt) < TOKEN_TTL_MS) return tokenCache;
 
-const resp = await fetch(`${TOKEN_URL}?t=${now}`);
+const resp = await fetch(CF_URL, { headers: { "x-key": CF_KEY } });
   if (!resp.ok) throw new Error(`Token HTTP ${resp.status}`);
   const json = await resp.json();
 
-  const record = json.record || {};
+  const record = json.record || json || {};
   const t_hash_t = record.t_hash_t || "";
   const t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
   rawToken = record.token || "";
@@ -120,7 +85,7 @@ const resp = await fetch(`${TOKEN_URL}?t=${now}`);
 
   tokenCache = { t_hash_t, t_hash, rawToken };
   tokenFetchedAt = now;
-  log("Token loaded from JSONBin");
+  log("Token loaded from Cloudflare");
   return tokenCache;
 }
 
@@ -157,12 +122,11 @@ async function search(query) {
   return data.searchResult || [];
 }
 
-async function searchWithFallback(originalTitle, year, imdbTitle) {
-  let searchTitle = imdbTitle || originalTitle;
-  let results = await search(searchTitle).catch(() => []);
-  
+async function searchWithFallback(originalTitle, year) {
+  let results = await search(originalTitle).catch(() => []);
+
   if (results.length > 0) {
-    log(`Found ${results.length} results with IMDb title: "${searchTitle}"`);
+    log(`Found ${results.length} results with TMDB title: "${originalTitle}"`);
     if (year) {
       const filtered = results.filter(item => item.y === year);
       if (filtered.length > 0) {
@@ -174,7 +138,7 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
   }
 
   const normalized = normalizeTitleForSearch(originalTitle);
-  log(`No results with IMDb title, trying normalized: "${normalized}"`);
+  log(`No results with TMDB title, trying normalized: "${normalized}"`);
   results = await search(normalized).catch(() => []);
   if (results.length === 0) return [];
 
@@ -236,16 +200,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const isMovieType = (mediaType === "movie");
   log(`TMDB: "${title}" (${year}) [${isMovieType ? 'Movie' : 'Series'}]`);
 
-  const imdbId = await getImdbId(tmdbId, mediaType);
-  let imdbTitle = null;
-  if (imdbId) {
-    imdbTitle = await getImdbTitle(imdbId);
-    if (imdbTitle) {
-      log(`IMDb title: "${imdbTitle}"`);
-    }
-  }
-
-  const results = await searchWithFallback(title, year, imdbTitle);
+  const results = await searchWithFallback(title, year);
   if (!results.length) throw new Error(`No results found for "${title}"`);
 
   log("All search results:");
