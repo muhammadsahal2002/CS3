@@ -1,11 +1,20 @@
-// mobile_nf.js – Netflix (nf) – IMDb Title Search + Series Fix
+// Hotstar plugin - Cloudflare shared token (per phone IP)
 "use strict";
+
+// ====== EDIT THESE TWO LINES ======
+const REMOTE = "https://nftoken.taharimbadhon27.workers.dev/";
+const KEY = "wx9am76cgk";
+// ==================================
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE = "https://api.themoviedb.org/3";
-const BASE_URL = "https://net52.cc/mobile";
-const HOST = "https://net52.cc";
 const OMDb_API_KEY = "8d6935ed";
+const HOST = "https://net52.cc";
+const BASE_URL = "https://net52.cc/mobile/hs";
+const OTT = "hs";
+const STORE_KEY = "nf_cookie_v1";
+const UNLOCK_TIMEOUT_MS = 45000;
+const POLL_MS = 750;
 
 const DEFAULT_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1",
@@ -18,165 +27,61 @@ const DEFAULT_HEADERS = {
   "Connection": "keep-alive"
 };
 
-const OTT = "nf";
-const UNLOCK_TIMEOUT_MS = 45000;
-const POLL_MS = 750;              // was 2000 — faster polling
-const STORE_KEY = "nf_cookie_v1";
-
-function log(msg) { console.log("[NetflixNF] " + msg); }
+function log(msg) { console.log("[Hotstar] " + msg); }
 function getTimestamp() { return Math.floor(Date.now() / 1000); }
 function delay(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
-// =========================================================================
-// 1) PROBE — what does Nuvio's QuickJS expose?
-// =========================================================================
-(function probeGlobals() {
-  try {
-    var keys = [];
-    for (var k in globalThis) keys.push(k);
-    var interesting = keys.filter(function(k) {
-      return /storage|store|async|mmkv|fs|file|sqlite|pref|native|bridge|disk/i.test(k);
-    });
-    log("PROBE globals count=" + keys.length);
-    log("PROBE interesting=[" + interesting.join(",") + "]");
-    ["AsyncStorage", "MMKV", "storage", "Storage", "nativeModule",
-     "NativeModules", "bridge", "ReactNative", "RNFS", "fs",
-     "__turboModuleProxy", "nativeCallSyncHook"].forEach(function(n) {
-      try {
-        var v = globalThis[n];
-        log("PROBE " + n + " = " + (v === undefined ? "undefined" : typeof v));
-      } catch (e) { log("PROBE " + n + " threw " + e.message); }
-    });
-  } catch (e) { log("PROBE outer error: " + e.message); }
-})();
-
-// =========================================================================
-// 2) Persistent store abstraction
-//    Tries: AsyncStorage -> MMKV -> localStorage -> globalThis -> memory
-// =========================================================================
-const store = (function() {
-  var backend = "memory";
-  var memStore = {};
-  var as = null, mmkv = null;
-
-  // detect AsyncStorage
-  try {
-    if (typeof globalThis !== "undefined" && globalThis.AsyncStorage && typeof globalThis.AsyncStorage.getItem === "function") {
-      as = globalThis.AsyncStorage;
-      backend = "AsyncStorage";
-    }
-  } catch (e) {}
-
-  // detect MMKV
-  if (!as) {
+// ---------- Cloudflare store ----------
+const store = {
+  get: async function() {
     try {
-      if (typeof globalThis !== "undefined" && globalThis.MMKV && typeof globalThis.MMKV.getString === "function") {
-        mmkv = globalThis.MMKV;
-        backend = "MMKV";
-      }
+      const r = await fetch(REMOTE, { headers: { "x-key": KEY } });
+      return r.ok ? await r.text() : null;
+    } catch (e) { return null; }
+  },
+  set: async function(k, v) {
+    try {
+      await fetch(REMOTE, { method: "PUT", headers: { "x-key": KEY }, body: v });
     } catch (e) {}
   }
+};
 
-  // detect localStorage
-  if (!as && !mmkv) {
-    try {
-      if (typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
-        try { localStorage.setItem("__probe__", "1"); localStorage.removeItem("__probe__"); backend = "localStorage"; }
-        catch (e) {}
-      }
-    } catch (e) {}
-  }
-
-  if (backend === "memory") backend = "memory";   // final fallback
-
-  log("STORE backend = " + backend);
-
-  return {
-    backend: backend,
-    get: function(key) {
-      try {
-        if (as) return Promise.resolve(as.getItem(key));
-        if (mmkv) return Promise.resolve(mmkv.getString(key));
-        if (backend === "localStorage") return Promise.resolve(localStorage.getItem(key));
-        return Promise.resolve(memStore[key] || null);
-      } catch (e) { return Promise.resolve(null); }
-    },
-    set: function(key, value) {
-      try {
-        if (as) return Promise.resolve(as.setItem(key, value));
-        if (mmkv) { mmkv.set(key, value); return Promise.resolve(); }
-        if (backend === "localStorage") { localStorage.setItem(key, value); return Promise.resolve(); }
-        memStore[key] = value;
-        return Promise.resolve();
-      } catch (e) { return Promise.resolve(); }
-    },
-    del: function(key) {
-      try {
-        if (as) return Promise.resolve(as.removeItem(key));
-        if (mmkv) { if (mmkv.delete) mmkv.delete(key); return Promise.resolve(); }
-        if (backend === "localStorage") { localStorage.removeItem(key); return Promise.resolve(); }
-        delete memStore[key];
-        return Promise.resolve();
-      } catch (e) { return Promise.resolve(); }
-    }
-  };
-})();
-
-// =========================================================================
-// 3) Cookie state (in-memory per-context, restored from store on first use)
-// =========================================================================
+// ---------- Cookie state ----------
 let cookieHeader = null;
 let unlockPromise = null;
-let restored = false;
 
-function currentCookie() { return cookieHeader; }
+function makeCookie(tok) { return "t_hash_t=" + tok + "; hd=on; ott=" + OTT; }
 
 async function loadPersistedCookie() {
-  if (restored) return;
-  restored = true;
   try {
     const raw = await store.get(STORE_KEY);
-    if (!raw) { log("  no persisted cookie"); return; }
+    if (!raw) { log("no shared token yet"); return; }
     const obj = JSON.parse(raw);
-    if (obj && obj.cookie && obj.expiry && obj.expiry > Date.now() && isTokenUsable(obj.t_hash_t)) {
-      cookieHeader = obj.cookie;
-      log("💾 Cookie restored from " + store.backend + " (expires in " +
-          Math.round((obj.expiry - Date.now()) / 60000) + " min)");
-    } else {
-      log("  persisted cookie expired or invalid");
-    }
-  } catch (e) { log("  restore failed: " + e.message); }
+    if (obj && obj.t_hash_t && obj.expiry > Date.now() && isTokenUsable(obj.t_hash_t)) {
+      cookieHeader = makeCookie(obj.t_hash_t);
+      log("Token restored from Cloudflare (expires in " + Math.round((obj.expiry - Date.now()) / 60000) + " min)");
+    } else log("shared token expired");
+  } catch (e) { log("restore failed: " + e.message); }
 }
 
 async function persistCookie(tok) {
-  var expiry = Date.now() + 12 * 3600 * 1000 - 10 * 60 * 1000;  // 12h - 10min skew
-  // if token has embedded ts, use that
+  var expiry = Date.now() + 12 * 3600 * 1000 - 10 * 60 * 1000;
   var parts = String(tok).split("::");
   if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
     expiry = Number(parts[2]) * 1000 + 12 * 3600 * 1000 - 10 * 60 * 1000;
   }
-  var cookie = "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
-  var payload = JSON.stringify({ cookie: cookie, t_hash_t: tok, expiry: expiry });
-  await store.set(STORE_KEY, payload);
-  log("💾 Cookie persisted to " + store.backend + " (expires in " +
-      Math.round((expiry - Date.now()) / 60000) + " min)");
+  await store.set(STORE_KEY, JSON.stringify({ t_hash_t: tok, expiry: expiry }));
+  log("Token saved to Cloudflare");
 }
 
-// =========================================================================
-// 4) Cookie parsing
-// =========================================================================
+// ---------- Cookie parsing ----------
 function cookiePairs(res) {
   var raw = [];
-  try {
-    if (res.headers && typeof res.headers.getSetCookie === "function") raw = res.headers.getSetCookie();
-  } catch (e) {}
+  try { if (res.headers && typeof res.headers.getSetCookie === "function") raw = res.headers.getSetCookie(); } catch (e) {}
   if (!raw || !raw.length) {
     var s = "";
     try { s = res.headers.get("set-cookie") || ""; } catch (e1) {}
-    try {
-      var x = res.headers.get("x-set-cookie");
-      if (x) s += (s ? ", " : "") + x;
-    } catch (e2) {}
+    try { var x = res.headers.get("x-set-cookie"); if (x) s += (s ? ", " : "") + x; } catch (e2) {}
     raw = s ? s.split(/,(?=\s*[A-Za-z0-9_\-]+=)/) : [];
   }
   var out = [];
@@ -198,8 +103,7 @@ function isTokenUsable(t) {
   if (t.indexOf("::99") !== -1) return false;
   var parts = t.split("::");
   if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
-    var age = Date.now() / 1000 - Number(parts[2]);
-    if (age >= 43200) return false;
+    if (Date.now() / 1000 - Number(parts[2]) >= 43200) return false;
   }
   return true;
 }
@@ -210,9 +114,7 @@ function tokenFromResponse(res) {
   return isTokenUsable(tok) ? tok : null;
 }
 
-// =========================================================================
-// 5) Unlock handshake
-// =========================================================================
+// ---------- Unlock ----------
 function appHomeHeaders(cookie) {
   var h = {
     "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -224,22 +126,16 @@ function appHomeHeaders(cookie) {
 }
 
 async function unlockSession() {
-  log("🔓 Unlocking session (no valid persisted cookie)...");
-
+  log("Unlocking session...");
   const homeRes = await fetch(HOST + "/mobile/home?app=1", { headers: appHomeHeaders() });
   let tok = tokenFromResponse(homeRes);
-  if (tok) {
-    log("✅ Token came with the first response");
-    return tok;
-  }
+  if (tok) return tok;
 
   const initialCookie = cookiePairs(homeRes).join("; ");
   const html = await homeRes.text();
   const m = /data-addhash=["']([^"']+)["']/.exec(html);
   const addhash = m ? m[1] : null;
-  if (!addhash) throw new Error("No data-addhash on home page — cannot unlock");
-
-  log("  addhash found, triggering sponsor step...");
+  if (!addhash) throw new Error("No data-addhash on home page");
 
   try {
     const domain = HOST.replace(/^https?:\/\//, "");
@@ -254,13 +150,11 @@ async function unlockSession() {
     }).catch(function() {});
   } catch (e) {}
 
-  const pollCookie = "ext_name=ojplmecpdpgccookcobabopnaifgidhf; addhash=" +
-    encodeURIComponent(addhash) + "; " + initialCookie;
+  const pollCookie = "ext_name=ojplmecpdpgccookcobabopnaifgidhf; addhash=" + encodeURIComponent(addhash) + "; " + initialCookie;
   const start = Date.now();
 
   while (Date.now() - start < UNLOCK_TIMEOUT_MS) {
     await delay(POLL_MS);
-
     let vRes;
     try {
       vRes = await fetch(HOST + "/mobile/verify2.php", {
@@ -277,56 +171,42 @@ async function unlockSession() {
       });
     } catch (e) { continue; }
 
-    // Check cookie first
     tok = tokenFromResponse(vRes);
-    if (tok) { log("✅ Token received after verify (cookie)"); return tok; }
+    if (tok) return tok;
 
-    // Check JSON body for token field (faster path)
     let j = null;
     try { j = await vRes.json(); } catch (e) {}
     if (j) {
       var tJson = j.t_hash_t || j.token || (j.data && j.data.t_hash_t);
-      if (tJson && isTokenUsable(tJson)) {
-        log("✅ Token received after verify (JSON)");
-        return decode(tJson);
-      }
+      if (tJson && isTokenUsable(tJson)) return decode(tJson);
       if (j.statusup === "All Done") {
-        log("  All Done → reloading home...");
         try {
           const r2 = await fetch(HOST + "/mobile/home?app=1", { headers: appHomeHeaders(pollCookie) });
           tok = tokenFromResponse(r2);
-          if (tok) { log("✅ Token received after home reload"); return tok; }
+          if (tok) return tok;
         } catch (e) {}
       }
     }
   }
-  throw new Error("Unlock timed out after " + (UNLOCK_TIMEOUT_MS / 1000) + "s");
+  throw new Error("Unlock timed out");
 }
 
-// =========================================================================
-// 6) ensureCookie — restore from store, else unlock, then persist
-// =========================================================================
 async function ensureCookie() {
-  await loadPersistedCookie();
   if (cookieHeader) return cookieHeader;
   if (unlockPromise) return unlockPromise;
-
-  unlockPromise = unlockSession().then(async function(tok) {
-    cookieHeader = "t_hash_t=" + tok + "; hd=on; ott=" + OTT;
+  unlockPromise = (async function() {
+    await loadPersistedCookie();
+    if (cookieHeader) return cookieHeader;
+    const tok = await unlockSession();
+    cookieHeader = makeCookie(tok);
     await persistCookie(tok);
-    log("💾 Cookie ready for this and future searches");
-    unlockPromise = null;
     return cookieHeader;
-  }).catch(function(e) {
-    unlockPromise = null;
-    throw e;
-  });
+  })().then(function(c) { unlockPromise = null; return c; },
+            function(e) { unlockPromise = null; throw e; });
   return unlockPromise;
 }
 
-// =========================================================================
-// 7) Language priority
-// =========================================================================
+// ---------- Helpers ----------
 function langPriority(title) {
   var t = (title || "").toLowerCase();
   if (/\bhindi\b/.test(t)) return 100;
@@ -348,31 +228,9 @@ function pickBestResult(results, year) {
 function normalizeTitleForSearch(str) {
   return String(str || "").replace(/[^a-zA-Z0-9\s]/g, "").replace(/\s+/g, " ").trim();
 }
-
-// =========================================================================
-// 8) TMDB / OMDb
-// =========================================================================
-async function getImdbId(tmdbId, mediaType) {
-  const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
-  try { const d = await fetchJson(url); return d.imdb_id || null; }
-  catch (e) { log(`Failed to get IMDb ID: ${e.message}`); return null; }
-}
-async function getImdbTitle(imdbId) {
-  if (!imdbId) return null;
-  try {
-    const resp = await fetch(`https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    if (data.Response === "True" && data.Title) { log(`OMDb title: "${data.Title}"`); return data.Title; }
-    log(`OMDb error: ${data.Error || 'Unknown'}`);
-  } catch (e) { log(`OMDb failed: ${e.message}`); }
-  return null;
-}
 function buildHeaders(extra = {}, requestedWith = "XMLHttpRequest") {
   const h = { ...DEFAULT_HEADERS };
-  const ck = currentCookie();
-  if (ck) h["Cookie"] = ck;
+  if (cookieHeader) h["Cookie"] = cookieHeader;
   if (requestedWith) h["X-Requested-With"] = requestedWith;
   if (extra) Object.assign(h, extra);
   return h;
@@ -382,19 +240,35 @@ async function fetchJson(url, options = {}) {
   if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
   return resp.json();
 }
+
+// ---------- TMDB / OMDb ----------
+async function getImdbId(tmdbId, mediaType) {
+  const endpoint = mediaType === "movie" ? "movie" : "tv";
+  try {
+    const d = await fetchJson(`${TMDB_BASE}/${endpoint}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`);
+    return d.imdb_id || null;
+  } catch (e) { log(`Failed to get IMDb ID: ${e.message}`); return null; }
+}
+async function getImdbTitle(imdbId) {
+  if (!imdbId) return null;
+  try {
+    const resp = await fetch(`https://www.omdbapi.com/?i=${imdbId}&plot=short&r=json&apikey=${OMDb_API_KEY}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.Response === "True" && data.Title) return data.Title;
+  } catch (e) { log(`OMDb failed: ${e.message}`); }
+  return null;
+}
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const data = await fetchJson(url);
+  const data = await fetchJson(`${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`);
   const title = data.title || data.name;
-  const year = data.release_date ? data.release_date.substring(0,4) :
-               (data.first_air_date ? data.first_air_date.substring(0,4) : "");
+  const year = data.release_date ? data.release_date.substring(0, 4) :
+               (data.first_air_date ? data.first_air_date.substring(0, 4) : "");
   return { title, year };
 }
 
-// =========================================================================
-// 9) Net52 API
-// =========================================================================
+// ---------- Net52 API ----------
 async function search(query) {
   const url = `${BASE_URL}/search.php?s=${encodeURIComponent(query)}&t=${getTimestamp()}&ADSearch=false`;
   const data = await fetchJson(url, { headers: buildHeaders({}, "XMLHttpRequest") });
@@ -405,20 +279,18 @@ async function searchWithFallback(originalTitle, year, imdbTitle) {
   let searchTitle = imdbTitle || originalTitle;
   let results = await search(searchTitle).catch(() => []);
   if (results.length > 0) {
-    log(`Found ${results.length} results with IMDb title: "${searchTitle}"`);
     if (year) {
       const f = results.filter(item => item.y === year);
-      if (f.length > 0) { log(`Filtered to ${f.length} results with year ${year}`); return f; }
+      if (f.length > 0) return f;
     }
     return results;
   }
   const normalized = normalizeTitleForSearch(originalTitle);
-  log(`No results with IMDb title, trying normalized: "${normalized}"`);
   results = await search(normalized).catch(() => []);
   if (results.length === 0) return [];
   if (year) {
     const f = results.filter(item => item.y === year);
-    if (f.length > 0) { log(`Filtered to ${f.length} results with year ${year}`); return f; }
+    if (f.length > 0) return f;
   }
   return results;
 }
@@ -448,9 +320,7 @@ async function getPlaylist(id, title) {
   return data[0];
 }
 
-// =========================================================================
-// 10) Main getStreams
-// =========================================================================
+// ---------- Main ----------
 async function getStreams(tmdbId, mediaType, season, episode) {
   await ensureCookie();
 
@@ -458,95 +328,70 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
   const isMovieType = (mediaType === "movie");
-  log(`TMDB: "${title}" (${year}) [${isMovieType ? 'Movie' : 'Series'}]`);
+  log(`TMDB: "${title}" (${year}) [${isMovieType ? "Movie" : "Series"}]`);
 
   const imdbId = await getImdbId(tmdbId, mediaType);
-  let imdbTitle = null;
-  if (imdbId) {
-    imdbTitle = await getImdbTitle(imdbId);
-    if (imdbTitle) log(`IMDb title: "${imdbTitle}"`);
-  }
+  const imdbTitle = imdbId ? await getImdbTitle(imdbId) : null;
 
   const results = await searchWithFallback(title, year, imdbTitle);
   if (!results.length) throw new Error(`No results found for "${title}"`);
-
-  log("All search results:");
-  for (const item of results) log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
+  for (const item of results) log(`  "${item.t}" id=${item.id}`);
 
   let candidates = [];
   if (isMovieType && year) {
     const existing = results.filter(item => item.y === year);
     if (existing.length > 0) {
       candidates = existing;
-      log(`✅ Found ${candidates.length} movie results with year ${year}`);
     } else {
-      log(`Fetching year from post.php for ${results.length} movie candidates...`);
       for (const item of results) {
         try {
           const post = await getPost(item.id);
           const itemYear = post.year || "";
-          log(`  "${item.t}" → year: "${itemYear}"`);
           if (itemYear === year) candidates.push({ ...item, y: itemYear, post });
-        } catch (e) { log(`  Failed to get year for "${item.t}": ${e.message}`); }
+        } catch (e) { log(`  Failed year for "${item.t}": ${e.message}`); }
       }
       if (candidates.length === 0) throw new Error(`No movies found with year ${year}`);
-      log(`✅ Found ${candidates.length} movie results with year ${year}`);
     }
   } else {
-    log(`📺 Series mode: Year matching is flexible`);
     candidates = results;
     for (const item of results) {
       try {
         const post = await getPost(item.id);
-        const itemYear = post.year || "";
-        log(`  "${item.t}" → year: "${itemYear}"`);
-        item.y = itemYear; item.post = post;
-      } catch (e) { log(`  Failed to get year for "${item.t}": ${e.message}`); }
+        item.y = post.year || "";
+        item.post = post;
+      } catch (e) { log(`  Failed year for "${item.t}": ${e.message}`); }
     }
     if (year) {
       const ym = results.filter(item => item.y === year);
-      if (ym.length > 0) {
-        log(`✅ Found ${ym.length} results with year ${year} (preferred)`);
-        candidates = [...ym, ...results.filter(item => item.y !== year)];
-      } else log(`⚠️ No results with year ${year}, using all results`);
+      if (ym.length > 0) candidates = [...ym, ...results.filter(item => item.y !== year)];
     }
   }
 
-  let selected = pickBestResult(candidates, year);
-  if (!selected) { selected = candidates[0]; log(`No language pick, using first: "${selected.t}" (${selected.y})`); }
-  else log(`Selected: "${selected.t}" (${selected.y})`);
+  let selected = pickBestResult(candidates, year) || candidates[0];
+  log(`Selected: "${selected.t}" (${selected.y})`);
 
   const post = selected.post || await getPost(selected.id);
-  log(`Type: ${post.type}, title: ${post.title}`);
-
   let contentId;
   const isMovie = (post.type === "m" || mediaType === "movie");
   if (isMovie) {
     contentId = post.main_id || selected.id;
-    log(`Movie, using ID: ${contentId}`);
   } else {
     const seasonList = post.season || [];
     let targetSeasonId = null;
     for (const s of seasonList) if (parseInt(s.s, 10) === season) { targetSeasonId = s.id; break; }
     if (!targetSeasonId) throw new Error(`Season ${season} not found`);
-    log(`Season ID: ${targetSeasonId}`);
     const episodes = await getEpisodes(targetSeasonId, selected.id);
     if (!episodes.length) throw new Error(`No episodes for season ${season}`);
     let targetEp = null;
     for (const ep of episodes) {
-      const epNum = parseInt(ep.ep.replace(/^E/i, ''), 10);
-      if (epNum === episode) { targetEp = ep; break; }
+      if (parseInt(ep.ep.replace(/^E/i, ""), 10) === episode) { targetEp = ep; break; }
     }
     if (!targetEp) throw new Error(`Episode ${episode} not found`);
-    log(`Found episode: ${targetEp.t} (ID: ${targetEp.id})`);
     contentId = targetEp.id;
   }
 
   const playlist = await getPlaylist(contentId, post.title || title);
   if (!playlist.sources || !playlist.sources.length) throw new Error("No sources in playlist");
-
-  const qualities = playlist.sources.map(s => s.label || s.quality || 'unknown');
-  log(`Available qualities: ${qualities.join(', ')}`);
 
   const subtitles = [];
   if (playlist.tracks && playlist.tracks.length) {
@@ -556,23 +401,22 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       subtitles.push({
         url,
         language: track.label || "Unknown",
-        default: (track.label && track.label.toLowerCase().indexOf("english") !== -1) ? true : false
+        default: !!(track.label && track.label.toLowerCase().indexOf("english") !== -1)
       });
     }
   }
 
-  const ck = currentCookie();
   return playlist.sources.map(src => {
     const fileUrl = src.file.startsWith("http") ? src.file : `https://net52.cc${src.file}`;
     return {
-      name: "Netflix",
+      name: "Hotstar",
       title: src.label || "Auto",
       url: fileUrl,
       quality: src.label || "Auto",
       headers: {
         Referer: "https://net52.cc/",
         "User-Agent": DEFAULT_HEADERS["User-Agent"],
-        "Cookie": ck,
+        "Cookie": cookieHeader,
         "Origin": "https://net52.cc"
       },
       subtitles
