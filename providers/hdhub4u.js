@@ -7,13 +7,13 @@
 "use strict";
 
 // ====== EDIT IF NEEDED ======
-//var MAIN_URL = "https://new1.hdhub4u.free";   // default found in the smali; the live domain changes often
+var MAIN_URL = "https://new17.hdhub4u.cl";   // default found in the smali; the live domain changes often
 var DOMAINS_URL = "";                         // optional: JSON with {"HDHUB4u":"https://...","hubcloud":"https://..."}
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 // =============================
 
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var MAIN_URL = "https://new17.hdhub4u.cl";
+var SEARCH_API = "https://search.pingora.fyi/collections/post/documents/search?q="; // kept for compatibility; full URL built in searchSiteFull
 var UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36";
 var SITE_HEADERS = {
   "User-Agent": UA,
@@ -25,9 +25,6 @@ var SITE_HEADERS = {
   "sec-ch-ua-mobile": "?1",
   "sec-ch-ua": '"Not-A.Brand";v="99", "Brave";v="157", "Chromium";v="157"'
 };
-var SEARCH_API = "https://search.pingora.fyi/collections/post/documents/search?q="; // kept for compatibility; full URL built in searchSiteFull
-//var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
-//var SITE_HEADERS = { "User-Agent": UA, "Cookie": "xla=s4t" };
 var HUBCLOUD_BASE = null;
 
 function log(m) { console.log("[HDHub4U] " + m); }
@@ -448,13 +445,16 @@ async function getRedirectLinks(url) {
       if (v) combined += v;
     }
     var decoded = base64Decode(pen(base64Decode(base64Decode(combined))));
-    var json = JSON.parse(decoded);
-    var encodedUrl = base64Decode(String(json.o || "")).trim();
-    if (encodedUrl) return encodedUrl;
+    var json = null;
+    try { json = JSON.parse(decoded); } catch (e3) { json = null; }
+    if (json) {
+      var encodedUrl = base64Decode(String(json.o || "")).trim();
+      if (encodedUrl) return encodedUrl;
+    }
 
     // fallback of the original: fetch "<blog_url>?re=<data>" and read the body text
-    var data = encode(String(json.data || "")).trim();
-    var blog = String(json.blog_url || "").trim();
+    var data = encode(String(json && json.data || "")).trim();
+    var blog = String(json && json.blog_url || "").trim();
     var direct = "";
     try {
       var d = await getText((blog + "?re=" + data).trim(), { "User-Agent": UA });
@@ -791,6 +791,27 @@ async function loadSourceNameExtractor(source, url, referer, quality, out, depth
   });
 }
 
+// ---- hbplay.pages.dev/?u=<base64 URL>&m=<mime>&t=<base64 filename> ----
+// The `u` param base64-decodes to a direct media URL (usually Cloudflare R2 / AWS S3).
+function hbplay(url, referer, out) {
+  var u = substringAfter(url, "u=");
+  if (!u) { log("hbplay: no u= param"); return; }
+  u = substringBefore(u, "&");
+  var decoded = base64Decode(u);
+  if (!decoded || !/^https?:\/\//i.test(decoded)) {
+    log("hbplay: bad base64 payload");
+    return;
+  }
+  var tRaw = substringAfter(url, "t=");
+  var filename = "";
+  if (tRaw) {
+    var tB64 = substringBefore(tRaw, "&");
+    try { filename = base64Decode(tB64); } catch (e) { filename = ""; }
+  }
+  var quality = qualityOf(filename || decoded);
+  pushLink(out, "Hbplay", "Hbplay" + (quality !== "Auto" ? " [" + quality + "]" : ""), decoded, url, quality);
+}
+
 // ---- Router (CloudStream loadExtractor equivalent for the hosts above) ----
 async function resolveLink(url, referer, out, depth) {
   depth = depth || 0;
@@ -800,7 +821,14 @@ async function resolveLink(url, referer, out, depth) {
   // [NEW] HDHub4U shortener pages ("?id="): decode the real link first (UtilsKt.getRedirectLinks)
   if (u.indexOf("?id=") >= 0) {
     var real = await getRedirectLinks(url);
-    if (real && real !== url && /^https?:\/\//i.test(real)) return resolveLink(real, url, out, depth + 1);
+    if (real && real !== url && /^https?:\/\//i.test(real)) {
+      // If the decoded URL is already a media file, emit it directly.
+      if (/\.(mkv|mp4|m3u8|webm|mov)(\?|$)/i.test(real)) {
+        pushLink(out, "HubCloud", "HubCloud", real, url, "Auto");
+        return;
+      }
+      return resolveLink(real, url, out, depth + 1);
+    }
     log("redirect page gave no link: " + url);
   }
 
@@ -808,13 +836,17 @@ async function resolveLink(url, referer, out, depth) {
   if (/hubdrive\./.test(u)) return hubdrive(url, referer, out, depth);
   if (/hblinks\./.test(u)) return hblinks(url, referer, out, depth);
   if (/hubcdn\./.test(u)) return hubcdn(url, referer, out, depth);
-  if (/pixeldrain\./.test(u)) return pixelDrain(url, referer, out);        // [NEW] PixelDrain + PixelDrainDev
+  if (/hbplay\.pages\.dev/.test(u)) return hbplay(url, referer, out);   // [NEW] direct base64-wrapped media URL
+  if (/pixeldrain\./.test(u)) return pixelDrain(url, referer, out);     // [NEW] PixelDrain + PixelDrainDev
   // [NEW] hdstream4u / hubstream embeds are VidStack players
   if (/hdstream4u|hubstream|vidstack/.test(u)) {
     var nm = /hdstream4u/.test(u) ? "Hdstream4u" : (/hubstream/.test(u) ? "Hubstream" : "Vidstack");
     return vidstack(url, referer, out, { name: nm });
   }
-  // [SKIPPED] StreamTape and VidHidePro: CloudStream built-ins, not part of the uploaded files.
+  // CloudStream built-ins that Nuvio doesn't handle; skip quietly instead of spamming the log.
+  if (/streamtape|gofile\.io|doodstream|mixdrop|streamlare|streamhub|mp4upload|filemoon|streamwish|voe\.sx|streamhide|streamvid|dailymotion|youtube\.com|youtu\.be|ok\.ru|viddhidepro|vidhide/i.test(u)) {
+    return;
+  }
   log("no extractor for " + url);
 }
 
@@ -861,7 +893,7 @@ async function searchSiteFull(query, page) {
       title: h.title,
       permalink: h.permalink,
       category: h.category,
-      tmScore: Number(h.textMatchInfo.score) || 0
+      tmScore: Number(h.textMatchInfo.score) || 0      // typesense relevance, used as a tie-breaker
     };
   }).filter(function(r) { return r.permalink; });
   return { search: search, results: results };
