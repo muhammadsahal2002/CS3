@@ -240,10 +240,10 @@ function pushLink(out, name, title, url, referer, quality, subtitles) {
 
   for (var i = 0; i < out.length; i++) if (out[i].url === url) return;
   out.push({
-    name: name,
-    title: title,
-    url: url,
-    quality: quality || "Auto",
+  name: title || name, // Use the descriptive title for the main UI
+  title: title,        // Keep it here just in case
+  url: url,
+  quality: quality || "Auto",
     headers: { "User-Agent": UA, "Referer": referer || (hostOf(url) + "/") },
     subtitles: subtitles || []
   });
@@ -274,14 +274,13 @@ async function hubdrive(url, referer, out, depth) {
   if (!href.trim()) return;
   href = absUrl(url, href);
   if (/hubcloud/i.test(href)) {
-    var tmp = [];
-    await hubcloud(href, url, tmp, depth);
-    tmp.forEach(function(l) {
-      l.name = "HubDrive " + l.name;
-      l.title = "HubDrive " + l.title;
-      pushLink(out, l.name, l.title, l.url, referer, l.quality, l.subtitles);
-    });
-  } else {
+  var tmp = [];
+  await hubcloud(href, url, tmp, depth);
+  tmp.forEach(function(l) {
+    l.name = "HubDrive " + l.name;
+    pushLink(out, l.name, l.name, l.url, referer, l.quality, l.subtitles);
+  });
+} else {
     await resolveLink(href, url, out, depth + 1);
   }
 }
@@ -787,13 +786,11 @@ async function loadSourceNameExtractor(source, url, referer, quality, out, depth
   var tmp = [];
   await resolveLink(url, referer, tmp, depth || 0);
   tmp.forEach(function(l) {
-    if (source && l.name !== source) {
-      l.name = source + " " + l.name;
-    }
+    // If quality was found on the page but missing in the stream, apply it
     if (quality && (!l.quality || l.quality === "Auto")) {
       l.quality = quality;
-      if (l.title.indexOf(quality) < 0) {
-        l.title = l.title.trim() + " " + quality;
+      if (l.name && l.name.indexOf(quality) < 0) {
+        l.name = l.name + " " + quality;
       }
     }
     for (var i = 0; i < out.length; i++) {
