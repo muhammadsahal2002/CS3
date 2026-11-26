@@ -3,7 +3,9 @@
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
-var TOKEN_URL = "https://jsonhosting.com/api/json/eb20e727/raw";
+// Cloudflare Worker (token source) - EDIT THESE TWO
+var CF_URL = "https://nftoken.taharimbadhon27.workers.dev/";
+var CF_KEY = "wx9am76cgk";
 var BASE = "https://net52.cc";
 var PV = BASE + "/mobile/pv";
 
@@ -67,14 +69,14 @@ function fetchToken() {
         return Promise.resolve(rawToken);
     }
 
-    return fetch(TOKEN_URL + "?t=" + now)
+    return fetch(CF_URL, { headers: { "x-key": CF_KEY } })
         .then(function(r) {
             if (!r.ok) throw new Error("Token HTTP " + r.status);
             return r.json();
         })
         .then(function(json) {
-            var record = json.record || {};
-            rawToken = record.token || "";
+            var record = json.record || json || {};
+            rawToken = record.token || record.t_hash_t || "";
             var t_hash_t = record.t_hash_t || "";
             var t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
 
