@@ -200,18 +200,38 @@ function getImdbId(tmdbId, mediaType) {
         .catch(function() { return null; });
 }
 
-function getTitle(tmdbId, mediaType) {
+// [UPDATED] returns title + original title + year + alternative titles (romaji etc.)
+function getTmdbInfo(tmdbId, mediaType) {
     var url = CONFIG.TMDB_BASE + "/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId +
-        "?api_key=" + CONFIG.TMDB_API_KEY;
+        "?api_key=" + CONFIG.TMDB_API_KEY + "&append_to_response=alternative_titles";
     return fetch(url)
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
             if (!data) return null;
-            var t = mediaType === "tv"
+            var isTv = mediaType === "tv";
+            var title = isTv
                 ? (data.name || data.original_name)
                 : (data.title || data.original_title);
-            log("  tmdb: title =", t);
-            return t;
+            var original = isTv ? data.original_name : data.original_title;
+            var date = isTv ? data.first_air_date : data.release_date;
+            var year = date ? String(date).substring(0, 4) : "";
+
+            var list = [title, original];
+            var alt = data.alternative_titles
+                ? (data.alternative_titles.titles || data.alternative_titles.results || [])
+                : [];
+            for (var i = 0; i < alt.length && list.length < 16; i++) {
+                var a = alt[i];
+                if (!a || !a.title) continue;
+                if (/^(JP|US|GB)$/.test(a.iso_3166_1 || "") || /romaji|romaniz|english/i.test(a.type || "")) {
+                    list.push(a.title);
+                }
+            }
+            var titles = [];
+            list.forEach(function(t) { if (t && titles.indexOf(t) < 0) titles.push(t); });
+
+            log("  tmdb: title =", title, "| year =", year, "| alt titles =", titles.length);
+            return { title: title, originalTitle: original || "", year: year, titles: titles };
         })
         .catch(function() { return null; });
 }
@@ -248,13 +268,104 @@ function getAbsoluteEpisode(imdbId, season, episode) {
 }
 
 // =========================================================================
-// AniKoto scraping with type-aware search
+// AniKoto scraping with type-aware, title-aware selection
 // =========================================================================
 
-function searchAnime(title, wantMovie) {
-    var searchTitle = normalizeTitle(title);
-    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(searchTitle);
-    log("  search: url =", url, "wantMovie =", !!wantMovie);
+// movie / series / other (OVA, special...) / unknown
+function classifyType(typeText) {
+    var s = String(typeText || "").toLowerCase();
+    if (/\b(movie|film)\b/.test(s)) return "movie";
+    if (/\b(ova|oad|special|music|cm|pv)\b/.test(s)) return "other";
+    if (/\b(tv|ona|web)\b/.test(s)) return "series";
+    return "unknown";
+}
+
+// Score one wanted title against one site title (both already normalize()d), 0-100
+function pairScore(a, b) {
+    if (!a || !b) return 0;
+    if (a === b) return 100;
+    var ta = a.split(" "), tb = b.split(" ");
+    var inB = {}, seen = {}, inter = 0;
+    tb.forEach(function(x) { inB[x] = 1; });
+    ta.forEach(function(x) { if (inB[x] && !seen[x]) { inter++; seen[x] = 1; } });
+    var jac = 100 * inter / (ta.length + tb.length - inter);
+    var lev = (1 - levenshtein(a, b) / Math.max(a.length, b.length)) * 100;
+    return Math.max(jac, lev);
+}
+
+function titleMatchScore(cand, wantedNorm) {
+    var forms = [
+        normalize(normalizeTitle(cand.enTitle)),
+        normalize(normalizeTitle(cand.jpTitle))
+    ];
+    var best = 0;
+    for (var i = 0; i < forms.length; i++) {
+        if (!forms[i]) continue;
+        for (var j = 0; j < wantedNorm.length; j++) {
+            var s = pairScore(forms[i], wantedNorm[j]);
+            if (s > best) best = s;
+        }
+    }
+    return best;
+}
+
+var TITLE_ACCEPT = 72;
+
+// Rank search results. Returns accepted candidates, best first (empty = nothing good enough).
+function rankCandidates(results, info, wantMovie) {
+    var wantedNorm = [];
+    (info.titles && info.titles.length ? info.titles : [info.title]).forEach(function(t) {
+        var n = normalize(normalizeTitle(t));
+        if (n && wantedNorm.indexOf(n) < 0) wantedNorm.push(n);
+    });
+    var want = wantMovie ? "movie" : "series";
+    var year = parseInt(info.year, 10);
+    var out = [];
+
+    results.forEach(function(r) {
+        var cls = r.typeClass || classifyType(r.typeText);
+        // wrong type is never allowed: a movie request must not get a series and vice versa
+        if ((want === "movie" && cls === "series") || (want === "series" && cls === "movie")) {
+            log("    skip", r.enTitle, "(wrong type:", cls + ")");
+            return;
+        }
+        var ts = titleMatchScore(r, wantedNorm);
+        var score = ts;
+        if (cls === "unknown") score -= 8;
+        if (cls === "other") score -= 15;
+
+        if (r.year && year) {
+            var diff = Math.abs(r.year - year);
+            if (wantMovie) {
+                if (diff === 0) score += 25;
+                else if (diff === 1) score += 8;
+                else score -= 12;
+            } else if (diff === 0) {
+                score += 5;
+            }
+        }
+        var accepted = ts >= TITLE_ACCEPT;
+        log("    cand", r.enTitle, "| type:", cls, "| year:", r.year || "-",
+            "| title:", ts.toFixed(0), "| score:", score.toFixed(0), accepted ? "" : "(rejected)");
+        if (!accepted) return;
+        out.push({
+            enTitle: r.enTitle, jpTitle: r.jpTitle, url: r.url,
+            typeText: r.typeText, isMovie: cls === "movie", isSeries: cls === "series",
+            titleScore: ts, score: score
+        });
+    });
+
+    out.sort(function(a, b) {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.enTitle.length - b.enTitle.length;
+    });
+    return out;
+}
+
+// Fetch + parse one search page
+function fetchSearchResults(query) {
+    var url = CONFIG.BASE_URL + "/filter?keyword=" + encodeURIComponent(query);
+    log("  search: url =", url);
 
     return fetch(url, { headers: headers() })
         .then(function(r) {
@@ -262,7 +373,7 @@ function searchAnime(title, wantMovie) {
             return r.ok ? r.text() : null;
         })
         .then(function(html) {
-            if (!html) return null;
+            if (!html) return [];
             log("  search: html length =", html.length);
 
             var $ = cheerio.load(html);
@@ -284,77 +395,64 @@ function searchAnime(title, wantMovie) {
                     typeText = $el.find(".fd-infor .tick-item").first().text().trim();
                 }
 
-                var typeLower = typeText.toLowerCase();
-                var isMovie = /\bmovie\b|\bfilm\b/.test(typeLower);
-                var isTv = /\btv\b/.test(typeLower) && !isMovie;
+                // release year, if the card shows one
+                var ym = /\b(19\d{2}|20\d{2})\b/.exec($el.text());
 
                 results.push({
                     enTitle: enTitle,
                     jpTitle: jpTitle,
                     url: href.indexOf("http") === 0 ? href : CONFIG.BASE_URL + href,
                     typeText: typeText,
-                    isMovie: isMovie,
-                    isSeries: isTv
+                    typeClass: classifyType(typeText),
+                    year: ym ? parseInt(ym[1], 10) : 0
                 });
             });
 
             log("  search: found", results.length, "results");
-            results.slice(0, 30).forEach(function(r) {
-                log("    -", r.enTitle, "| type:", r.typeText,
-                    "| movie:", r.isMovie, "| series:", r.isSeries);
-            });
-
-            if (results.length === 0) return null;
-
-            // Filter by media type
-            var candidates;
-            if (wantMovie) {
-                candidates = results.filter(function(r) { return r.isMovie; });
-            } else {
-                candidates = results.filter(function(r) { return r.isSeries; });
-            }
-
-            log("  search: filtered by type ->", candidates.length, "candidates");
-
-            // If filter removed everything, use all results
-            if (candidates.length === 0) {
-                log("  search: type filter removed all, falling back to all");
-                candidates = results;
-            }
-
-            // Exact normalized match
-            var q = normalize(normalizeTitle(searchTitle));
-            var exact = candidates.filter(function(r) {
-                return normalize(normalizeTitle(r.enTitle)) === q ||
-                       normalize(normalizeTitle(r.jpTitle)) === q;
-            });
-
-            if (exact.length > 0) {
-                log("  search: EXACT match =", exact[0].enTitle);
-                return exact[0];
-            }
-
-            // Fuzzy scoring
-            var best = null;
-            var bestScore = -999;
-
-            candidates.forEach(function(r) {
-                var en = normalize(normalizeTitle(r.enTitle));
-                var jp = normalize(normalizeTitle(r.jpTitle));
-                var score = Math.max(similarity(en, q), similarity(jp, q));
-                score -= Math.abs(r.enTitle.length - searchTitle.length) * 0.5;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = r;
-                }
-            });
-
-            log("  search: best fuzzy =", best ? best.enTitle : "null",
-                "(score:", bestScore.toFixed(1) + ")");
-            return best;
+            return results;
         })
-        .catch(function(e) { logErr("  search failed:", e.message); return null; });
+        .catch(function(e) { logErr("  search failed:", e.message); return []; });
+}
+
+function buildQueries(info) {
+    var out = [], seen = {};
+    function add(t) {
+        var q = normalizeTitle(t || "").trim();
+        var k = normalize(q);
+        if (!k || seen[k]) return;
+        seen[k] = 1;
+        out.push(q);
+    }
+    add(info.title);
+    add(info.originalTitle);
+    (info.titles || []).forEach(function(t) { if (out.length < 4) add(t); });
+    return out;
+}
+
+// Try each title variant until something good enough is found
+function searchAnimeRanked(info, wantMovie) {
+    var queries = buildQueries(info);
+    log("  search: queries =", queries.join(" | "), "wantMovie =", !!wantMovie);
+
+    function next(i) {
+        if (i >= queries.length) return Promise.resolve([]);
+        return fetchSearchResults(queries[i]).then(function(results) {
+            var ranked = results.length ? rankCandidates(results, info, wantMovie) : [];
+            if (ranked.length) {
+                log("  search: best =", ranked[0].enTitle, "(score:", ranked[0].score.toFixed(0) + ")");
+                return ranked;
+            }
+            log("  search: nothing good for", queries[i]);
+            return next(i + 1);
+        });
+    }
+    return next(0);
+}
+
+// kept for test.js
+function searchAnime(title, wantMovie) {
+    return searchAnimeRanked({ title: title, originalTitle: "", year: "", titles: [title] }, wantMovie)
+        .then(function(list) { return list.length ? list[0] : null; });
 }
 
 function getAnimeId(url) {
@@ -680,6 +778,19 @@ function resolveFromAnimeEntry(best, episodeNum, isMovie) {
     });
 }
 
+// try the best match first; a runner-up is only used when it is also a strong title match
+function resolveFirstWorking(cands, i, episodeNum, isMovie) {
+    if (i >= cands.length || i >= 3) return Promise.resolve(null);
+    var c = cands[i];
+    if (i > 0 && c.titleScore < 85) return Promise.resolve(null);
+    log("  using:", c.enTitle, "|", c.url);
+    return resolveFromAnimeEntry(c, episodeNum, isMovie).then(function(stream) {
+        if (stream) return stream;
+        log("  no dub stream on", c.enTitle, "- trying next candidate");
+        return resolveFirstWorking(cands, i + 1, episodeNum, isMovie);
+    });
+}
+
 // =========================================================================
 // Entry point
 // =========================================================================
@@ -692,8 +803,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
     log("========== getStreams ==========");
     log("  tmdbId =", tmdbId, "mediaType =", mediaType, "S" + season + "E" + episode);
 
-    return getTitle(tmdbId, mediaType).then(function(title) {
-        if (!title) { logErr("no title, aborting"); return []; }
+    return getTmdbInfo(tmdbId, mediaType).then(function(info) {
+        if (!info || !info.title) { logErr("no title, aborting"); return []; }
 
         return getImdbId(tmdbId, mediaType).then(function(imdbId) {
             var epPromise = isMovie
@@ -703,11 +814,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return epPromise.then(function(mappedEpisode) {
                 log("  mapped episode =", mappedEpisode, "(isMovie =", isMovie + ")");
 
-                return searchAnime(title, isMovie).then(function(best) {
-                    if (!best) { logErr("no search result"); return []; }
-                    log("  using:", best.enTitle, "|", best.url);
+                return searchAnimeRanked(info, isMovie).then(function(cands) {
+                    if (!cands.length) { logErr("no search result"); return []; }
 
-                    return resolveFromAnimeEntry(best, mappedEpisode, isMovie)
+                    return resolveFirstWorking(cands, 0, mappedEpisode, isMovie)
                         .then(function(stream) {
                             if (!stream) { logErr("no stream resolved"); return []; }
                             log("  SUCCESS:", stream.entries.length, "stream(s)");
