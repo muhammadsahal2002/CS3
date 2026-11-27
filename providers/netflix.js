@@ -63,20 +63,32 @@ function normalizeTitleForSearch(str) {
     .trim();
 }
 
-// ---------- Cloudflare token block ----------
-// Reads the token from the Worker; when it is missing / expired / banned it creates a new one on net52.cc
-// (cfUnlock) and saves it back to the Worker with a PUT. Only fetchToken() calls cfGetOrCreate().
-var CF_SITE = "https://net52.cc";
-var CF_MAX_AGE_S = 8 * 60 * 60;        // older than this = treated as expired (token lives ~12h, local cache is 3h)
+// ---------- Cloudflare token: read, or unlock + save when missing/expired ----------
+var CF_HOST = "https://net52.cc";
+var CF_UA = "Mozilla/5.0 (Linux; Android 12; SM-M025F Build/SP1A.210812.016; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.85 Mobile Safari/537.36 /OS.Gatu v3.1";
 var CF_UNLOCK_TIMEOUT_MS = 45000;
-var CF_POLL_MS = 2000;
-var cfInflight = null;
+var CF_POLL_MS = 750;
 
-function cfLog(msg) { log("[cf] " + msg); }
-function cfUa() { return DEFAULT_HEADERS["User-Agent"]; }
-function cfDelay(ms) { return new Promise(function(resolve) { setTimeout(resolve, ms); }); }
+function cfDelay(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+function cfDecode(v) { try { return decodeURIComponent(v); } catch (e) { return v; } }
 
-// Set-Cookie of a response -> ["name=value", ...]
+function cfTokenUsable(t) {
+  if (!t || typeof t !== "string") return false;
+  if (t.indexOf("::99") !== -1) return false;
+  var parts = t.split("::");
+  if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
+    if (Date.now() / 1000 - Number(parts[2]) >= 43200) return false;
+  }
+  return true;
+}
+function cfExpiry(tok) {
+  var expiry = Date.now() + 12 * 3600 * 1000 - 10 * 60 * 1000;
+  var parts = String(tok).split("::");
+  if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
+    expiry = Number(parts[2]) * 1000 + 12 * 3600 * 1000 - 10 * 60 * 1000;
+  }
+  return expiry;
+}
 function cfCookiePairs(res) {
   var raw = [];
   try { if (res.headers && typeof res.headers.getSetCookie === "function") raw = res.headers.getSetCookie(); } catch (e) {}
@@ -84,7 +96,7 @@ function cfCookiePairs(res) {
     var s = "";
     try { s = res.headers.get("set-cookie") || ""; } catch (e1) {}
     try { var x = res.headers.get("x-set-cookie"); if (x) s += (s ? ", " : "") + x; } catch (e2) {}
-    raw = s ? s.split(/,(?=\s*[A-Za-z0-9_\-]+=)/) : [];   // not at the comma inside "Expires=Wed, 21 Oct ..."
+    raw = s ? s.split(/,(?=\s*[A-Za-z0-9_\-]+=)/) : [];
   }
   var out = [];
   raw.forEach(function(c) {
@@ -93,41 +105,18 @@ function cfCookiePairs(res) {
   });
   return out;
 }
-
-function cfPairValue(pairs, name) {
+function cfTokenFromResponse(res) {
+  var pairs = cfCookiePairs(res), v = null;
   for (var i = 0; i < pairs.length; i++) {
-    if (pairs[i].indexOf(name + "=") === 0) return pairs[i].slice(name.length + 1);
+    if (pairs[i].indexOf("t_hash_t=") === 0) { v = pairs[i].slice(9); break; }
   }
-  return null;
-}
-
-function cfDecode(v) { try { return decodeURIComponent(v); } catch (e) { return v; } }
-
-// t_hash_t = "hash::ip::timestamp::flag"  ("::99" = banned)
-function cfTokenUsable(token) {
-  if (!token || typeof token !== "string") return false;
-  if (token.indexOf("::99") !== -1) return false;
-  var parts = token.split("::");
-  if (parts.length >= 3 && /^\d{10}$/.test(parts[2])) {
-    return (Date.now() / 1000 - Number(parts[2])) < CF_MAX_AGE_S;
-  }
-  return true;     // no timestamp in it, cannot tell
-}
-
-// token (and t_hash when the site sends one) out of a response's Set-Cookie
-function cfFromResponse(res, found) {
-  var pairs = cfCookiePairs(res);
-  var th = cfPairValue(pairs, "t_hash");
-  if (th && !found.t_hash) found.t_hash = th;
-  var v = cfPairValue(pairs, "t_hash_t");
   if (!v) return null;
   var tok = cfDecode(v);
   return cfTokenUsable(tok) ? tok : null;
 }
-
 function cfHomeHeaders(cookie) {
   var h = {
-    "User-Agent": cfUa(),
+    "User-Agent": CF_UA,
     "X-Requested-With": "com.netmirror.app",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
   };
@@ -135,128 +124,94 @@ function cfHomeHeaders(cookie) {
   return h;
 }
 
-// token record from the Worker, or null when it is missing / expired
-function cfRead() {
-  return fetch(CF_URL, { headers: { "x-key": CF_KEY } })
-    .then(function(r) {
-      if (!r.ok) { cfLog("Worker GET -> HTTP " + r.status); return null; }
-      return r.json();
-    })
-    .then(function(json) {
-      var rec = json && (json.record || json);
-      var tok = rec && rec.t_hash_t ? String(rec.t_hash_t) : "";
-      if (!tok) { cfLog("Worker has no token"); return null; }
-      if (!cfTokenUsable(tok)) { cfLog("Worker token is expired"); return null; }
-      return rec;
-    })
-    .catch(function(e) { cfLog("Worker GET failed: " + (e && e.message)); return null; });
-}
+async function cfUnlock() {
+  log("Unlocking session (about 40s)...");
+  var homeRes = await fetch(CF_HOST + "/mobile/home?app=1", { headers: cfHomeHeaders() });
+  var tok = cfTokenFromResponse(homeRes);
+  if (tok) return tok;
 
-// save the new token to the Worker (never fails the caller)
-function cfWrite(rec) {
-  var body = { t_hash_t: rec.t_hash_t, t_hash: rec.t_hash || "", token: rec.token || rec.t_hash_t, ts: Math.floor(Date.now() / 1000) };
-  body.record = { t_hash_t: body.t_hash_t, t_hash: body.t_hash, token: body.token };   // works for a flat or a {record:{}} Worker
-  return fetch(CF_URL, {
-    method: "PUT",
-    headers: { "x-key": CF_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  }).then(function(r) { cfLog("Worker PUT -> HTTP " + r.status); })
-    .catch(function(e) { cfLog("Worker PUT failed: " + (e && e.message)); });
-}
+  var initialCookie = cfCookiePairs(homeRes).join("; ");
+  var html = await homeRes.text();
+  var m = /data-addhash=["']([^"']+)["']/.exec(html);
+  var addhash = m ? m[1] : null;
+  if (!addhash) throw new Error("No data-addhash on home page - cannot unlock");
 
-// ad-verification handshake on net52.cc -> { t_hash_t, t_hash, token } or null
-function cfUnlock() {
-  var found = {};
-  cfLog("unlock: start");
+  try {
+    var domain = CF_HOST.replace(/^https?:\/\//, "");
+    fetch("https://userver." + domain + "/?hee5=" + encodeURIComponent(addhash) + "&a=y&t=" + Math.random(), {
+      headers: {
+        "User-Agent": CF_UA,
+        "Referer": CF_HOST + "/mobile/home?app=1",
+        "Cookie": initialCookie,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      },
+      redirect: "manual"
+    }).catch(function() {});
+  } catch (e) {}
 
-  return fetch(CF_SITE + "/mobile/home?app=1", { headers: cfHomeHeaders() })
-    .then(function(res) {
-      var tok = cfFromResponse(res, found);
-      if (tok) { cfLog("unlock: token came with the first response"); return { token: tok }; }
-      var initialCookie = cfCookiePairs(res).join("; ");
-      return res.text().then(function(html) {
-        var m = /data-addhash=["']([^"']+)["']/.exec(html);
-        return { addhash: m ? m[1] : null, initialCookie: initialCookie };
-      });
-    })
-    .then(function(state) {
-      if (state.token) return state.token;
-      if (!state.addhash) { cfLog("unlock: no data-addhash on the home page"); return null; }
-
-      // sponsor step, fire and forget
-      fetch("https://userver.net52.cc/?hee5=" + encodeURIComponent(state.addhash) + "&a=y&t=" + Math.random(), {
+  var pollCookie = "ext_name=ojplmecpdpgccookcobabopnaifgidhf; addhash=" + encodeURIComponent(addhash) + "; " + initialCookie;
+  var start = Date.now();
+  while (Date.now() - start < CF_UNLOCK_TIMEOUT_MS) {
+    await cfDelay(CF_POLL_MS);
+    var vRes;
+    try {
+      vRes = await fetch(CF_HOST + "/mobile/verify2.php", {
+        method: "POST",
         headers: {
-          "User-Agent": cfUa(),
-          "Referer": CF_SITE + "/mobile/home?app=1",
-          "Cookie": state.initialCookie,
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+          "User-Agent": CF_UA,
+          "X-Requested-With": "XMLHttpRequest",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "Referer": CF_HOST + "/mobile/home",
+          "Origin": CF_HOST,
+          "Cookie": pollCookie
         },
-        redirect: "manual"
-      }).catch(function() {});
+        body: "verify=" + encodeURIComponent(addhash)
+      });
+    } catch (e) { continue; }
 
-      var pollCookie = "ext_name=ojplmecpdpgccookcobabopnaifgidhf; addhash=" + encodeURIComponent(state.addhash) + "; " + state.initialCookie;
-      var start = Date.now();
+    tok = cfTokenFromResponse(vRes);
+    if (tok) return tok;
 
-      function poll() {
-        if (Date.now() - start > CF_UNLOCK_TIMEOUT_MS) { cfLog("unlock: timed out"); return Promise.resolve(null); }
-        return cfDelay(CF_POLL_MS).then(function() {
-          return fetch(CF_SITE + "/mobile/verify2.php", {
-            method: "POST",
-            headers: {
-              "User-Agent": cfUa(),
-              "X-Requested-With": "XMLHttpRequest",
-              "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-              "Referer": CF_SITE + "/mobile/home",
-              "Origin": CF_SITE,
-              "Cookie": pollCookie
-            },
-            body: "verify=" + encodeURIComponent(state.addhash)
-          });
-        }).then(function(res) {
-          var tok = cfFromResponse(res, found);
+    var j = null;
+    try { j = await vRes.json(); } catch (e) {}
+    if (j) {
+      var tJson = j.t_hash_t || j.token || (j.data && j.data.t_hash_t);
+      if (tJson && cfTokenUsable(tJson)) return cfDecode(tJson);
+      if (j.statusup === "All Done") {
+        try {
+          var r2 = await fetch(CF_HOST + "/mobile/home?app=1", { headers: cfHomeHeaders(pollCookie) });
+          tok = cfTokenFromResponse(r2);
           if (tok) return tok;
-          return res.text().then(function(txt) {
-            var j = null;
-            try { j = JSON.parse(txt); } catch (e) {}
-            if (j && j.statusup === "All Done") {
-              cfLog("unlock: verified, reloading home for the token");
-              return fetch(CF_SITE + "/mobile/home?app=1", { headers: cfHomeHeaders(pollCookie) })
-                .then(function(r2) { return cfFromResponse(r2, found); });
-            }
-            return poll();
-          });
-        }).catch(function() { return poll(); });
+        } catch (e) {}
       }
-      return poll();
-    })
-    .then(function(tok) {
-      if (!tok) return null;
-      cfLog("unlock: new token created");
-      return { t_hash_t: tok, t_hash: found.t_hash || "", token: tok };
-    })
-    .catch(function(e) { cfLog("unlock error: " + (e && e.message)); return null; });
+    }
+  }
+  throw new Error("Unlock timed out");
 }
 
-// Worker first; only when it has no valid token: create one and save it back
-function cfGetOrCreate() {
-  var g = typeof globalThis !== "undefined" ? globalThis : null;
-  if (g && g.__cfTokenInflight) return g.__cfTokenInflight;       // netflix / hotstar / prime asking at the same time share one run
-  if (cfInflight) return cfInflight;
+async function cfGetOrCreate() {
+  try {
+    var r = await fetch(CF_URL, { headers: { "x-key": CF_KEY } });
+    if (r.ok) {
+      var j = JSON.parse(await r.text());
+      var rec = j.record || j;
+      if (rec && rec.t_hash_t && (!rec.expiry || rec.expiry > Date.now()) && cfTokenUsable(rec.t_hash_t)) {
+        log("Token loaded from Cloudflare");
+        return rec;
+      }
+      log("Cloudflare token expired");
+    } else {
+      log("Cloudflare has no token (HTTP " + r.status + ")");
+    }
+  } catch (e) { log("Cloudflare read failed: " + e.message); }
 
-  var run = cfRead().then(function(rec) {
-    if (rec) return rec;
-    cfLog("creating a new token");
-    return cfUnlock().then(function(fresh) {
-      if (!fresh) throw new Error("Could not create a new token");
-      return cfWrite(fresh).then(function() { return fresh; });
-    });
-  });
-
-  cfInflight = run;
-  if (g) g.__cfTokenInflight = run;
-  var done = function() { cfInflight = null; if (g && g.__cfTokenInflight === run) g.__cfTokenInflight = null; };
-  run.then(done, done);
-  return run;
+  var tok = await cfUnlock();
+  var created = { t_hash_t: tok, expiry: cfExpiry(tok) };
+  try {
+    await fetch(CF_URL, { method: "PUT", headers: { "x-key": CF_KEY }, body: JSON.stringify(created) });
+    log("New token saved to Cloudflare");
+  } catch (e) { log("Cloudflare save failed: " + e.message); }
+  return created;
 }
 
 // ---------- Token ----------
@@ -264,7 +219,9 @@ async function fetchToken() {
 const now = Date.now();
 if (tokenCache && (now - tokenFetchedAt) < TOKEN_TTL_MS) return tokenCache;
 
-const record = (await cfGetOrCreate()) || {};
+const json = await cfGetOrCreate();
+
+  const record = json.record || json || {};
   const t_hash_t = record.t_hash_t || "";
   const t_hash = record.t_hash || record.t_hash_encoded || record.addhash || "";
   rawToken = record.token || "";
@@ -277,7 +234,6 @@ const record = (await cfGetOrCreate()) || {};
 
   tokenCache = { t_hash_t, t_hash, rawToken };
   tokenFetchedAt = now;
-  log("Token loaded from Cloudflare");
   return tokenCache;
 }
 
