@@ -253,12 +253,12 @@ async function fetchJson(url, options = {}) {
 
 async function getTmdbInfo(tmdbId, mediaType) {
   const endpoint = mediaType === "movie" ? "movie" : "tv";
-  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  const url = `${TMDB_BASE}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&append_to_response=alternative_titles`;
   const data = await fetchJson(url);
   const title = data.title || data.name;
   const year = data.release_date ? data.release_date.substring(0,4) :
                (data.first_air_date ? data.first_air_date.substring(0,4) : "");
-  return { title, year };
+  return { title, year, originalTitle: data.original_title || data.original_name || "", titles: tmdbTitles(data) };
 }
 
 // ---------- Net52 API ----------
@@ -339,6 +339,112 @@ async function getPlaylist(id, title) {
 
 // ---------- Main getStreams ----------
 // ---------- Main getStreams ----------
+// ---------- Smart selection: title + type (movie/series) + year + season ----------
+var SEL_TAG_RE = /^(hindi|english|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|dubbed|dual audio|multi audio|\d{4}|season\s*\d+|s\d+|part\s*\d+)\b/i;
+var SEL_STOP = { the: 1, a: 1, an: 1, and: 1 };
+
+function selClean(t) {
+  t = String(t || "");
+  var prev;
+  do {
+    prev = t;
+    t = t.replace(/\s*[\(\[]([^\)\]]*)[\)\]]\s*$/, function(m, inner) { return SEL_TAG_RE.test(inner.trim()) ? "" : m; });
+  } while (t !== prev);
+  return t.replace(/[\s:\-]+season\s*\d+\s*$/i, "");
+}
+function selTokens(s) {
+  s = String(s || "").toLowerCase();
+  if (s.normalize) s = s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  s = s.replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+  return s ? s.split(" ").filter(function(w) { return !SEL_STOP[w]; }) : [];
+}
+function selTitleScore(candTitle, wants) {
+  var a = selTokens(selClean(candTitle));
+  if (!a.length) return 0;
+  var best = 0;
+  for (var i = 0; i < wants.length; i++) {
+    var b = selTokens(wants[i]);
+    if (!b.length) continue;
+    if (a.join(" ") === b.join(" ")) return 100;
+    var inB = {}, seen = {}, inter = 0;
+    b.forEach(function(x) { inB[x] = 1; });
+    a.forEach(function(x) { if (inB[x] && !seen[x]) { inter++; seen[x] = 1; } });
+    var s = Math.round(100 * inter / (a.length + b.length - inter));
+    if (s > best) best = s;
+  }
+  return best;
+}
+function selYearBonus(itemYear, year, isMovie) {
+  var a = parseInt(itemYear, 10), b = parseInt(year, 10);
+  if (!a || !b) return 0;
+  if (a === b) return 40;
+  if (isMovie) return Math.abs(a - b) === 1 ? 15 : -30;
+  return -5;
+}
+
+async function selectBest(results, info, isMovieType, season) {
+  if (!results || !results.length) return null;
+  var wants = info.titles || [info.title];
+  var pre = results.map(function(it) { return { it: it, s: selTitleScore(it.t, wants) }; });
+  pre.sort(function(x, y) { return y.s - x.s; });
+  var top = pre.filter(function(x) { return x.s >= 40; }).slice(0, 8);
+  if (!top.length) top = pre.slice(0, 4);
+
+  var scored = await Promise.all(top.map(async function(x) {
+    var post;
+    try { post = await getPost(x.it.id); } catch (e) { return null; }
+    var isM = post.type === "m" || (!post.type && !(post.season && post.season.length));
+    if (isM !== isMovieType) {
+      log("  skip \"" + x.it.t + "\" (wrong type: " + (isM ? "movie" : "series") + ")");
+      return null;
+    }
+    var ts = Math.max(x.s, selTitleScore(post.title || "", wants));
+    var iy = post.year || x.it.y;
+    var score = ts + selYearBonus(iy, info.year, isMovieType) + Math.round(langPriority(x.it.t) / 10);
+    if (!isMovieType) {
+      var has = (post.season || []).some(function(s) { return parseInt(s.s, 10) === season; });
+      if (!has) { log("  skip \"" + x.it.t + "\" (no season " + season + ")"); return null; }
+      score += 25;
+    }
+    var accepted = ts >= 70 || (ts >= 45 && parseInt(iy, 10) === parseInt(info.year, 10));
+    log("  candidate \"" + x.it.t + "\" title=" + ts + " year=" + iy + " score=" + score + (accepted ? "" : " (rejected)"));
+    return accepted ? { item: x.it, post: post, score: score } : null;
+  }));
+  var ok = scored.filter(Boolean).sort(function(a, b) { return b.score - a.score; });
+  return ok.length ? ok[0] : null;
+}
+
+async function pickMatch(results, info, isMovieType, season) {
+  var pick = await selectBest(results, info, isMovieType, season);
+  if (pick) return pick;
+  var tried = {};
+  tried[selTokens(info.title).join(" ")] = 1;
+  var extra = [info.originalTitle].concat((info.titles || []).slice(2, 4));
+  for (var i = 0; i < extra.length; i++) {
+    var q = extra[i];
+    var key = selTokens(q).join(" ");
+    if (!q || !key || tried[key]) continue;
+    tried[key] = 1;
+    log("No match yet, searching: \"" + q + "\"");
+    var r2 = [];
+    try { r2 = await search(q); } catch (e) {}
+    pick = await selectBest(r2, info, isMovieType, season);
+    if (pick) return pick;
+  }
+  throw new Error("No matching " + (isMovieType ? "movie" : "series") + " for \"" + info.title + "\" (" + info.year + ")");
+}
+
+function tmdbTitles(d) {
+  var list = [d.title || d.name, d.original_title || d.original_name];
+  var alt = d.alternative_titles ? (d.alternative_titles.titles || d.alternative_titles.results || []) : [];
+  alt.forEach(function(a) {
+    if (a && a.title && /^(IN|US|GB)$/.test(a.iso_3166_1 || "") && list.length < 12) list.push(a.title);
+  });
+  var out = [];
+  list.forEach(function(t) { if (t && out.indexOf(t) < 0) out.push(t); });
+  return out;
+}
+
 async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
@@ -348,88 +454,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   const isMovieType = (mediaType === "movie");
   log(`TMDB: "${title}" (${year}) [${isMovieType ? 'Movie' : 'Series'}]`);
 
-  const results = await searchWithFallback(title, year);
-  if (!results.length) throw new Error(`No results found for "${title}"`);
+  const results = await searchWithFallback(title, year).catch(() => []);
+  log("Search results: " + results.length);
 
-  log("All search results:");
-  for (const item of results) {
-    log(`  "${item.t}" (year: ${item.y || 'unknown'}) id=${item.id}`);
-  }
-
-  // ---- YEAR FILTERING: Strict for Movies, Flexible for Series ----
-  let candidates = [];
-  
-  if (isMovieType && year) {
-    // ---- MOVIE: Strict year matching ----
-    const existingYearMatches = results.filter(item => item.y === year);
-    if (existingYearMatches.length > 0) {
-      candidates = existingYearMatches;
-      log(`✅ Found ${candidates.length} movie results with year ${year}`);
-    } else {
-      log(`Fetching year from post.php for ${results.length} movie candidates...`);
-      for (const item of results) {
-        try {
-          const post = await getPost(item.id);
-          const itemYear = post.year || "";
-          log(`  "${item.t}" → year: "${itemYear}"`);
-          if (itemYear === year) {
-            candidates.push({ ...item, y: itemYear, post: post });
-          }
-        } catch (e) {
-          log(`  Failed to get year for "${item.t}": ${e.message}`);
-        }
-      }
-      if (candidates.length === 0) {
-        throw new Error(`No movies found with year ${year}`);
-      }
-      log(`✅ Found ${candidates.length} movie results with year ${year}`);
-    }
-  } else {
-    // ---- SERIES: Flexible year (use all results) ----
-    log(`📺 Series mode: Year matching is flexible`);
-    candidates = results;
-    
-    // Still fetch years for logging, but don't filter
-    for (const item of results) {
-      try {
-        const post = await getPost(item.id);
-        const itemYear = post.year || "";
-        log(`  "${item.t}" → year: "${itemYear}"`);
-        item.y = itemYear;
-        item.post = post;
-      } catch (e) {
-        log(`  Failed to get year for "${item.t}": ${e.message}`);
-      }
-    }
-    
-    // If there's a year match, prefer it (but don't reject others)
-    if (year) {
-      const yearMatches = results.filter(item => item.y === year);
-      if (yearMatches.length > 0) {
-        log(`✅ Found ${yearMatches.length} results with year ${year} (preferred)`);
-        // Keep all results, but put year matches first
-        candidates = [...yearMatches, ...results.filter(item => item.y !== year)];
-      } else {
-        log(`⚠️ No results with year ${year}, using all results`);
-      }
-    }
-  }
-
-  let selected = pickBestResult(candidates, year);
-  if (!selected) {
-    selected = candidates[0];
-    log(`No language pick, using first: "${selected.t}" (${selected.y})`);
-  } else {
-    log(`Selected: "${selected.t}" (${selected.y})`);
-  }
-
-  const post = selected.post || await getPost(selected.id);
-  log(`Type: ${post.type}, title: ${post.title}`);
+  const pick = await pickMatch(results, tmdbInfo, isMovieType, season);
+  const selected = pick.item;
+  const post = pick.post;
+  log(`Selected: "${selected.t}" (${post.year || selected.y}) type=${post.type}`);
 
   let contentId;
 
   // ---- FIX: Treat "t" as TV series ----
-  const isMovie = (post.type === "m" || mediaType === "movie");
+  const isMovie = isMovieType;
 
   if (isMovie) {
     contentId = post.main_id || selected.id;
