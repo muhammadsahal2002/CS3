@@ -110,26 +110,62 @@ function extractDataBlock(obj) {
   return obj || {};
 }
 
+// Castle ids like 10225090559984575 are bigger than JavaScript can hold exactly (JSON.parse turns
+// them into ...576 and the server then answers "not found"). Keep long numbers as strings.
+function safeParse(text) {
+  return JSON.parse(String(text).replace(/([:\[,]\s*)(-?\d{16,})(?=\s*[,}\]])/g, '$1"$2"'));
+}
+
 // ====================== TMDB ======================
-function getTMDBDetails(tmdbId, mediaType) {
+// [UPDATED] also returns original/alternative titles, and for series the season's own name + year
+function getTMDBDetails(tmdbId, mediaType, seasonNum) {
   return __async(this, null, function* () {
     if (String(tmdbId).startsWith("tt")) {
-      return { title: "Unknown", year: null, tmdbId: tmdbId };
+      return { title: "Unknown", year: null, tmdbId: tmdbId, titles: [], seasonTitles: [], seasonYear: null };
     }
 
     try {
       const endpoint = mediaType === "tv" ? "tv" : "movie";
-      const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+      const url = TMDB_BASE_URL + "/" + endpoint + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&append_to_response=alternative_titles";
       const response = yield makeRequest(url);
       const data = yield response.json();
 
       const title = mediaType === "tv" ? data.name : data.title;
+      const original = mediaType === "tv" ? data.original_name : data.original_title;
       const releaseDate = mediaType === "tv" ? data.first_air_date : data.release_date;
       const year = releaseDate ? parseInt(releaseDate.split("-")[0]) : null;
 
-      return { title: title || "Unknown", year: year, tmdbId: tmdbId };
+      const list = [title, original];
+      const alt = data.alternative_titles ? (data.alternative_titles.titles || data.alternative_titles.results || []) : [];
+      for (const a of alt) {
+        if (a && a.title && /^(IN|US|GB)$/.test(a.iso_3166_1 || "") && list.length < 12) list.push(a.title);
+      }
+      const titles = [];
+      list.forEach(t => { if (t && titles.indexOf(t) < 0) titles.push(t); });
+
+      const info = {
+        title: title || "Unknown", year: year, tmdbId: tmdbId,
+        originalTitle: original || "", titles: titles, seasonTitles: [], seasonYear: null
+      };
+
+      if (mediaType === "tv" && seasonNum) {
+        try {
+          const sres = yield makeRequest(TMDB_BASE_URL + "/tv/" + tmdbId + "/season/" + seasonNum + "?api_key=" + TMDB_API_KEY);
+          const sd = yield sres.json();
+          const sname = String(sd.name || "").trim();
+          info.seasonYear = sd.air_date ? parseInt(String(sd.air_date).split("-")[0]) : null;
+          if (sname && !/^season\s*\d+$/i.test(sname)) {
+            const bare = sname.replace(/^season\s*\d+\s*[:\-]?\s*/i, "").trim() || sname;
+            [info.title + " " + bare, bare, sname].forEach(t => {
+              if (t && info.seasonTitles.indexOf(t) < 0) info.seasonTitles.push(t);
+              if (t && info.titles.indexOf(t) < 0) info.titles.push(t);
+            });
+          }
+        } catch (e) {}
+      }
+      return info;
     } catch (e) {
-      return { title: "Unknown", year: null, tmdbId: tmdbId };
+      return { title: "Unknown", year: null, tmdbId: tmdbId, titles: [], seasonTitles: [], seasonYear: null };
     }
   });
 }
@@ -235,7 +271,7 @@ function searchCastle(securityKey, keyword, page = 1, size = 30) {
     const response = yield makeRequest(url);
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
-    return JSON.parse(decrypted);
+    return safeParse(decrypted);
   });
 }
 
@@ -247,7 +283,7 @@ function getDetails(securityKey, movieId) {
     const response = yield makeRequest(url);
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
-    return JSON.parse(decrypted);
+    return safeParse(decrypted);
   });
 }
 
@@ -281,7 +317,7 @@ function getVideo2(securityKey, movieId, episodeId, resolution = 2, languageId =
     });
     const cipher = yield extractCipherFromResponse(response);
     const decrypted = yield decryptCastle(cipher, securityKey);
-    return JSON.parse(decrypted);
+    return safeParse(decrypted);
   });
 }
 
@@ -290,35 +326,125 @@ function normalizeTitle(t) {
   return (t || "").toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
 }
 
-function findCastleMovieId(securityKey, tmdbInfo) {
+// ---------- [UPDATED] title matching ----------
+var CS_TAG_RE = /^(hindi|english|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|dubbed|dual audio|multi audio|\d{4}|season\s*\d+|s\d+|part\s*\d+)\b/i;
+var CS_STOP = { the: 1, a: 1, an: 1, and: 1, mtv: 1, netflix: 1, bbc: 1, hbo: 1, amazon: 1 };
+
+function csClean(t) {
+  t = String(t || "");
+  var prev;
+  do {
+    prev = t;
+    t = t.replace(/\s*[\(\[]([^\)\]]*)[\)\]]\s*$/, function(m, inner) { return CS_TAG_RE.test(inner.trim()) ? "" : m; });
+  } while (t !== prev);
+  return t.replace(/[\s:\-]+(season\s*\d+|s\d{1,2})\s*$/i, "");
+}
+function csTokens(s) {
+  s = String(s || "").toLowerCase();
+  if (s.normalize) s = s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  s = s.replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+  return s ? s.split(" ").filter(function(w) { return !CS_STOP[w]; }) : [];
+}
+function csScore(candTitle, wants) {
+  var a = csTokens(csClean(candTitle));
+  if (!a.length) return 0;
+  var best = 0;
+  for (var i = 0; i < wants.length; i++) {
+    var b = csTokens(wants[i]);
+    if (!b.length) continue;
+    if (a.join(" ") === b.join(" ")) return 100;
+    var inB = {}, seen = {}, inter = 0;
+    b.forEach(function(x) { inB[x] = 1; });
+    a.forEach(function(x) { if (inB[x] && !seen[x]) { inter++; seen[x] = 1; } });
+    var s = Math.round(100 * inter / (a.length + b.length - inter));
+    if (s > best) best = s;
+  }
+  return best;
+}
+// season number written in the title ("... Season 21", "... S21"), or null
+function csTitleSeason(t) {
+  var m = /\bseason\s*(\d+)\b/i.exec(t || "") || /\bS(\d{1,2})\b/.exec(t || "");
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// [UPDATED] find the right Castle entry. Several search terms, scored by title, then (for series)
+// checked against the entry's real season list. Returns { movieId, details }.
+function findCastleMatch(securityKey, tmdbInfo, mediaType, seasonNum) {
   return __async(this, null, function* () {
+    const isTv = mediaType === "tv";
+    const wantSeason = Number(seasonNum) || 1;
+    const wants = (tmdbInfo.titles && tmdbInfo.titles.length) ? tmdbInfo.titles : [tmdbInfo.title];
+
+    // search terms: plain title first (what the real app sends), then season name / original title
     const terms = [];
-    if (tmdbInfo.year) terms.push(tmdbInfo.title + " " + tmdbInfo.year);
-    terms.push(tmdbInfo.title);
+    const seenTerm = {};
+    const addTerm = (t) => {
+      const q = String(t || "").trim();
+      const k = csTokens(q).join(" ");
+      if (!q || !k || seenTerm[k]) return;
+      seenTerm[k] = 1;
+      terms.push(q);
+    };
+    addTerm(tmdbInfo.title);
+    if (isTv) (tmdbInfo.seasonTitles || []).forEach(addTerm);
+    addTerm(tmdbInfo.originalTitle);
+    (tmdbInfo.titles || []).slice(2, 4).forEach(addTerm);
+    const searchTerms = terms.slice(0, 4);
+    if (!isTv && tmdbInfo.year) searchTerms.push(tmdbInfo.title + " " + tmdbInfo.year);
 
-    let rows = [];
-    for (const term of terms) {
-      const result = yield searchCastle(securityKey, term);
-      rows = extractDataBlock(result).rows || [];
-      if (rows.length > 0) break;
-    }
+    const rowsById = {};
+    let ranked = [];
 
-    if (rows.length === 0) throw new Error("No search results found");
+    const rank = () => {
+      ranked = Object.keys(rowsById).map(id => {
+        const item = rowsById[id];
+        const raw = item.title || item.name || "";
+        const ts = csScore(raw, wants);
+        const sn = csTitleSeason(raw);
+        let score = ts;
+        if (isTv && sn !== null) score += (sn === wantSeason) ? 30 : -40;
+        if (!isTv && /\bseason\b/i.test(raw)) score -= 20;
+        return { id: id, raw: raw, ts: ts, sn: sn, score: score,
+                 seasonHit: isTv && csScore(raw, tmdbInfo.seasonTitles || []) >= 85 };
+      });
+      ranked.sort((a, b) => b.score - a.score);
+    };
 
-    const searchNorm = normalizeTitle(tmdbInfo.title);
-    let best = rows[0];
-
-    for (const item of rows) {
-      const itemNorm = normalizeTitle(item.title || item.name || "");
-      if (itemNorm === searchNorm || itemNorm.includes(searchNorm) || searchNorm.includes(itemNorm)) {
-        best = item;
-        break;
+    for (const term of searchTerms) {
+      let result;
+      try { result = yield searchCastle(securityKey, term); } catch (e) { continue; }
+      const rows = extractDataBlock(result).rows || [];
+      console.log("[Castle] search \"" + term + "\" -> " + rows.length + " rows");
+      for (const item of rows) {
+        const id = item.id || item.redirectId || item.redirectIdStr;
+        if (id && !rowsById[String(id)]) rowsById[String(id)] = item;
       }
+      rank();
+      if (ranked.length && ranked[0].ts >= 85) break;
     }
 
-    const movieId = best.id || best.redirectId || best.redirectIdStr;
-    if (!movieId) throw new Error("Could not extract movie ID");
-    return movieId.toString();
+    if (ranked.length === 0) throw new Error("No search results found");
+    ranked.slice(0, 6).forEach(r => console.log("[Castle]   cand \"" + r.raw + "\" title=" + r.ts + " score=" + r.score));
+
+    if (!isTv) {
+      const best = ranked[0];
+      if (best.ts < 60) throw new Error("No matching movie for \"" + tmdbInfo.title + "\"");
+      return { movieId: best.id, details: null };
+    }
+
+    // series: accept the first good candidate that really has the requested season
+    const cands = ranked.filter(r => r.ts >= 40).slice(0, 4);
+    for (const c of cands) {
+      let d;
+      try { d = yield getDetails(securityKey, c.id); } catch (e) { continue; }
+      const data = extractDataBlock(d);
+      const seasons = data.seasons || [];
+      const has = seasons.some(s => Number(s.number) === wantSeason);
+      const single = seasons.length === 0 && (c.sn === wantSeason || c.seasonHit || (wantSeason === 1 && c.ts >= 70));
+      console.log("[Castle]   check \"" + c.raw + "\" seasons=[" + seasons.map(s => s.number).join(",") + "] -> " + ((has || single) ? "OK" : "no season " + wantSeason));
+      if (has || single) return { movieId: c.id, details: d };
+    }
+    throw new Error("No Castle entry has season " + wantSeason + " of \"" + tmdbInfo.title + "\"");
   });
 }
 
@@ -406,11 +532,12 @@ function processVideoResponse(videoData, mediaInfo, seasonNum, episodeNum, resol
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
     try {
-      const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType);
+      const tmdbInfo = yield getTMDBDetails(tmdbId, mediaType, seasonNum);
       const securityKey = yield getSecurityKey();
-      const movieId = yield findCastleMovieId(securityKey, tmdbInfo);
+      const match = yield findCastleMatch(securityKey, tmdbInfo, mediaType, seasonNum);
+      const movieId = match.movieId;
 
-      let details = yield getDetails(securityKey, movieId);
+      let details = match.details || (yield getDetails(securityKey, movieId));
       let currentMovieId = movieId;
 
       if (mediaType === "tv" && seasonNum) {
@@ -528,6 +655,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       return [];
 
     } catch (error) {
+      console.error("[Castle] " + error.message);
       return [];
     }
   });
