@@ -339,9 +339,29 @@ async function getPlaylist(id, title) {
 
 // ---------- Main getStreams ----------
 // ---------- Main getStreams ----------
+// TMDB season name + air year (net52 often lists a season under its own name, e.g. "Roadies Rebirth")
+async function addSeasonInfo(info, tmdbId, season) {
+  info.seasonTitles = [];
+  try {
+    var res = await fetch(TMDB_BASE + "/tv/" + tmdbId + "/season/" + season + "?api_key=" + TMDB_API_KEY);
+    if (!res.ok) return;
+    var d = await res.json();
+    var name = String(d.name || "").trim();
+    info.seasonYear = d.air_date ? String(d.air_date).substring(0, 4) : "";
+    if (!name || /^season\s*\d+$/i.test(name)) return;
+    var bare = name.replace(/^season\s*\d+\s*[:\-]?\s*/i, "").trim() || name;
+    var variants = [info.title + " " + bare, bare, name];
+    variants.forEach(function(t) {
+      if (t && info.seasonTitles.indexOf(t) < 0) info.seasonTitles.push(t);
+      if (t && info.titles.indexOf(t) < 0) info.titles.push(t);
+    });
+    log("TMDB season " + season + ": \"" + name + "\" (" + info.seasonYear + ")");
+  } catch (e) {}
+}
+
 // ---------- Smart selection: title + type (movie/series) + year + season ----------
 var SEL_TAG_RE = /^(hindi|english|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|dubbed|dual audio|multi audio|\d{4}|season\s*\d+|s\d+|part\s*\d+)\b/i;
-var SEL_STOP = { the: 1, a: 1, an: 1, and: 1 };
+var SEL_STOP = { the: 1, a: 1, an: 1, and: 1, mtv: 1, netflix: 1, bbc: 1, hbo: 1, amazon: 1 };
 
 function selClean(t) {
   t = String(t || "");
@@ -400,13 +420,16 @@ async function selectBest(results, info, isMovieType, season) {
     }
     var ts = Math.max(x.s, selTitleScore(post.title || "", wants));
     var iy = post.year || x.it.y;
-    var score = ts + selYearBonus(iy, info.year, isMovieType) + Math.round(langPriority(x.it.t) / 10);
+    var wantYear = (!isMovieType && info.seasonYear) ? info.seasonYear : info.year;
+    var score = ts + selYearBonus(iy, wantYear, isMovieType) + Math.round(langPriority(x.it.t) / 10);
     if (!isMovieType) {
       var has = (post.season || []).some(function(s) { return parseInt(s.s, 10) === season; });
-      if (!has) { log("  skip \"" + x.it.t + "\" (no season " + season + ")"); return null; }
+      if (!has) { log("  skip \"" + x.it.t + "\" (no season " + season + "; site has seasons: " + (post.season || []).map(function(s) { return s.s; }).join(",") + ")"); return null; }
       score += 25;
     }
-    var accepted = ts >= 70 || (ts >= 45 && parseInt(iy, 10) === parseInt(info.year, 10));
+    var iyn = parseInt(iy, 10);
+    var yearHit = !!iyn && (iyn === parseInt(info.year, 10) || iyn === parseInt(info.seasonYear, 10));
+    var accepted = ts >= 70 || (ts >= 45 && yearHit);
     log("  candidate \"" + x.it.t + "\" title=" + ts + " year=" + iy + " score=" + score + (accepted ? "" : " (rejected)"));
     return accepted ? { item: x.it, post: post, score: score } : null;
   }));
@@ -419,7 +442,7 @@ async function pickMatch(results, info, isMovieType, season) {
   if (pick) return pick;
   var tried = {};
   tried[selTokens(info.title).join(" ")] = 1;
-  var extra = [info.originalTitle].concat((info.titles || []).slice(2, 4));
+  var extra = (info.seasonTitles || []).concat([info.originalTitle]).concat((info.titles || []).slice(2, 4));
   for (var i = 0; i < extra.length; i++) {
     var q = extra[i];
     var key = selTokens(q).join(" ");
@@ -449,6 +472,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   await fetchToken();
 
   const tmdbInfo = await getTmdbInfo(tmdbId, mediaType);
+  if (mediaType !== "movie") await addSeasonInfo(tmdbInfo, tmdbId, season);
   const title = tmdbInfo.title;
   const year = tmdbInfo.year;
   const isMovieType = (mediaType === "movie");
